@@ -97,9 +97,12 @@ const LST_HUBS = {
         query: { state: {} }, kind: 'state' },
 };
 // Within this % gap between market price and redemption price, the two agree
-// (clean staking derivative). Beyond it, they genuinely diverge (strategy LST
-// like arbLUNA — discovered 2026-06-14 running ~14% off): show both, no false alarm.
+// (clean staking derivative). Beyond it, market sits off redemption — surfaced
+// neutrally. Only a LARGE gap (review threshold) is flagged for human review, per
+// the proven doctrine: hub-ratio redemption is robust; a thin/stale pool price
+// must not auto-alarm. (arbLUNA discovered 2026-06-14 running ~14% off via a thin pool.)
 const LST_DIVERGENCE_FLAG_PCT = 2;
+const LST_REVIEW_FLAG_PCT = 10;
 
 // ── TLA-relevant token CW20s (INTERIM) ──────────────────────────────────────
 // NOTE: token identity belongs to the token-catalog domain (the WORTH layer).
@@ -121,5 +124,6 @@ module.exports = {
     ARB_LUNA_HUB,
     LST_HUBS,
     LST_DIVERGENCE_FLAG_PCT,
+    LST_REVIEW_FLAG_PCT,
     TLA_TOKENS,
 };
