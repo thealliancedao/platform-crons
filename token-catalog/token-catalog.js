@@ -564,6 +564,137 @@ function verifyAndScore(tokens, cgIndex, weights) {
 }
 
 // -----------------------------------------------------------------------------
+// STAGE 3 — PRICING (snapshot-coherent, multi-source) + composite grade
+//
+// Each source is ONE bulk call, fetched in a tight parallel batch so all prices
+// share a coherent capture window (prices fetched seconds apart turn normal market
+// movement into a fake spread). Every price is stamped with its capture instant;
+// spread is computed only across reads inside one window.
+//
+// 3.0 wires the two DIRECT-USD canonical sources:
+//   TLA       backend.erisprotocol.com/prices   denom -> price_usd (what the TLA UI shows)
+//   CoinGecko simple/price?ids=...              coingecko_id -> usd (external reference)
+// Astroport (direct) + SkeletonSwap (pair-implied) join in 3.1 — the confidence
+// math below is source-count-agnostic, so they plug in without changes.
+//
+// Confidence is DESCRIPTIVE: more independent sources that agree -> higher grade;
+// a single source is simply lower-confidence, stated neutrally. Wide divergence is
+// a token-health signal (LP risk), never an accusation.
+// -----------------------------------------------------------------------------
+const PRICE_SOURCES = {
+  tla: 'https://backend.erisprotocol.com/prices',
+  coingecko: 'https://api.coingecko.com/api/v3/simple/price',
+};
+const AGREE_TOLERANCE_PCT = 2.0;   // within this of the median counts as "agreeing"
+
+async function fetchPrices(tokens) {
+  const captured_at = new Date().toISOString();
+  // collect the coingecko ids we'll ask for (discovered)
+  const cgIds = [...new Set(tokens.map(t => t.discovered && t.discovered.coingecko_id).filter(Boolean))];
+  const cgUrl = PRICE_SOURCES.coingecko + '?ids=' + encodeURIComponent(cgIds.join(',')) + '&vs_currencies=usd';
+
+  // tight parallel batch — one bulk call each
+  const [tlaRes, cgRes] = await Promise.allSettled([
+    fetchJson(PRICE_SOURCES.tla, 'tla-prices'),
+    cgIds.length ? fetchJson(cgUrl, 'coingecko-price') : Promise.resolve({}),
+  ]);
+
+  const tla = tlaRes.status === 'fulfilled' ? tlaRes.value : null;
+  const cg = cgRes.status === 'fulfilled' ? cgRes.value : null;
+
+  // index TLA: denom -> price_usd (shape: denom -> { price_usd, decimals, display, coingecko_id? })
+  const tlaByDenom = {};
+  if (tla && typeof tla === 'object') {
+    for (const [denom, v] of Object.entries(tla)) {
+      const p = (v && (v.price_usd ?? v.priceUsd ?? v.price));
+      if (p != null && isFinite(Number(p))) tlaByDenom[denom] = Number(p);
+    }
+  }
+  // index CoinGecko: id -> usd (shape: id -> { usd })
+  const cgById = {};
+  if (cg && typeof cg === 'object') {
+    for (const [id, v] of Object.entries(cg)) {
+      const p = v && v.usd;
+      if (p != null && isFinite(Number(p))) cgById[id] = Number(p);
+    }
+  }
+  return {
+    captured_at,
+    sources_ok: { tla: !!tla, coingecko: cgIds.length ? !!cg : null },
+    tlaByDenom, cgById,
+  };
+}
+
+function median(nums) {
+  const s = nums.slice().sort((a, b) => a - b);
+  const n = s.length;
+  if (!n) return null;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+// Compute confidence over WHATEVER source usd prices are present (1..N).
+function priceConfidence(sourceUsd) {
+  const vals = Object.values(sourceUsd).map(s => s.usd).filter(v => v != null && isFinite(v));
+  const n = vals.length;
+  const flags = [];
+  if (n === 0) return { sources_available: 0, sources_agreeing: 0, spread_pct: null, score: null, flags: ['no_price_source'] };
+
+  const med = median(vals);
+  const spread_pct = med > 0 ? ((Math.max(...vals) - Math.min(...vals)) / med) * 100 : 0;
+  const agreeing = vals.filter(v => med > 0 && Math.abs(v - med) / med * 100 <= AGREE_TOLERANCE_PCT).length;
+
+  let score;
+  if (n === 1) { score = 55; flags.push('single_source'); }            // a price, but nothing to cross-check
+  else if (spread_pct < 1)  score = 100;
+  else if (spread_pct < AGREE_TOLERANCE_PCT) score = 90;
+  else if (spread_pct < 5)  { score = 70; flags.push('minor_divergence'); }
+  else { score = 50; flags.push('wide_divergence'); }                  // sources genuinely disagree → LP risk signal
+
+  return { sources_available: n, sources_agreeing: agreeing, spread_pct: Number(spread_pct.toFixed(3)), score, flags };
+}
+
+function attachPricesAndGrade(tokens, priced, weights) {
+  let pricedCount = 0;
+  for (const t of tokens) {
+    const denom = t.denom;
+    const cgId = t.discovered && t.discovered.coingecko_id;
+    const tlaUsd = priced.tlaByDenom[denom];
+    const cgUsd = cgId ? priced.cgById[cgId] : undefined;
+
+    const sourceUsd = {};
+    sourceUsd.tla = { usd: tlaUsd != null ? tlaUsd : null, captured_at: priced.captured_at, status: tlaUsd != null ? 'ok' : 'no_data' };
+    sourceUsd.coingecko = { usd: cgUsd != null ? cgUsd : null, captured_at: priced.captured_at, status: cgUsd != null ? 'ok' : (cgId ? 'no_data' : 'no_id') };
+
+    const conf = priceConfidence(
+      Object.fromEntries(Object.entries(sourceUsd).filter(([, s]) => s.usd != null))
+    );
+
+    t.prices = sourceUsd;
+    t.snapshot_window_ms = 0;   // 3.0 fetches in one batch; real window populated when DEX feeds carry own timestamps (3.1)
+    t.price_confidence = conf;
+    if (conf.sources_available > 0) pricedCount++;
+
+    // ---- composite overall grade (now real) ----
+    const idScore = (t.scoring && t.scoring.identity && t.scoring.identity.score != null) ? t.scoring.identity.score : null;
+    const pScore = conf.score;
+    let overall = null, partial = false;
+    if (pScore != null && idScore != null) {
+      overall = Math.round(weights.price * pScore + weights.identity * idScore);
+    } else if (idScore != null && pScore == null) {
+      overall = idScore; partial = true;   // no price yet — don't fake a 0; grade on identity, mark partial
+    } else if (pScore != null && idScore == null) {
+      overall = pScore; partial = true;
+    }
+    t.scoring = t.scoring || {};
+    t.scoring.price = pScore;
+    t.scoring.overall = overall;
+    t.scoring.partial = partial;
+    t.scoring.weights = { price: weights.price, identity: weights.identity };
+  }
+  return { pricedCount };
+}
+
+// -----------------------------------------------------------------------------
 // GitHub publish (standard platform helper)
 // -----------------------------------------------------------------------------
 function githubApiRequest(method, apiPath, body = null) {
@@ -627,6 +758,11 @@ async function run() {
   const verifyStats = verifyAndScore(tokens, cgIndex, weights);
   console.log(`   verification: ${verifyStats.confirmed} cg-confirmed, ${verifyStats.mismatched} mismatch (cg index ${verifyStats.indexOk ? 'ok' : 'MISSING — run the CoinGecko Action'})`);
 
+  console.log('💲 Stage 3: pricing (snapshot-coherent) + composite grade...');
+  const priced = await fetchPrices(tokens);
+  const priceStats = attachPricesAndGrade(tokens, priced, weights);
+  console.log(`   pricing: ${priceStats.pricedCount}/${tokens.length} tokens priced (tla ${priced.sources_ok.tla ? 'ok' : 'FAILED'}, coingecko ${priced.sources_ok.coingecko === null ? 'n/a' : priced.sources_ok.coingecko ? 'ok' : 'FAILED'})`);
+
   // Honest status: discovery is OK only if the active query worked. A bucket
   // failure or a genuine chain-read failure (query_failed) degrades to 'partial'.
   // Single-asset stakes are NOT failures — they're expected and resolved.
@@ -635,17 +771,19 @@ async function run() {
   else if (inactive.stats.contractsSucceeded < inactive.stats.contractsChecked || uStats.query_failed > 0) status = 'partial';
   // chain-registry is the authoritative identity source; if it failed, identity is degraded
   else if (!idSrc.ok.chain_registry) status = 'partial';
+  // TLA is the canonical price source; if it failed, pricing is degraded
+  else if (!priced.sources_ok.tla) status = 'partial';
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.2.0-stage2.1',
-      schemaVersion: 2,
-      stage: 'discovery+identity+verification',
+      version: 'token-catalog-1.3.0-stage3',
+      schemaVersion: 3,
+      stage: 'discovery+identity+verification+pricing',
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
       status,
       source: 'token-catalog cron (platform-crons/token-catalog)',
-      note: 'discovered identity + coingecko verification + identity sub-score captured. Pricing (Stage 3) + composite overall grade land next. Overrides merge on read (never written here).',
+      note: 'discovered identity + coingecko verification + snapshot-coherent pricing (TLA + CoinGecko) + composite grade. Astroport/SkeletonSwap DEX divergence joins in 3.1. Overrides merge on read (never written here).',
     },
     counts: {
       pools_total: pools.length,
@@ -669,6 +807,12 @@ async function run() {
       cg_index_ok: verifyStats.indexOk,
       cg_confirmed: verifyStats.confirmed,
       cg_mismatch: verifyStats.mismatched,
+    },
+    pricing_stats: {
+      sources_ok: priced.sources_ok,
+      tokens_priced: priceStats.pricedCount,
+      total_tokens: tokens.length,
+      captured_at: priced.captured_at,
     },
     pools,
     tokens,
