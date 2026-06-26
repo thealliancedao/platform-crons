@@ -587,6 +587,32 @@ const PRICE_SOURCES = {
 };
 const AGREE_TOLERANCE_PCT = 2.0;   // within this of the median counts as "agreeing"
 
+// Query the five LST hubs for their on-chain exchange rate, in the SAME snapshot
+// window as the prices. redemption_price = base_token_price × ratio. This is the
+// timing-independent truth for LSTs: clean derivatives (ampLUNA/bLUNA) sit ~at
+// redemption; strategy LSTs (arbLUNA) genuinely diverge from market — the gap is
+// the signal, not noise. xASTRO intentionally excluded (Neutron hub, deferred).
+async function fetchLstRatios() {
+  const captured_at = new Date().toISOString();
+  const entries = Object.entries(C.LST_HUBS);
+  const results = await parallelMap(entries, async ([sym, cfg]) => {
+    try {
+      const data = await queryContract(cfg.hub, cfg.query);
+      let ratio = null;
+      if (cfg.kind === 'exchange_rates_array') ratio = parseFloat(data?.exchange_rates?.[0]?.[1]);
+      else ratio = parseFloat(data?.exchange_rate);
+      if (!ratio || !isFinite(ratio)) return [sym, null];
+      return [sym, { ratio, hub: cfg.hub, base: cfg.base, base_denom: cfg.baseDenom, lst_denom: cfg.lstDenom, source: 'eris-hub-chain', captured_at }];
+    } catch (e) {
+      return [sym, null];
+    }
+  }, Math.min(BATCH_CONCURRENCY, 5));
+  const ratios = {};
+  let ok = 0;
+  for (const [sym, r] of results) { if (r) { ratios[sym] = r; ok++; } }
+  return { ratios, ok, total: entries.length, captured_at };
+}
+
 async function fetchPrices(tokens) {
   const captured_at = new Date().toISOString();
   // collect the coingecko ids we'll ask for (discovered)
@@ -653,8 +679,12 @@ function priceConfidence(sourceUsd) {
   return { sources_available: n, sources_agreeing: agreeing, spread_pct: Number(spread_pct.toFixed(3)), score, flags };
 }
 
-function attachPricesAndGrade(tokens, priced, weights) {
+function attachPricesAndGrade(tokens, priced, lstData, weights) {
   let pricedCount = 0;
+  // map LST denom -> its ratio record for quick lookup
+  const ratioByDenom = {};
+  for (const r of Object.values(lstData.ratios)) ratioByDenom[r.lst_denom] = r;
+
   for (const t of tokens) {
     const denom = t.denom;
     const cgId = t.discovered && t.discovered.coingecko_id;
@@ -665,23 +695,47 @@ function attachPricesAndGrade(tokens, priced, weights) {
     sourceUsd.tla = { usd: tlaUsd != null ? tlaUsd : null, captured_at: priced.captured_at, status: tlaUsd != null ? 'ok' : 'no_data' };
     sourceUsd.coingecko = { usd: cgUsd != null ? cgUsd : null, captured_at: priced.captured_at, status: cgUsd != null ? 'ok' : (cgId ? 'no_data' : 'no_id') };
 
+    // ---- LST redemption cross-check (on-chain hub ratio × base price) ----
+    const lr = ratioByDenom[denom];
+    if (lr) {
+      const basePrice = priced.tlaByDenom[lr.base_denom];
+      const redemption = (basePrice != null && isFinite(basePrice)) ? basePrice * lr.ratio : null;
+      let divergence_pct = null;
+      if (redemption != null && tlaUsd != null && redemption > 0) {
+        divergence_pct = Number((Math.abs(tlaUsd - redemption) / redemption * 100).toFixed(3));
+      }
+      t.lst = {
+        is_lst: true,
+        hub_ratio: lr.ratio,
+        base: lr.base,
+        redemption_price: redemption,
+        market_price: tlaUsd != null ? tlaUsd : null,
+        divergence_pct,
+        diverges: divergence_pct != null ? divergence_pct > C.LST_DIVERGENCE_FLAG_PCT : null,
+        note: divergence_pct == null ? 'redemption needs base price'
+            : divergence_pct > C.LST_DIVERGENCE_FLAG_PCT ? 'market diverges from redemption (strategy LST or thin pool)'
+            : 'market ≈ redemption (clean staking derivative)',
+        captured_at: lr.captured_at,
+      };
+    }
+
     const conf = priceConfidence(
       Object.fromEntries(Object.entries(sourceUsd).filter(([, s]) => s.usd != null))
     );
 
     t.prices = sourceUsd;
-    t.snapshot_window_ms = 0;   // 3.0 fetches in one batch; real window populated when DEX feeds carry own timestamps (3.1)
+    t.snapshot_window_ms = 0;
     t.price_confidence = conf;
     if (conf.sources_available > 0) pricedCount++;
 
-    // ---- composite overall grade (now real) ----
+    // ---- composite overall grade ----
     const idScore = (t.scoring && t.scoring.identity && t.scoring.identity.score != null) ? t.scoring.identity.score : null;
     const pScore = conf.score;
     let overall = null, partial = false;
     if (pScore != null && idScore != null) {
       overall = Math.round(weights.price * pScore + weights.identity * idScore);
     } else if (idScore != null && pScore == null) {
-      overall = idScore; partial = true;   // no price yet — don't fake a 0; grade on identity, mark partial
+      overall = idScore; partial = true;
     } else if (pScore != null && idScore == null) {
       overall = pScore; partial = true;
     }
@@ -758,10 +812,11 @@ async function run() {
   const verifyStats = verifyAndScore(tokens, cgIndex, weights);
   console.log(`   verification: ${verifyStats.confirmed} cg-confirmed, ${verifyStats.mismatched} mismatch (cg index ${verifyStats.indexOk ? 'ok' : 'MISSING — run the CoinGecko Action'})`);
 
-  console.log('💲 Stage 3: pricing (snapshot-coherent) + composite grade...');
-  const priced = await fetchPrices(tokens);
-  const priceStats = attachPricesAndGrade(tokens, priced, weights);
-  console.log(`   pricing: ${priceStats.pricedCount}/${tokens.length} tokens priced (tla ${priced.sources_ok.tla ? 'ok' : 'FAILED'}, coingecko ${priced.sources_ok.coingecko === null ? 'n/a' : priced.sources_ok.coingecko ? 'ok' : 'FAILED'})`);
+  console.log('💲 Stage 3: pricing (snapshot-coherent) + LST ratios + composite grade...');
+  const [priced, lstData] = await Promise.all([fetchPrices(tokens), fetchLstRatios()]);
+  const priceStats = attachPricesAndGrade(tokens, priced, lstData, weights);
+  console.log(`   pricing: ${priceStats.pricedCount}/${tokens.length} priced (tla ${priced.sources_ok.tla ? 'ok' : 'FAILED'}, coingecko ${priced.sources_ok.coingecko === null ? 'n/a' : priced.sources_ok.coingecko ? 'ok' : 'FAILED'})`);
+  console.log(`   lst ratios: ${lstData.ok}/${lstData.total} hubs (${Object.keys(lstData.ratios).join(', ') || 'none'})`);
 
   // Honest status: discovery is OK only if the active query worked. A bucket
   // failure or a genuine chain-read failure (query_failed) degrades to 'partial'.
@@ -813,6 +868,9 @@ async function run() {
       tokens_priced: priceStats.pricedCount,
       total_tokens: tokens.length,
       captured_at: priced.captured_at,
+      lst_ratios_ok: lstData.ok,
+      lst_ratios_total: lstData.total,
+      lst_ratios: lstData.ratios,
     },
     pools,
     tokens,
