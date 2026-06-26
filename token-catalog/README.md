@@ -6,9 +6,10 @@ verifiable on a parallel run before the next is layered on:
 
 | Stage | Adds | Status |
 |-------|------|--------|
-| **1 — discovery** | pools (active + inactive) + underlying tokens | ✅ this file |
-| 2 — identity | native/IBC/wrapped, route, logo, variations, + override layer | next |
-| 3 — pricing | DEX / TLA-hub / CoinGecko prices + agreement check | next |
+| **1 — discovery** | pools (active + inactive) + underlying tokens | ✅ done |
+| **2 — identity** | discovered symbol / decimals / logo / coingecko_id, variations, override layer | ✅ done |
+| **2.1 — verification** | coingecko-id verification (vs CG terra-2 index) + identity sub-score | ✅ done |
+| 3 — pricing | DEX / TLA-hub / CoinGecko prices + agreement → composite grade | next |
 
 Reserves & slippage grading (#10/#11) are **out of scope** — that's the `dex-data`
 domain. Token-catalog stops at "what exists and what it's worth."
@@ -88,6 +89,22 @@ Without `GITHUB_TOKEN` it writes local `token-catalog.json` + `heartbeat.json` o
 
 ## Recent changes
 
+- **1.2.0-stage2.1** — verification + identity score. Reads the committed CoinGecko
+  terra-2 index (`tla-core/docs/curated/coingecko-terra2-index.json`, built by the
+  manual GitHub Action) and verifies each discovered `coingecko_id`. Provenance-honest
+  states: `cg_confirmed` / `registry_assigned` / `mismatch` / `no_mapping`. Adds the
+  identity sub-score (0–100) into `scoring{}` with per-input breakdown; `price` and
+  `overall` stubbed for Stage 3. Weights default 75/25 (price/identity), editable via
+  `scoring_weights.json`.
+- **1.1.0-stage2** — identity. Discovered identity per token from the cosmos
+  chain-registry (authoritative) + SkeletonSwap (logo backfill): `discovered{ symbol,
+  display_name, decimals, logo_url, coingecko_id, variation_of }` + raw `sources` +
+  `identity_flags`. Logo cascade runs in the cron (chain-registry → SkeletonSwap);
+  overrides merge on read, never written here. Wrapped tokens no feed names are left
+  null — overrides are their rightful home.
+- **1.0.2-stage1** — DEX labels. `queryContractRaw` (cw2 contract_info via LCD `/raw/`)
+  resolves each pair's DEX (Astroport / Skeleton Swap) + version, and `custom` →
+  `concentrated`. Same-pair pools on different DEXes are now distinguishable.
 - **1.0.1-stage1** — single-asset handling. Stakes with no two-sided pair
   (xASTRO, wBTC.creda.a, ampCAPA, …) now resolve as `pool_kind:'single_asset'` with
   underlying = the staked token, and no longer count as resolution failures. Status
