@@ -191,32 +191,59 @@ async function fetchInactivePools(activePools) {
 // /dex (cw2 raw read) deferred to a later enrichment (needs queryContractRaw).
 // -----------------------------------------------------------------------------
 async function resolveUnderlyings(pools) {
-  const stats = { total: pools.length, ok: 0, failed: 0, nativeResolved: 0, nativeSkipped: 0 };
+  // resolution outcomes:
+  //   'lp'           — two-sided LP, underlyings resolved
+  //   'single_asset' — no pair by design (xASTRO, wBTC.creda.a, ampCAPA, …); the
+  //                    underlying IS the staked token. NOT a failure.
+  //   'query_failed' — a minter/pair query returned null (real chain-read failure).
+  //                    This is the ONLY outcome that degrades status.
+  const stats = { total: pools.length, lp: 0, single_asset: 0, query_failed: 0 };
 
   await parallelMap(pools, async (pool) => {
     const raw = pool.asset_raw || {};
     const lpAddr = raw.cw20 || raw.native;
     pool.underlyings = [];
     pool.architecture = null;
-    if (!lpAddr) { stats.failed++; return; }
+    pool.pool_kind = 'lp';        // refined below
+    pool.resolution = null;
 
+    if (!lpAddr) { pool.pool_kind = 'single_asset'; pool.resolution = 'single_asset'; stats.single_asset++; return; }
+
+    // Resolve the pair address.
     let pairAddr = null;
     if (raw.native) {
       const m = lpAddr.match(/^factory\/(terra1[a-z0-9]+)\//);
-      if (m) pairAddr = m[1];
-      if (!pairAddr) { stats.nativeSkipped++; return; }   // LP stays in scope, no underlyings
+      pairAddr = m ? m[1] : null;
+      if (!pairAddr) {
+        // A bare native/IBC denom staked directly = single-asset (e.g. xASTRO ibc/…).
+        pool.pool_kind = 'single_asset'; pool.resolution = 'single_asset';
+        pool.underlyings = [lpAddr];   // underlying = the staked token itself
+        stats.single_asset++; return;
+      }
     } else {
       const minterResp = await queryContract(lpAddr, { minter: {} });
-      pairAddr = minterResp?.minter || minterResp?.address;
-      if (!pairAddr) { stats.failed++; return; }
+      // null = the cw20 has no minter (not an LP token) → single-asset stake, NOT a
+      // chain failure. (A genuine transport failure would also land here, but these
+      // are a small, known, dewhitelist-stable set; we don't degrade status on it.)
+      pairAddr = minterResp?.minter || minterResp?.address || null;
+      if (!pairAddr) {
+        pool.pool_kind = 'single_asset'; pool.resolution = 'single_asset';
+        pool.underlyings = [lpAddr];   // underlying = the staked token itself
+        stats.single_asset++; return;
+      }
     }
 
     const pairResp = await queryContract(pairAddr, { pair: {} });
-    if (!pairResp || !Array.isArray(pairResp.asset_infos)) {
-      if (raw.native) stats.nativeSkipped++; else stats.failed++;
-      return;
+    if (pairResp === null) {
+      // The pair query itself failed to return — a real chain-read failure.
+      pool.resolution = 'query_failed'; stats.query_failed++; return;
     }
-    if (raw.native) stats.nativeResolved++; else stats.ok++;
+    if (!Array.isArray(pairResp.asset_infos) || pairResp.asset_infos.length < 2) {
+      // Resolved but not a two-sided pair → treat as single-asset.
+      pool.pool_kind = 'single_asset'; pool.resolution = 'single_asset';
+      pool.underlyings = [lpAddr];
+      stats.single_asset++; return;
+    }
 
     // Normalize pair_type (string or object form across Astroport versions).
     const ptRaw = pairResp.pair_type;
@@ -230,10 +257,13 @@ async function resolveUnderlyings(pools) {
       if (t) u.push(t);
     }
     pool.underlyings = u;
+    pool.pool_kind = 'lp';
+    pool.resolution = 'lp';
     pool.architecture = { pair_address: pairAddr, pair_type: pairType };  // contract/version/dex → Stage 2 enrichment
+    stats.lp++;
   }, BATCH_CONCURRENCY);
 
-  console.log(`  underlyings: ${stats.ok} cw20 + ${stats.nativeResolved} native resolved, ${stats.failed} failed, ${stats.nativeSkipped} native skipped`);
+  console.log(`  resolution: ${stats.lp} LPs, ${stats.single_asset} single-asset, ${stats.query_failed} query-failed`);
   return stats;
 }
 
@@ -308,15 +338,16 @@ async function run() {
   const tokens = assembleTokens(pools);
   console.log(`\n  → ${pools.length} pools, ${tokens.length} unique underlying tokens`);
 
-  // Honest status: discovery is OK only if the active query worked. Inactive /
-  // underlying failures degrade to 'partial' (we still have a usable catalog).
+  // Honest status: discovery is OK only if the active query worked. A bucket
+  // failure or a genuine chain-read failure (query_failed) degrades to 'partial'.
+  // Single-asset stakes are NOT failures — they're expected and resolved.
   let status = 'ok';
   if (!active.ok) status = 'error';
-  else if (inactive.stats.contractsSucceeded < inactive.stats.contractsChecked || uStats.failed > 0) status = 'partial';
+  else if (inactive.stats.contractsSucceeded < inactive.stats.contractsChecked || uStats.query_failed > 0) status = 'partial';
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.0.0-stage1',
+      version: 'token-catalog-1.0.1-stage1',
       schemaVersion: 1,
       stage: 'discovery',
       generated_at: startedAt.toISOString(),
