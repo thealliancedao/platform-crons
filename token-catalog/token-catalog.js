@@ -335,6 +335,149 @@ function assembleTokens(pools) {
 }
 
 // -----------------------------------------------------------------------------
+// STAGE 2 — IDENTITY (discovered): symbol, decimals, logo, coingecko_id, variations.
+//
+// Doctrine: the cron writes only what it DISCOVERS. The cosmos chain-registry is
+// the authoritative discovered source (canonical symbol/decimals/logo/cg_id +
+// bridge traces). SkeletonSwap backfills logos for wrapped tokens the registry
+// doesn't list. Tokens that NO feed authoritatively names are left with a null
+// discovered symbol — that is honest, and the curated override is where their
+// name legitimately lives (merged on read by the page, never written here).
+//
+// CG-verification, acquisition_class, and identity scoring build ON this in 2.1.
+// -----------------------------------------------------------------------------
+const IDENTITY_SOURCES = {
+  chain_registry: 'https://raw.githubusercontent.com/cosmos/chain-registry/master/terra2/assetlist.json',
+  skeletonswap:   'https://dex.warlock.backbonelabs.io/api/pools/phoenix-1',
+};
+
+// Fetch the identity feeds. Each is best-effort: a failure degrades THAT source
+// to null (recorded in identity_stats.sources_ok), never the whole run.
+async function fetchIdentitySources() {
+  const out = { chain_registry: null, skeletonswap: null };
+  const ok = {};
+  try { out.chain_registry = await fetchJson(IDENTITY_SOURCES.chain_registry, 'chain-registry'); }
+  catch (e) { out.chain_registry = null; }
+  ok.chain_registry = !!(out.chain_registry && Array.isArray(out.chain_registry.assets));
+  try { out.skeletonswap = await fetchJson(IDENTITY_SOURCES.skeletonswap, 'skeletonswap-pools'); }
+  catch (e) { out.skeletonswap = null; }
+  ok.skeletonswap = !!out.skeletonswap;
+  return { feeds: out, ok };
+}
+
+// Index chain-registry by denom (and cw20:addr → addr). Pulls symbol, decimals,
+// logo, coingecko_id, and bridge counterparty denoms (for 2.1 verification).
+function indexChainRegistry(assetlist) {
+  const map = {};
+  if (!assetlist || !Array.isArray(assetlist.assets)) return map;
+  for (const a of assetlist.assets) {
+    const base = a.base;
+    if (!base) continue;
+    const units = a.denom_units || [];
+    let decimals = null;
+    const disp = a.display;
+    for (const u of units) if (u.denom === disp) decimals = u.exponent;
+    if (decimals == null) decimals = units.reduce((m, u) => Math.max(m, u.exponent || 0), 0) || null;
+    const img = (a.images && a.images[0]) || {};
+    const uris = a.logo_URIs || {};
+    const rec = {
+      symbol: a.symbol || null,
+      decimals,
+      logo_url: img.png || img.svg || uris.png || uris.svg || null,
+      coingecko_id: a.coingecko_id || null,
+      bridge_traces: (a.traces || []).map(t => t.counterparty && t.counterparty.base_denom).filter(Boolean),
+    };
+    map[base] = rec;
+    if (base.startsWith('cw20:')) map[base.slice(5)] = rec;
+  }
+  return map;
+}
+
+// Index SkeletonSwap pools → denom → { symbol, decimals, logo_url }.
+function indexSkeletonSwap(pools) {
+  const map = {};
+  if (!pools) return map;
+  const arr = Array.isArray(pools) ? pools : (pools.data || pools.pools || []);
+  for (const p of arr) {
+    for (const tk of [p.token_0, p.token_1]) {
+      if (!tk || !tk.denom) continue;
+      let d = tk.denom;
+      if (d.startsWith('cw20:')) d = d.slice(5);
+      if (!map[d]) map[d] = { symbol: tk.symbol || null, decimals: tk.decimals ?? null, logo_url: tk.logo_url || null };
+    }
+  }
+  return map;
+}
+
+// Strip a trailing .suffix (wBTC.atom → wBTC) to group variations of a base asset.
+function baseSymbol(sym) {
+  if (!sym) return null;
+  return sym.replace(/\.[a-z0-9]+$/i, '');
+}
+
+function enrichIdentity(tokens, indexed) {
+  const cr = indexed.chain_registry || {};
+  const ss = indexed.skeletonswap || {};
+  let symbolsResolved = 0, logosResolved = 0;
+
+  for (const t of tokens) {
+    const d = t.denom;
+    const crRec = cr[d] || cr['cw20:' + d] || null;
+    const ssRec = ss[d] || null;
+
+    // subtype is the on-chain kind, exposed as a discovered identity field
+    t.subtype = t.kind;
+
+    // discovered identity — chain-registry authoritative; SS backfills logo only.
+    const symbol = (crRec && crRec.symbol) || null;
+    const decimals = (crRec && crRec.decimals != null) ? crRec.decimals
+                   : (ssRec && ssRec.decimals != null) ? ssRec.decimals : null;
+    const logo_url = (crRec && crRec.logo_url) || (ssRec && ssRec.logo_url) || null;
+    const coingecko_id = (crRec && crRec.coingecko_id) || null;
+
+    t.discovered = {
+      symbol,
+      display_name: symbol,        // discovered display defaults to symbol; override can refine
+      decimals,
+      logo_url,
+      coingecko_id,
+      variation_of: baseSymbol(symbol),
+    };
+    // raw per-source records, for transparency + 2.1 verification (never the price)
+    t.sources = {
+      chain_registry: crRec,
+      skeletonswap: ssRec ? { symbol: ssRec.symbol, decimals: ssRec.decimals, logo_url: ssRec.logo_url } : null,
+    };
+    // honest flags
+    t.identity_flags = [];
+    if (!symbol) t.identity_flags.push('no_discovered_symbol');      // override is its rightful home
+    if (!coingecko_id) t.identity_flags.push('no_discovered_coingecko_id');
+    // cross-source symbol disagreement (when SS also names it)
+    if (symbol && ssRec && ssRec.symbol &&
+        baseSymbol(symbol).toLowerCase() !== baseSymbol(ssRec.symbol).toLowerCase()) {
+      t.identity_flags.push(`cross_source_name_mismatch:cr=${symbol},ss=${ssRec.symbol}`);
+    }
+
+    if (symbol) symbolsResolved++;
+    if (logo_url) logosResolved++;
+  }
+
+  // variation groups: base symbol → [denoms] where >1 variant exists
+  const groups = {};
+  for (const t of tokens) {
+    const b = t.discovered.variation_of;
+    if (!b) continue;
+    (groups[b] = groups[b] || []).push(t.denom);
+  }
+  for (const t of tokens) {
+    const b = t.discovered.variation_of;
+    t.discovered.has_variations = !!(b && groups[b] && groups[b].length > 1);
+  }
+
+  return { symbolsResolved, logosResolved, total: tokens.length };
+}
+
+// -----------------------------------------------------------------------------
 // GitHub publish (standard platform helper)
 // -----------------------------------------------------------------------------
 function githubApiRequest(method, apiPath, body = null) {
@@ -383,23 +526,34 @@ async function run() {
   const tokens = assembleTokens(pools);
   console.log(`\n  → ${pools.length} pools, ${tokens.length} unique underlying tokens`);
 
+  console.log('🪪 Stage 2: resolving discovered identity...');
+  const idSrc = await fetchIdentitySources();
+  const indexed = {
+    chain_registry: indexChainRegistry(idSrc.feeds.chain_registry),
+    skeletonswap: indexSkeletonSwap(idSrc.feeds.skeletonswap),
+  };
+  const idStats = enrichIdentity(tokens, indexed);
+  console.log(`   identity: ${idStats.symbolsResolved}/${idStats.total} symbols, ${idStats.logosResolved}/${idStats.total} logos (chain-registry ${idSrc.ok.chain_registry ? 'ok' : 'FAILED'}, skeletonswap ${idSrc.ok.skeletonswap ? 'ok' : 'best-effort-miss'})`);
+
   // Honest status: discovery is OK only if the active query worked. A bucket
   // failure or a genuine chain-read failure (query_failed) degrades to 'partial'.
   // Single-asset stakes are NOT failures — they're expected and resolved.
   let status = 'ok';
   if (!active.ok) status = 'error';
   else if (inactive.stats.contractsSucceeded < inactive.stats.contractsChecked || uStats.query_failed > 0) status = 'partial';
+  // chain-registry is the authoritative identity source; if it failed, identity is degraded
+  else if (!idSrc.ok.chain_registry) status = 'partial';
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.0.2-stage1',
-      schemaVersion: 1,
-      stage: 'discovery',
+      version: 'token-catalog-1.1.0-stage2',
+      schemaVersion: 2,
+      stage: 'discovery+identity',
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
       status,
       source: 'token-catalog cron (platform-crons/token-catalog)',
-      note: 'identity (Stage 2) + pricing (Stage 3) fields are stubbed null until those stages land',
+      note: 'discovered identity (symbol/decimals/logo/coingecko_id) is captured; CG-verification, acquisition_class, and scoring land in 2.1; pricing in Stage 3. Overrides merge on read (never written here).',
     },
     counts: {
       pools_total: pools.length,
@@ -414,6 +568,12 @@ async function run() {
       buckets_succeeded: inactive.stats.contractsSucceeded,
       buckets_checked: inactive.stats.contractsChecked,
       underlyings: uStats,
+    },
+    identity_stats: {
+      sources_ok: idSrc.ok,
+      symbols_resolved: idStats.symbolsResolved,
+      logos_resolved: idStats.logosResolved,
+      total_tokens: idStats.total,
     },
     pools,
     tokens,
