@@ -584,8 +584,16 @@ function verifyAndScore(tokens, cgIndex, weights) {
 const PRICE_SOURCES = {
   tla: 'https://backend.erisprotocol.com/prices',
   coingecko: 'https://api.coingecko.com/api/v3/simple/price',
+  astroport: 'https://app.astroport.fi/api/trpc/tokens.byChain?input=%7B%22json%22%3A%7B%22chainId%22%3A%22phoenix-1%22%7D%7D',
+  skeletonswap: 'https://dex.warlock.backbonelabs.io/api/pools/phoenix-1',
 };
 const AGREE_TOLERANCE_PCT = 2.0;   // within this of the median counts as "agreeing"
+// Trusted anchor denoms for SkeletonSwap pair-implied pricing (price comes from TLA).
+const ANCHOR_DENOMS = {
+  'uluna': true,
+  'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB': true, // USDC
+  'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5': true, // USDt
+};
 
 // Query the five LST hubs for their on-chain exchange rate, in the SAME snapshot
 // window as the prices. redemption_price = base_token_price × ratio. This is the
@@ -619,14 +627,18 @@ async function fetchPrices(tokens) {
   const cgIds = [...new Set(tokens.map(t => t.discovered && t.discovered.coingecko_id).filter(Boolean))];
   const cgUrl = PRICE_SOURCES.coingecko + '?ids=' + encodeURIComponent(cgIds.join(',')) + '&vs_currencies=usd';
 
-  // tight parallel batch — one bulk call each
-  const [tlaRes, cgRes] = await Promise.allSettled([
+  // tight parallel batch — one bulk call each → coherent snapshot window
+  const [tlaRes, cgRes, astroRes, ssRes] = await Promise.allSettled([
     fetchJson(PRICE_SOURCES.tla, 'tla-prices'),
     cgIds.length ? fetchJson(cgUrl, 'coingecko-price') : Promise.resolve({}),
+    fetchJson(PRICE_SOURCES.astroport, 'astroport-tokens'),
+    fetchJson(PRICE_SOURCES.skeletonswap, 'skeletonswap-pools'),
   ]);
 
   const tla = tlaRes.status === 'fulfilled' ? tlaRes.value : null;
   const cg = cgRes.status === 'fulfilled' ? cgRes.value : null;
+  const astro = astroRes.status === 'fulfilled' ? astroRes.value : null;
+  const ss = ssRes.status === 'fulfilled' ? ssRes.value : null;
 
   // index TLA: denom -> price_usd (shape: denom -> { price_usd, decimals, display, coingecko_id? })
   const tlaByDenom = {};
@@ -644,11 +656,64 @@ async function fetchPrices(tokens) {
       if (p != null && isFinite(Number(p))) cgById[id] = Number(p);
     }
   }
+  // Astroport tokens.byChain: token/denom -> priceUsd (dig the token map from the tRPC envelope)
+  const astroByDenom = {};
+  const astroMap = findTokenMap(astro);
+  if (astroMap) {
+    for (const [k, v] of Object.entries(astroMap)) {
+      const p = v && v.priceUsd;
+      const denom = (v && v.token) || k;
+      if (p != null && isFinite(Number(p)) && Number(p) > 0) astroByDenom[denom] = Number(p);
+    }
+  }
+  // SkeletonSwap: anchor-based pair-implied price per token (skip stableswap pools)
+  const ssByDenom = buildSkeletonSwapPrices(ss, tlaByDenom);
+
   return {
     captured_at,
-    sources_ok: { tla: !!tla, coingecko: cgIds.length ? !!cg : null },
-    tlaByDenom, cgById,
+    sources_ok: {
+      tla: !!tla,
+      coingecko: cgIds.length ? !!cg : null,
+      astroport: !!astroMap,
+      skeletonswap: !!ss,
+    },
+    tlaByDenom, cgById, astroByDenom, ssByDenom,
   };
+}
+
+// Dig the token map out of Astroport's tRPC envelope (result.data.json or similar).
+function findTokenMap(x, depth = 0) {
+  if (depth > 8 || x == null) return null;
+  if (Array.isArray(x)) { for (const v of x) { const r = findTokenMap(v, depth + 1); if (r) return r; } return null; }
+  if (typeof x === 'object') {
+    const vals = Object.values(x).filter(v => v && typeof v === 'object' && 'priceUsd' in v);
+    if (vals.length > 3) return x;
+    for (const v of Object.values(x)) { const r = findTokenMap(v, depth + 1); if (r) return r; }
+  }
+  return null;
+}
+
+// SkeletonSwap warlock pools → token denom -> USD via anchor side.
+// price_token = (reserve_anchor_human / reserve_token_human) × anchor_price.
+// Constant-product only; stableswap reserve ratios ≠ price ratio, so skip them.
+function buildSkeletonSwapPrices(pools, tlaByDenom) {
+  const out = {};
+  if (!pools) return out;
+  const arr = Array.isArray(pools) ? pools : (pools.data || pools.pools || []);
+  for (const p of arr) {
+    const ptype = (p.pool_type || p.type || '').toString().toLowerCase();
+    if (ptype.includes('stable')) continue;
+    const t0 = p.token_0 || {}, t1 = p.token_1 || {};
+    const r0 = Number(p.reserve_0), r1 = Number(p.reserve_1);
+    if (!r0 || !r1) continue;
+    const norm = d => (d && d.startsWith('cw20:')) ? d.slice(5) : d;
+    const d0 = norm(t0.denom), d1 = norm(t1.denom);
+    const dec0 = t0.decimals ?? 6, dec1 = t1.decimals ?? 6;
+    const h0 = r0 / 10 ** dec0, h1 = r1 / 10 ** dec1;
+    if (ANCHOR_DENOMS[d1] && tlaByDenom[d1] && h0) out[d0] = out[d0] ?? (h1 / h0) * tlaByDenom[d1];
+    else if (ANCHOR_DENOMS[d0] && tlaByDenom[d0] && h1) out[d1] = out[d1] ?? (h0 / h1) * tlaByDenom[d0];
+  }
+  return out;
 }
 
 function median(nums) {
@@ -694,6 +759,10 @@ function attachPricesAndGrade(tokens, priced, lstData, weights) {
     const sourceUsd = {};
     sourceUsd.tla = { usd: tlaUsd != null ? tlaUsd : null, captured_at: priced.captured_at, status: tlaUsd != null ? 'ok' : 'no_data' };
     sourceUsd.coingecko = { usd: cgUsd != null ? cgUsd : null, captured_at: priced.captured_at, status: cgUsd != null ? 'ok' : (cgId ? 'no_data' : 'no_id') };
+    const astroUsd = priced.astroByDenom[denom];
+    const ssUsd = priced.ssByDenom[denom];
+    sourceUsd.astroport = { usd: astroUsd != null ? astroUsd : null, captured_at: priced.captured_at, status: astroUsd != null ? 'ok' : 'no_data' };
+    sourceUsd.skeletonswap = { usd: ssUsd != null ? ssUsd : null, pair_implied: ssUsd != null ? true : undefined, captured_at: priced.captured_at, status: ssUsd != null ? 'ok' : 'no_data' };
 
     // ---- LST redemption cross-check (on-chain hub ratio × base price) ----
     // Doctrine (proven vs CoinGecko in the old engine): the HUB-RATIO redemption
@@ -822,7 +891,7 @@ async function run() {
   console.log('💲 Stage 3: pricing (snapshot-coherent) + LST ratios + composite grade...');
   const [priced, lstData] = await Promise.all([fetchPrices(tokens), fetchLstRatios()]);
   const priceStats = attachPricesAndGrade(tokens, priced, lstData, weights);
-  console.log(`   pricing: ${priceStats.pricedCount}/${tokens.length} priced (tla ${priced.sources_ok.tla ? 'ok' : 'FAILED'}, coingecko ${priced.sources_ok.coingecko === null ? 'n/a' : priced.sources_ok.coingecko ? 'ok' : 'FAILED'})`);
+  console.log(`   pricing: ${priceStats.pricedCount}/${tokens.length} priced (tla ${priced.sources_ok.tla ? 'ok' : 'FAIL'}, cg ${priced.sources_ok.coingecko === null ? 'n/a' : priced.sources_ok.coingecko ? 'ok' : 'FAIL'}, astro ${priced.sources_ok.astroport ? 'ok' : 'FAIL'}, ss ${priced.sources_ok.skeletonswap ? 'ok' : 'FAIL'})`);
   console.log(`   lst ratios: ${lstData.ok}/${lstData.total} hubs (${Object.keys(lstData.ratios).join(', ') || 'none'})`);
 
   // Honest status: discovery is OK only if the active query worked. A bucket
@@ -838,14 +907,14 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.3.0-stage3',
+      version: 'token-catalog-1.4.0-stage3.1',
       schemaVersion: 3,
-      stage: 'discovery+identity+verification+pricing',
+      stage: 'discovery+identity+verification+pricing+dex',
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
       status,
       source: 'token-catalog cron (platform-crons/token-catalog)',
-      note: 'discovered identity + coingecko verification + snapshot-coherent pricing (TLA + CoinGecko) + composite grade. Astroport/SkeletonSwap DEX divergence joins in 3.1. Overrides merge on read (never written here).',
+      note: 'four-source snapshot-coherent pricing (TLA, CoinGecko, Astroport, SkeletonSwap pair-implied) + LST redemption cross-check + composite grade. SkeletonSwap prices are anchor-derived from constant-product pools (stableswap skipped). Overrides merge on read.',
     },
     counts: {
       pools_total: pools.length,

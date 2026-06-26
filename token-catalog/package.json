@@ -1,6 +1,6 @@
 {
   "name": "token-catalog",
-  "version": "1.3.0-stage3",
+  "version": "1.4.0-stage3.1",
   "description": "TLA WORTH layer — pool/token discovery (Stage 1), identity + pricing to follow. Writes tla-core/token-catalog/",
   "main": "token-catalog.js",
   "scripts": { "start": "node token-catalog.js" },
