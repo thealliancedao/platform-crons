@@ -88,6 +88,10 @@ Without `GITHUB_TOKEN` it writes local `token-catalog.json` + `heartbeat.json` o
 
 ## Recent changes
 
+- **1.0.1-stage1** — single-asset handling. Stakes with no two-sided pair
+  (xASTRO, wBTC.creda.a, ampCAPA, …) now resolve as `pool_kind:'single_asset'` with
+  underlying = the staked token, and no longer count as resolution failures. Status
+  degrades to `partial` only on genuine chain-read failures (`query_failed`).
 - **1.0.0-stage1** — discovery. Active pools (gauge `distributions`) + inactive
   (`whitelisted_asset_details` per bucket, active+below_threshold+dewhitelisted) +
   underlying resolution (`minter`→`pair`). Forward-only snapshots shape. Identity
