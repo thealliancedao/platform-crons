@@ -64,6 +64,43 @@ const ARB_LUNA_HUB = {
     role: 'Eris arbLUNA hub (zLUNA/arbLUNA ratio for valuation)',
 };
 
+// ── LST exchange-rate hubs (token-catalog Stage 3 redemption pricing) ────────
+// Each LST has an on-chain hub whose exchange rate gives redemption value:
+//   redemption_price = base_token_price_usd × ratio
+// Proven query shapes (lifted from network-and-prices, verified on phoenix-1):
+//   kind 'exchange_rates_array' → data.exchange_rates[0][1]   (ampLUNA)
+//   kind 'state'                → data.exchange_rate          (all others)
+// All five live on phoenix-1, queryable via the standard LCD smart endpoint.
+// NOTE: xASTRO is intentionally NOT here — its real hub is on Neutron (cross-chain)
+//   and the reward isn't worth the squeeze for one bridged single-asset stake.
+//   xASTRO stays price-only (TLA + CoinGecko) with no redemption cross-check.
+const LST_HUBS = {
+    ampLUNA: { hub: 'terra10788fkzah89xrdm27zkj5yvhj9x3494lxawzm5qq3vvxcqz2yzaqyd3enk',
+        lstDenom: 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct',
+        base: 'LUNA', baseDenom: 'uluna',
+        query: { exchange_rates: {} }, kind: 'exchange_rates_array' },
+    arbLUNA: { hub: 'terra1r9gls56glvuc4jedsvc3uwh6vj95mqm9efc7hnweqxa2nlme5cyqxygy5m',
+        lstDenom: 'terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490',
+        base: 'LUNA', baseDenom: 'uluna',
+        query: { state: {} }, kind: 'state' },
+    ampROAR: { hub: 'terra1vklefn7n6cchn0u962w3gaszr4vf52wjvd4y95t2sydwpmpdtszsqvk9wy',
+        lstDenom: 'factory/terra1vklefn7n6cchn0u962w3gaszr4vf52wjvd4y95t2sydwpmpdtszsqvk9wy/ampROAR',
+        base: 'ROAR', baseDenom: 'terra1lxx40s29qvkrcj8fsa3yzyehy7w50umdvvnls2r830rys6lu2zns63eelv',
+        query: { state: {} }, kind: 'state' },
+    ampCAPA: { hub: 'terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y',
+        lstDenom: 'factory/terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y/ampCAPA',
+        base: 'CAPA', baseDenom: 'terra1t4p3u8khpd7f8qzurwyafxt648dya6mp6vur3vaapswt6m24gkuqrfdhar',
+        query: { state: {} }, kind: 'state' },
+    bLUNA: { hub: 'terra1l2nd99yze5fszmhl5svyh5fky9wm4nz4etlgnztfu4e8809gd52q04n3ea',
+        lstDenom: 'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml',
+        base: 'LUNA', baseDenom: 'uluna',
+        query: { state: {} }, kind: 'state' },
+};
+// Within this % gap between market price and redemption price, the two agree
+// (clean staking derivative). Beyond it, they genuinely diverge (strategy LST
+// like arbLUNA — discovered 2026-06-14 running ~14% off): show both, no false alarm.
+const LST_DIVERGENCE_FLAG_PCT = 2;
+
 // ── TLA-relevant token CW20s (INTERIM) ──────────────────────────────────────
 // NOTE: token identity belongs to the token-catalog domain (the WORTH layer).
 // These live here only so no address is hardcoded today. When token-catalog is
@@ -82,5 +119,7 @@ module.exports = {
     BUCKETS,
     DAO_MAIN_WALLET,
     ARB_LUNA_HUB,
+    LST_HUBS,
+    LST_DIVERGENCE_FLAG_PCT,
     TLA_TOKENS,
 };
