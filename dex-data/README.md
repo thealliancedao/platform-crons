@@ -101,3 +101,13 @@ fee_apr, lp_total_supply, raw{}`.
   min+cv, capital-efficiency ratio, gap honesty). Neutral notable-window capture.
   Per-DEX trust_start. Mined the proven discovery (pools.getAll + gauge
   cross-reference) from the old astroport cron; fixed the /42 averaging bug.
+
+## Fail honest, never fake (SkeletonSwap case)
+
+If a DEX has no trustworthy source for a metric, the pool shows **null** for that
+metric — never a fabricated or stale-sourced number to make pools look votable.
+SkeletonSwap has no trustworthy volume source, so SS volume is honestly null. A
+pool too thin to verify can't be confidently graded or voted on — which is
+correct pressure on the DEX/project to expose proper data, not on us to subsidize
+its absence. A null is a feature: it says "unverifiable," which is more
+trustworthy than any best-effort guess and can't be gamed.
