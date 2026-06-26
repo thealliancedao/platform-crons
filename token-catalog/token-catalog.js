@@ -696,6 +696,10 @@ function findTokenMap(x, depth = 0) {
 // SkeletonSwap warlock pools → token denom -> USD via anchor side.
 // price_token = (reserve_anchor_human / reserve_token_human) × anchor_price.
 // Constant-product only; stableswap reserve ratios ≠ price ratio, so skip them.
+// LIQUIDITY FLOOR: a near-empty pool (e.g. 3 LUNA + a dust counter-reserve) will
+// still produce a number, but it's noise. Skip pools below SS_MIN_TVL_USD so dust
+// pools can't manufacture fake prices. (Lesson from the old engine's thin-pool scars.)
+const SS_MIN_TVL_USD = 500;
 function buildSkeletonSwapPrices(pools, tlaByDenom) {
   const out = {};
   if (!pools) return out;
@@ -703,6 +707,8 @@ function buildSkeletonSwapPrices(pools, tlaByDenom) {
   for (const p of arr) {
     const ptype = (p.pool_type || p.type || '').toString().toLowerCase();
     if (ptype.includes('stable')) continue;
+    const tvl = Number(p.tvl_usd);
+    if (!isFinite(tvl) || tvl < SS_MIN_TVL_USD) continue;   // skip dust pools
     const t0 = p.token_0 || {}, t1 = p.token_1 || {};
     const r0 = Number(p.reserve_0), r1 = Number(p.reserve_1);
     if (!r0 || !r1) continue;
@@ -907,7 +913,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.4.0-stage3.1',
+      version: 'token-catalog-1.4.1-stage3.1',
       schemaVersion: 3,
       stage: 'discovery+identity+verification+pricing+dex',
       generated_at: startedAt.toISOString(),
