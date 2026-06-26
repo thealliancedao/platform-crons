@@ -478,6 +478,92 @@ function enrichIdentity(tokens, indexed) {
 }
 
 // -----------------------------------------------------------------------------
+// STAGE 2.1 — VERIFICATION + IDENTITY SCORE
+//
+// Verifies each token's DISCOVERED coingecko_id against CoinGecko's own terra-2
+// index (built by the manual GitHub Action, committed to tla-core/curated). Then
+// computes the identity sub-score — honest about provenance:
+//
+//   cg_confirmed      CoinGecko's terra-2 index maps this cw20 address → the same
+//                     id we discovered. Strongest: CG itself confirms it.
+//   registry_assigned The cosmos chain-registry assigns this id, but CG doesn't
+//                     index the token on terra-2 (normal for IBC/native — CG
+//                     indexes those on their origin chain). Trustworthy source,
+//                     not CG-self-confirmed. (Full bridge-origin verification is a
+//                     future step needing CG's multi-chain index — see spec.)
+//   mismatch          CG's index has a DIFFERENT id for this address. Red flag.
+//   no_mapping        No coingecko_id discovered at all.
+//
+// Identity score (0–100) composes: cg state + symbol presence + logo presence +
+// cross-source name agreement. This is the IDENTITY sub-score only; the composite
+// overall grade (price 0.75 / identity 0.25) is computed once pricing (Stage 3)
+// lands, using the editable scoring_weights config.
+// -----------------------------------------------------------------------------
+const CG_INDEX_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/coingecko-terra2-index.json';
+
+async function fetchCgIndex() {
+  try {
+    const idx = await fetchJson(CG_INDEX_URL, 'coingecko-index');
+    if (idx && idx.by_address) {
+      const m = {};
+      for (const [a, id] of Object.entries(idx.by_address)) m[a.toLowerCase()] = id;
+      return { byAddress: m, meta: idx._meta || null, ok: true };
+    }
+  } catch (e) { /* index missing/unreachable — verification degrades, not fatal */ }
+  return { byAddress: {}, meta: null, ok: false };
+}
+
+function verifyAndScore(tokens, cgIndex, weights) {
+  const ba = cgIndex.byAddress || {};
+  let confirmed = 0, mismatched = 0;
+
+  for (const t of tokens) {
+    const dsc = t.discovered || {};
+    const claimed = dsc.coingecko_id || null;
+    const denom = t.denom;
+    const addr = denom.startsWith('terra1') ? denom.toLowerCase() : null;  // cw20 verifies by contract address
+
+    let match;
+    if (!claimed) {
+      match = 'no_mapping';
+    } else if (addr && ba[addr]) {
+      match = (ba[addr] === claimed) ? 'cg_confirmed' : 'mismatch';
+      if (match === 'cg_confirmed') confirmed++; else mismatched++;
+    } else {
+      // claimed id present, but not a cw20 confirmable on terra-2 → trust the
+      // discovery source (chain-registry) but mark it as registry-assigned.
+      match = 'registry_assigned';
+    }
+
+    // ---- identity sub-score ----
+    let score = 100;
+    const inputs = {};
+    if (match === 'cg_confirmed')        { inputs.coingecko = 0;   }
+    else if (match === 'registry_assigned') { score -= 5;  inputs.coingecko = -5; }
+    else if (match === 'mismatch')       { score -= 30; inputs.coingecko = -30; }
+    else /* no_mapping */                { score -= 25; inputs.coingecko = -25; }
+
+    if (!dsc.symbol)   { score -= 15; inputs.no_discovered_symbol = -15; }  // identity rests entirely on override
+    if (!dsc.logo_url) { score -= 10; inputs.no_logo = -10; }
+    if ((t.identity_flags || []).some(f => f.startsWith('cross_source_name_mismatch'))) {
+      score -= 15; inputs.cross_source_name_mismatch = -15;
+    }
+    score = Math.max(0, Math.min(100, score));
+
+    t.scoring = {
+      identity: { score, match, inputs },
+      price: null,                 // Stage 3
+      overall: null,               // computed when price lands, via weights
+      weights: { price: weights.price, identity: weights.identity },
+    };
+    // surface the match in flags too (descriptive)
+    if (match === 'mismatch') t.identity_flags.push(`coingecko_mismatch:claimed=${claimed},cg_index=${ba[addr]}`);
+  }
+
+  return { confirmed, mismatched, indexOk: cgIndex.ok };
+}
+
+// -----------------------------------------------------------------------------
 // GitHub publish (standard platform helper)
 // -----------------------------------------------------------------------------
 function githubApiRequest(method, apiPath, body = null) {
@@ -535,6 +621,12 @@ async function run() {
   const idStats = enrichIdentity(tokens, indexed);
   console.log(`   identity: ${idStats.symbolsResolved}/${idStats.total} symbols, ${idStats.logosResolved}/${idStats.total} logos (chain-registry ${idSrc.ok.chain_registry ? 'ok' : 'FAILED'}, skeletonswap ${idSrc.ok.skeletonswap ? 'ok' : 'best-effort-miss'})`);
 
+  console.log('🔐 Stage 2.1: verifying coingecko ids + scoring identity...');
+  const weights = { price: 0.75, identity: 0.25 };  // default; editable via curated/scoring_weights.json (read by tools)
+  const cgIndex = await fetchCgIndex();
+  const verifyStats = verifyAndScore(tokens, cgIndex, weights);
+  console.log(`   verification: ${verifyStats.confirmed} cg-confirmed, ${verifyStats.mismatched} mismatch (cg index ${verifyStats.indexOk ? 'ok' : 'MISSING — run the CoinGecko Action'})`);
+
   // Honest status: discovery is OK only if the active query worked. A bucket
   // failure or a genuine chain-read failure (query_failed) degrades to 'partial'.
   // Single-asset stakes are NOT failures — they're expected and resolved.
@@ -546,14 +638,14 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.1.0-stage2',
+      version: 'token-catalog-1.2.0-stage2.1',
       schemaVersion: 2,
-      stage: 'discovery+identity',
+      stage: 'discovery+identity+verification',
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
       status,
       source: 'token-catalog cron (platform-crons/token-catalog)',
-      note: 'discovered identity (symbol/decimals/logo/coingecko_id) is captured; CG-verification, acquisition_class, and scoring land in 2.1; pricing in Stage 3. Overrides merge on read (never written here).',
+      note: 'discovered identity + coingecko verification + identity sub-score captured. Pricing (Stage 3) + composite overall grade land next. Overrides merge on read (never written here).',
     },
     counts: {
       pools_total: pools.length,
@@ -574,6 +666,9 @@ async function run() {
       symbols_resolved: idStats.symbolsResolved,
       logos_resolved: idStats.logosResolved,
       total_tokens: idStats.total,
+      cg_index_ok: verifyStats.indexOk,
+      cg_confirmed: verifyStats.confirmed,
+      cg_mismatch: verifyStats.mismatched,
     },
     pools,
     tokens,
