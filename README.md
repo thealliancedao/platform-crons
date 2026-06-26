@@ -10,6 +10,17 @@ not new code.
 - `nft-<tenant>/` — per-collection NFT data
 - `dao-<tenant>/` — per-DAO governance & treasury data
 
+## Crons
+
+| Folder | Layer | Writes | Status |
+|--------|-------|--------|--------|
+| `address-catalog/` | WHO — known addresses | `tla-core/catalog/` | ✅ live |
+| `token-catalog/` | WORTH — pools, tokens, identity, scoring | `tla-core/token-catalog/` | ✅ live (through Stage 2.1; pricing next) |
+
+Each cron folder is self-contained (`README.md` + `<cron>.js` + `package.json`) and
+requires only ACTIVE `lib/` files + `config/contracts.js`. New crons are prefixed
+`org-` on Render; legacy personal-account crons are the deletion pile.
+
 ## Conventions
 - One folder per domain cron; output follows the `module / product / files`
   layout (see `tla-core`).
