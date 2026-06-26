@@ -57,6 +57,9 @@ const {
   parallelMap,
   currentEpochInfo,
   BATCH_CONCURRENCY,
+  fetchJson,
+  TERRA_LCD_PRIMARY,
+  TERRA_LCD_FALLBACK,
 } = require('../lib/capture-engine.js');
 
 // Single source of truth for structural addresses (see config/contracts.js).
@@ -69,6 +72,43 @@ const RUN_EVERY_HOURS = Number(process.env.RUN_EVERY_HOURS || 6); // pricing wan
 
 // Bucket name -> staking contract (from config). The gauge returns bucket NAMES.
 const BUCKET_CONTRACTS = C.STAKING_BUCKETS;
+
+// -----------------------------------------------------------------------------
+// cw2 contract_info via raw storage (LCD /raw/). Astroport/WW pair contracts
+// reject {contract_info:{}} as a smart query but DO store {contract,version} at
+// the standard cw2 raw key. Lifted verbatim from tla-registry (Rev 0.15 fix).
+// Gives us the DEX label (Astroport vs Skeleton Swap) + version — what makes two
+// same-pair pools on different DEXes distinguishable.
+// -----------------------------------------------------------------------------
+async function queryContractRaw(contractAddr, storageKey) {
+  const keyB64 = Buffer.from(storageKey, 'utf-8').toString('base64');
+  const path = `/cosmwasm/wasm/v1/contract/${contractAddr}/raw/${keyB64}`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const r = await fetchJson(TERRA_LCD_PRIMARY + path, `cw2 ${contractAddr.slice(0,10)}`);
+      if (!r?.data) return null;
+      try { return JSON.parse(Buffer.from(r.data, 'base64').toString('utf-8')); } catch { return null; }
+    } catch { if (attempt < 2) await new Promise(res => setTimeout(res, 200 + Math.random() * 300)); }
+  }
+  try {
+    const r = await fetchJson(TERRA_LCD_FALLBACK + path, `cw2 ${contractAddr.slice(0,10)} fb`);
+    if (!r?.data) return null;
+    try { return JSON.parse(Buffer.from(r.data, 'base64').toString('utf-8')); } catch { return null; }
+  } catch { return null; }
+}
+
+// Map a cw2 contract name → { contract, version, dex }.
+function dexFromContract(cw2) {
+  let contract = cw2?.contract || null;
+  if (contract && contract.startsWith('crates.io:')) contract = contract.slice(10);
+  let dex = null;
+  if (contract) {
+    if (contract.startsWith('white_whale')) dex = 'Skeleton Swap';
+    else if (contract.startsWith('astroport')) dex = 'Astroport';
+    // non-DEX contracts (Eris vaults etc.) stay dex:null but keep contract/version
+  }
+  return { contract, version: cw2?.version || null, dex };
+}
 
 // -----------------------------------------------------------------------------
 // STAGE 1a — ACTIVE pools: gauge `distributions` (active set + vote %).
@@ -259,7 +299,12 @@ async function resolveUnderlyings(pools) {
     pool.underlyings = u;
     pool.pool_kind = 'lp';
     pool.resolution = 'lp';
-    pool.architecture = { pair_address: pairAddr, pair_type: pairType };  // contract/version/dex → Stage 2 enrichment
+    // Architecture: pair_type from pair{}, + DEX/contract/version from cw2 raw read.
+    const cw2 = await queryContractRaw(pairAddr, 'contract_info');
+    const arch = dexFromContract(cw2);
+    // Astroport's concentrated pairs report pair_type 'custom' — resolve via contract name.
+    if (pairType === 'custom' && arch.contract && arch.contract.includes('concentrated')) pairType = 'concentrated';
+    pool.architecture = { pair_address: pairAddr, pair_type: pairType, ...arch };
     stats.lp++;
   }, BATCH_CONCURRENCY);
 
@@ -347,7 +392,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.0.1-stage1',
+      version: 'token-catalog-1.0.2-stage1',
       schemaVersion: 1,
       stage: 'discovery',
       generated_at: startedAt.toISOString(),
