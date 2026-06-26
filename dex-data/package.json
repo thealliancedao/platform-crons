@@ -1,0 +1,8 @@
+{
+  "name": "dex-data",
+  "version": "1.0.0",
+  "description": "TLA Stats DEX data capture — per-DEX forward-capture for the trading-quality grading system",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "license": "MIT"
+}
