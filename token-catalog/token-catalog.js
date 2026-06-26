@@ -696,25 +696,32 @@ function attachPricesAndGrade(tokens, priced, lstData, weights) {
     sourceUsd.coingecko = { usd: cgUsd != null ? cgUsd : null, captured_at: priced.captured_at, status: cgUsd != null ? 'ok' : (cgId ? 'no_data' : 'no_id') };
 
     // ---- LST redemption cross-check (on-chain hub ratio × base price) ----
+    // Doctrine (proven vs CoinGecko in the old engine): the HUB-RATIO redemption
+    // price is the ROBUST, accurate number. The market/TLA price is a weaker read
+    // that can run above/below it (thin pools, strategy LSTs, timing). We surface
+    // BOTH and the gap, describe it neutrally, and only flag LARGE gaps (>10%) for
+    // human review — never auto-alarm on normal drift.
     const lr = ratioByDenom[denom];
     if (lr) {
       const basePrice = priced.tlaByDenom[lr.base_denom];
       const redemption = (basePrice != null && isFinite(basePrice)) ? basePrice * lr.ratio : null;
-      let divergence_pct = null;
+      let gap_pct = null;
       if (redemption != null && tlaUsd != null && redemption > 0) {
-        divergence_pct = Number((Math.abs(tlaUsd - redemption) / redemption * 100).toFixed(3));
+        gap_pct = Number(((tlaUsd - redemption) / redemption * 100).toFixed(3));  // +: market above redemption
       }
+      const absGap = gap_pct != null ? Math.abs(gap_pct) : null;
       t.lst = {
         is_lst: true,
         hub_ratio: lr.ratio,
         base: lr.base,
-        redemption_price: redemption,
-        market_price: tlaUsd != null ? tlaUsd : null,
-        divergence_pct,
-        diverges: divergence_pct != null ? divergence_pct > C.LST_DIVERGENCE_FLAG_PCT : null,
-        note: divergence_pct == null ? 'redemption needs base price'
-            : divergence_pct > C.LST_DIVERGENCE_FLAG_PCT ? 'market diverges from redemption (strategy LST or thin pool)'
-            : 'market ≈ redemption (clean staking derivative)',
+        redemption_price: redemption,     // robust/primary (LUNA × hub ratio)
+        market_price: tlaUsd != null ? tlaUsd : null,  // weaker cross-check (TLA feed)
+        market_vs_redemption_pct: gap_pct,             // + = market above redemption value
+        review_flag: absGap != null ? absGap > C.LST_REVIEW_FLAG_PCT : null,
+        note: gap_pct == null ? 'redemption needs base price'
+            : absGap <= C.LST_DIVERGENCE_FLAG_PCT ? 'market ≈ redemption value'
+            : absGap > C.LST_REVIEW_FLAG_PCT ? 'market sits well off redemption — review (thin pool, depeg, or timing)'
+            : `market sits ${gap_pct > 0 ? 'above' : 'below'} redemption value`,
         captured_at: lr.captured_at,
       };
     }
