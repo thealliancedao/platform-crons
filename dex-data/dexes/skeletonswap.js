@@ -1,83 +1,140 @@
 // =============================================================================
 // dex-data / dexes / skeletonswap.js
 // =============================================================================
-// Self-contained SkeletonSwap adapter. Data comes from the warlock backend
-// (BackBone Labs), which is the same source token-catalog uses for SS pool
-// reserves. warlock returns pools with token_0/token_1, reserves, decimals,
-// and tvl_usd.
+// Self-contained SkeletonSwap adapter — TRUSTWORTHY-SOURCE-ONLY.
 //
-// TRUST START — IMPORTANT: SkeletonSwap data is only trustworthy AFTER the
-// warlock fix. Before that it went stale / unreliable. The grader must NOT
-// include SS data from before `trust_start`. (SPEC-grading-and-dex-data.md §6.)
-// Set the exact fix date below once confirmed; until then it is declared so the
-// grader excludes the suspect pre-fix window.
+// IMPORTANT lesson (confirmed against the proven old SS cron): the warlock bulk
+// endpoint (dex.warlock.backbonelabs.io/api/pools/phoenix-1) is the STALE source
+// the old cron deliberately moved OFF — it is the reason `trust_start` exists.
+// We do NOT use it. The proven, trustworthy path is:
 //
-// Volume: warlock exposes trailing volume per pool where available; we capture
-// it per snapshot and aggregate (sum) in lib/aggregate.js — same doctrine as
-// Astroport. Reserves enable depth/slippage simulation downstream.
+//   1. METADATA from pools_list.json (pool_id/name, swap_address, pool_assets[]
+//      with symbol+decimals).
+//   2. RESERVES queried DIRECTLY from chain per pool: {"pool":{}} smart query ->
+//      data.assets[0].amount / [1].amount / total_share (raw chain integers).
+//
+// HONEST NULLS — fail honest, never fake:
+//   - VOLUME: SkeletonSwap has NO trustworthy volume source (the old cron writes
+//     it empty with the note "no trustworthy source"). We null it. We do NOT pull
+//     warlock's unreliable volume to make pools look votable. A pool with no
+//     trustworthy data shows nothing rather than a fabricated number — which is
+//     correct pressure on the DEX/project to expose proper data, not on us to
+//     subsidize its absence.
+//   - TVL: left null at capture. Pricing is token-catalog's domain; TVL is
+//     computed downstream by joining these trustworthy chain reserves to
+//     token-catalog's trustworthy prices. We never invent a price here.
+//
+// What we DO capture (all trustworthy, from chain): reserves, total_share,
+// pool identity + decimals. That's enough for depth/liquidity once joined to
+// prices; volume stays honestly unavailable.
 // =============================================================================
 
-const { fetchJsonWithRetry } = require('../lib/fetch');
+const { fetchJsonWithRetry, queryContract } = require('../lib/fetch');
 const { normalizePool } = require('./_contract');
 
-const WARLOCK_POOLS_URL = 'https://dex.warlock.backbonelabs.io/api/pools/phoenix-1';
+const POOLS_LIST_URL = 'https://skeletonswap.backbonelabs.io/mainnet/phoenix-1/pools_list.json';
 
-// The date from which SkeletonSwap data is trustworthy (post-warlock-fix).
-// TODO(confirm): set to the exact warlock-fix date. Using a conservative
-// placeholder; the grader reads this to exclude pre-trust SS history.
-const SS_TRUST_START = '2026-04-16'; // pre-this SS volume history is suspect (old cron note)
+// SkeletonSwap data is only trustworthy AFTER the warlock-era fix. The grader
+// excludes pre-trust history. (Set to the confirmed fix date.)
+const SS_TRUST_START = '2026-04-16';
 
-async function fetchWarlockPools() {
-  const data = await fetchJsonWithRetry(WARLOCK_POOLS_URL, 'skeletonswap warlock pools');
-  const arr = Array.isArray(data) ? data : (data.data || data.pools || []);
-  if (!Array.isArray(arr)) throw new Error('warlock pools malformed');
+// Bounded concurrency for per-pool chain queries (publicnode LCD; keep modest).
+const POOL_QUERY_CONCURRENCY = 4;
+
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const i = idx++;
+      if (i >= items.length) return;
+      try { results[i] = { ok: true, value: await fn(items[i], i) }; }
+      catch (e) { results[i] = { ok: false, error: e }; }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function fetchPoolsList() {
+  const data = await fetchJsonWithRetry(POOLS_LIST_URL, 'skeletonswap pools_list');
+  // pools_list.json is an array of pool metadata, or wraps it under a key.
+  const arr = Array.isArray(data) ? data : (data.pools || data.data || []);
+  if (!Array.isArray(arr) || arr.length === 0) throw new Error('pools_list.json empty/malformed');
   return arr;
 }
 
-function normName(t0, t1) {
-  const a = (t0 && t0.symbol) || '?';
-  const b = (t1 && t1.symbol) || '?';
-  // LUNA-first where applicable, mirroring Astroport canonicalization.
-  if (b === 'LUNA') return `LUNA-${a}`;
-  return `${a}-${b}`;
+// Reserves DIRECT from chain (the trustworthy source). {"pool":{}} ->
+// data.assets[].amount + total_share, raw chain integers (no decimal scaling).
+async function queryReserves(swapAddress) {
+  const d = await queryContract(swapAddress, { pool: {} });
+  if (!d || !Array.isArray(d.assets) || d.assets.length < 2) {
+    throw new Error(`unexpected pool response for ${swapAddress}`);
+  }
+  return {
+    reserve_0: d.assets[0].amount != null ? String(d.assets[0].amount) : null,
+    reserve_1: d.assets[1].amount != null ? String(d.assets[1].amount) : null,
+    total_share: d.total_share != null ? String(d.total_share) : null,
+  };
+}
+
+function poolName(meta) {
+  // pool_id is the canonical SS name (e.g. "LUNA-ampLUNA"). Keep as-is.
+  return meta.pool_id || meta.pool_name || '?';
 }
 
 async function capture() {
   const captured_at = new Date().toISOString();
-  const pools = await fetchWarlockPools();
+  const metas = await fetchPoolsList();
+
+  // Query reserves from chain for every pool (bounded concurrency).
+  const reserveResults = await mapWithConcurrency(
+    metas, POOL_QUERY_CONCURRENCY, (m) => queryReserves(m.swap_address)
+  );
 
   const normalized = [];
-  for (const p of pools) {
-    const t0 = p.token_0 || {};
-    const t1 = p.token_1 || {};
-    const denom = (d) => (d && String(d).startsWith('cw20:') ? String(d).slice(5) : d);
+  let chainOk = 0, chainFail = 0;
+  for (let i = 0; i < metas.length; i++) {
+    const meta = metas[i];
+    const res = reserveResults[i];
+    const assets = Array.isArray(meta.pool_assets) ? meta.pool_assets : [];
+
+    let reserve_0 = null, reserve_1 = null, total_share = null;
+    let chain_status = 'failed';
+    if (res.ok) {
+      ({ reserve_0, reserve_1, total_share } = res.value);
+      chain_status = 'ok';
+      chainOk++;
+    } else {
+      chainFail++;
+    }
 
     normalized.push(
       normalizePool({
         dex: 'skeletonswap',
-        pool_address: p.pool_address || p.address || p.contract || '?',
-        pool_name: normName(t0, t1),
-        pool_type: (p.pool_type || p.type || null),
-        // SS gauge-bucket assignment (TLA relevance) is resolved by cross-DEX
-        // join downstream where needed; warlock itself doesn't carry the TLA
-        // bucket. Left null here; tla_relevant determined by the orchestrator's
-        // bucket join if/when wired. Capture the pool regardless.
-        bucket: null,
+        pool_address: meta.swap_address || '?',
+        pool_name: poolName(meta),
+        pool_type: meta.pool_type || null, // null if pools_list doesn't carry it
+        bucket: null,            // TLA-relevance join is downstream
         tla_relevant: false,
-        assets: [
-          { symbol: t0.symbol || null, denom: denom(t0.denom), amount_raw: p.reserve_0 != null ? String(p.reserve_0) : null, decimals: t0.decimals ?? null, price_usd: null },
-          { symbol: t1.symbol || null, denom: denom(t1.denom), amount_raw: p.reserve_1 != null ? String(p.reserve_1) : null, decimals: t1.decimals ?? null, price_usd: null },
-        ],
-        tvl_usd: p.tvl_usd != null ? Number(p.tvl_usd) : null,
-        volume_24h_usd: p.volume_24h_usd != null ? Number(p.volume_24h_usd) : (p.volume_24h != null ? Number(p.volume_24h) : null),
-        volume_7d_usd: p.volume_7d_usd != null ? Number(p.volume_7d_usd) : null,
-        fees_24h_usd: p.fees_24h_usd != null ? Number(p.fees_24h_usd) : null,
-        fee_apr: p.apr_7d != null ? Number(p.apr_7d) : (p.fee_apr != null ? Number(p.fee_apr) : null),
-        lp_total_supply: p.total_share != null ? String(p.total_share) : null,
+        assets: assets.slice(0, 2).map((a, idx) => ({
+          symbol: a.symbol || null,
+          denom: a.denom || a.address || null,
+          // reserves from CHAIN (trustworthy), matched to asset order
+          amount_raw: idx === 0 ? reserve_0 : reserve_1,
+          decimals: a.decimals ?? null,
+          price_usd: null,       // pricing is token-catalog's domain (join downstream)
+        })),
+        tvl_usd: null,           // HONEST: computed downstream from reserves x trusted prices
+        volume_24h_usd: null,    // HONEST: SS has no trustworthy volume source
+        volume_7d_usd: null,     // HONEST: same
+        fees_24h_usd: null,      // HONEST: same
+        fee_apr: null,           // HONEST: same
+        lp_total_supply: total_share,
         raw: {
-          reserve_0: p.reserve_0 != null ? String(p.reserve_0) : null,
-          reserve_1: p.reserve_1 != null ? String(p.reserve_1) : null,
-          total_share: p.total_share != null ? String(p.total_share) : null,
+          reserve_0, reserve_1, total_share,
+          chain_status,          // 'ok' | 'failed' — per-pool reserve query result
+          pool_id: meta.pool_id || null,
         },
       })
     );
@@ -87,8 +144,12 @@ async function capture() {
     pools: normalized,
     meta: {
       captured_at,
-      source: 'warlock /api/pools/phoenix-1',
+      source: 'pools_list.json (metadata) + direct chain {"pool":{}} (reserves)',
       pools_total: normalized.length,
+      chain_ok: chainOk,
+      chain_failed: chainFail,
+      volume_note: 'SkeletonSwap has no trustworthy volume source — volume fields are honestly null, not fabricated.',
+      tvl_note: 'TVL null at capture; computed downstream from chain reserves x token-catalog prices.',
     },
   };
 }
@@ -97,6 +158,6 @@ module.exports = {
   id: 'skeletonswap',
   label: 'Skeleton Swap',
   enabled: true,
-  trust_start: SS_TRUST_START, // grader excludes SS data before this date
+  trust_start: SS_TRUST_START,
   capture,
 };
