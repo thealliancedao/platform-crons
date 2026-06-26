@@ -15,7 +15,7 @@ not new code.
 | Folder | Layer | Writes | Status |
 |--------|-------|--------|--------|
 | `address-catalog/` | WHO — known addresses | `tla-core/catalog/` | ✅ live |
-| `token-catalog/` | WORTH — pools, tokens, identity, scoring | `tla-core/token-catalog/` | ✅ live (through Stage 2.1; pricing next) |
+| `token-catalog/` | WORTH — pools, tokens, identity, four-source pricing, LST redemption, scoring | `tla-core/token-catalog/` | ✅ live (all stages complete) |
 
 Each cron folder is self-contained (`README.md` + `<cron>.js` + `package.json`) and
 requires only ACTIVE `lib/` files + `config/contracts.js`. New crons are prefixed
