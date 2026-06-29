@@ -34,7 +34,7 @@ const C = require('../config/contracts.js');
 const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-const VERSION = 'member-data-1.0.1';
+const VERSION = 'member-data-1.0.2';
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 

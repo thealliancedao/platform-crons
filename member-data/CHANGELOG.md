@@ -1,14 +1,11 @@
 # member-data — changelog
 
-## 1.0.1 — 2026-06-29 — single-source config
+## 1.0.2 — 2026-06-29 — concurrent-write hardening
 
-- Contract addresses (GAUGE_CONTROLLER, VOTING_ESCROW) and BUCKETS now imported
-  from the shared `config/contracts.js` instead of local copies, per the
-  single-source-of-truth doctrine. Fix an address there once and every cron is
-  fixed. (index.js -> ../config; lib/vp.js -> ../../config. Both paths verified.)
-- No behavior change; nothing data-related is hardcoded. canonical_total_vp and
-  all VP figures are COMPUTED live from the chain census every run (they change
-  as people lock/unlock/adjust and as LST rates move — never a fixed value).
+- pushToGithub now retries on GitHub 409/422 sha-conflict (same fix as the other
+  crons). Multiple crons write to tla-core; a file's sha can change between our
+  GET and PUT, which GitHub rejects with 409. We re-fetch the fresh sha and retry
+  (up to 5x, small backoff). No data/logic change.
 
 ## 1.0.0 — 2026-06-29 — initial VP layer
 
