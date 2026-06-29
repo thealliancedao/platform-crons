@@ -1,62 +1,37 @@
-# dex-data — changelog
+# member-data — changelog
 
 ## 1.0.2 — 2026-06-29 — concurrent-write hardening
 
-- Commit function now retries on GitHub 409/422 sha-conflict. With several crons
-  writing to the same tla-core repo, a file's sha can change between our GET and
-  PUT (another cron committed first), which GitHub rejects with 409. We now
-  re-fetch the fresh sha and retry (up to 5x, small backoff). Almost all
-  collisions resolve on the first retry. No data/logic change.
+- pushToGithub now retries on GitHub 409/422 sha-conflict (same fix as the other
+  crons). Multiple crons write to tla-core; a file's sha can change between our
+  GET and PUT, which GitHub rejects with 409. We re-fetch the fresh sha and retry
+  (up to 5x, small backoff). No data/logic change.
 
-## 1.0.1 — 2026-06-26 — SkeletonSwap trustworthy-source fix
+## 1.0.0 — 2026-06-29 — initial VP layer
 
-First-run verification did its job. Astroport captured perfectly (275 pools, 36
-TLA-relevant, all fields mapped, zero nulls on tvl/volume/fees). SkeletonSwap
-surfaced a real architectural correction:
+The VP-efficiency intelligence layer (Option A: owns held + directed VP).
 
-- **Was reading warlock** (dex.warlock.backbonelabs.io) — which the proven old SS
-  cron deliberately moved OFF as the stale source (the very reason trust_start
-  exists). Rebuilt to the trustworthy path: pools_list.json metadata + DIRECT
-  chain reserves ({"pool":{}} -> data.assets[].amount + total_share).
-- **Volume honestly NULL** — confirmed against the old cron, SkeletonSwap has no
-  trustworthy volume source (old cron writes it empty: "no trustworthy source").
-  We null it rather than fake it from warlock. Fail honest, never fake.
-- **TVL null at capture** — priced downstream by joining trustworthy chain
-  reserves to token-catalog's trustworthy prices; we never invent a price in the
-  adapter.
-- Grading implication: SkeletonSwap contributes liquidity/depth (once priced) but
-  NOT volume to grades — honest data, not a flaw.
+**What it computes (the three metrics the product needs):**
+1. Total Available VP (canonical max-bucket, avoiding the 4x pool-sum inflation).
+2. VP voting per bucket (measured per bucket, not an even split).
+3. Per-wallet influence (% of an LP's votes) + utilization (idle/underused VP —
+   the "leaving VP and bribes on the table" signal).
 
-## 1.0.0 — 2026-06-26 — initial forward-capture
+**Design decisions (recorded):**
+- **Option A boundary** — member-data owns the complete VP picture (held +
+  directed + efficiency). Bribes/vAPR layer on top via flows, joined using the
+  influence numbers here. Held vs directed both needed because utilization =
+  held - directed, so they must be in one coherent snapshot.
+- **Consolidation** — replaces 4 old crons that each re-walked the same lock
+  enumeration (~858 calls x4). Walks once, produces all views.
+- **Canonical VP** — max bucket VP, per ecosystem-knowledge tla.vp_canonical
+  (pool-summing 4x-inflates). VP per lock is the chain's voting_power (already
+  includes LST redemption rate + lock coefficient), not re-derived.
+- **Every wallet equal** — aDAO is just one member; the same metrics apply to all.
 
-The first cron of the trading-quality grading system (Component A of
-SPEC-grading-and-dex-data.md). Captures DEX pool primitives correctly so
-trustworthy, un-gameable history starts accruing immediately (forward-capture
-urgency: past on-chain state is pruned and unrecoverable).
+**Verified:** efficiency math validated against aDAO's actual bucket allocations
+from the Eris voting UI (stable 100% utilized, bluechip underutilized, single
+idle -> avg utilization surfaces the idle VP correctly).
 
-**The journey / why it's built this way:**
-
-- **Per-DEX separation** (requested): each DEX is a self-contained adapter so one
-  can be shut off or added without touching others, and isolated failures don't
-  cascade. Astroport + SkeletonSwap live; Credia a disabled placeholder.
-- **The aggregation fix** — reading the old astroport cron revealed the averaging
-  method the user rightly doubted: volume was divided by a fixed `/42` expected
-  count (missing = 0), while liquidity averaged by actual count. That's a real
-  bug — it mis-denominates volume and conceptually misframes a FLOW as a level.
-  Settled the correct doctrine before building: **volume = SUM (flow), liquidity
-  = time-weighted AVG + min + cv (stock)**, with capital-efficiency ratio and
-  gap-honesty metadata on every aggregate. Validated against the user's own week
-  example.
-- **Mined, not inherited** — took the proven discovery (Astroport `pools.getAll`
-  + 4 staking-contract `total_staked_balances` cross-reference for active+inactive
-  TLA pools) from the old cron, but built fresh structure and fixed the averaging.
-- **Neutral notable-window capture** — records intra-window volume concentrations
-  as observations, not "problem" flags; judgment (wash/whale/organic) deferred to
-  v2 wallet-attribution forensics. Captures the moment now since it can't be
-  reconstructed later.
-- **Per-DEX trust_start** — SkeletonSwap data trustworthy only post-warlock-fix;
-  the grader excludes pre-trust history.
-
-**Deferred (v2+):** rising-threshold consolidation of notable windows (day →
-epoch → month → year), wallet attribution via block-range tx search, depth/
-slippage simulation refinement, wash/bot filtering, the grade composition itself.
+**Deferred:** bribes/vAPR (flows); ally-protocol view (adao-allies) if wanted as
+a member sub-type; multi-wallet entity clustering (cannot be proven on-chain).
