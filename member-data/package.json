@@ -1,0 +1,8 @@
+{
+  "name": "member-data",
+  "version": "1.0.0",
+  "description": "TLA Stats VP layer — voting power held, directed, and efficiency (idle/utilization) per wallet",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "license": "MIT"
+}
