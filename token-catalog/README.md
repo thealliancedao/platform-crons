@@ -159,6 +159,11 @@ Without `GITHUB_TOKEN` it writes local `token-catalog.json` + `heartbeat.json` o
 
 ## Recent changes
 
+- **1.4.2-stage3.1** — concurrent-write hardening. Commit now retries on GitHub
+  409/422 sha-conflict (multiple crons write to tla-core; a file's sha can change
+  between our GET and PUT). Re-fetches fresh sha and retries up to 5x. No
+  data/logic change — fixes intermittent run failures as the cron fleet grew.
+
 - **1.4.1-stage3.1** — dust-pool floor fix (`SS_MIN_TVL_USD`). A ~$0.16-liquidity pool
   was manufacturing a $43k wBTC price; pools below $500 TVL are now skipped (noisy SS
   prices 24 -> 10, `wide_divergence` flags 8 -> 3 — real disagreements only). Version
