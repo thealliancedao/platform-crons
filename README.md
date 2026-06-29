@@ -17,6 +17,7 @@ not new code.
 | `address-catalog/` | WHO — known addresses | `tla-core/catalog/` | ✅ live |
 | `token-catalog/` | WORTH — pools, tokens, identity, four-source pricing, LST redemption, scoring | `tla-core/token-catalog/` | ✅ live (all stages complete) |
 | `dex-data/` | DEX trading quality — per-DEX pools, volume (sum), liquidity (avg+min+cv), reserves | `tla-core/dex-data/` | ✅ live (forward-capture; Component A of grading) |
+| `member-data/` | VP layer — held + directed VP, per-bucket voting, influence + utilization (idle VP) | `tla-core/member-data/` | ✅ live (the VP-efficiency intelligence) |
 
 Each cron folder is self-contained (`README.md` + `<cron>.js` + `package.json`) and
 requires only ACTIVE `lib/` files + `config/contracts.js`. New crons are prefixed
