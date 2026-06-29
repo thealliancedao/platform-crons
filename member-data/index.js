@@ -25,14 +25,16 @@
 // =============================================================================
 
 const { queryContract, parallelMap, enumerateAllTokens, fetchJson, pushToGithub, GITHUB_REPO } = require('./lib/chain');
-const { BUCKETS, parseWalletVoting, aggregateBucketVoting, computeInfluence } = require('./lib/vp');
+const { parseWalletVoting, aggregateBucketVoting, computeInfluence } = require('./lib/vp');
 
-const VERSION = 'member-data-1.0.0';
+// SINGLE SOURCE OF TRUTH: structural contract addresses + bucket names come from
+// the shared config. Fix an address there once and every cron is fixed. (Same
+// `require('../config/contracts.js')` pattern the other org crons use.)
+const C = require('../config/contracts.js');
+const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
+const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-// Structural contracts (from config/contracts.js doctrine; kept here so the cron
-// is self-contained — swap to shared config if member-data later imports it).
-const TLA_GAUGE_CONTROLLER = 'terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj';
-const TLA_VOTING_ESCROW    = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
+const VERSION = 'member-data-1.0.1';
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 
