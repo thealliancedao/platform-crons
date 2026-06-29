@@ -1,5 +1,13 @@
 # dex-data — changelog
 
+## 1.0.2 — 2026-06-29 — concurrent-write hardening
+
+- Commit function now retries on GitHub 409/422 sha-conflict. With several crons
+  writing to the same tla-core repo, a file's sha can change between our GET and
+  PUT (another cron committed first), which GitHub rejects with 409. We now
+  re-fetch the fresh sha and retry (up to 5x, small backoff). Almost all
+  collisions resolve on the first retry. No data/logic change.
+
 ## 1.0.1 — 2026-06-26 — SkeletonSwap trustworthy-source fix
 
 First-run verification did its job. Astroport captured perfectly (275 pools, 36
