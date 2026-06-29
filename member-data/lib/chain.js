@@ -96,7 +96,11 @@ function githubApi(method, apiPath, body = null) {
   });
 }
 
-async function pushToGithub(filepath, contentObj, message) {
+// Commit with 409-conflict retry. Multiple crons write to the same tla-core
+// repo, so the file's sha can change between our GET and PUT (another cron
+// committed first) -> GitHub 409. We re-fetch the fresh sha and retry. Almost
+// all collisions resolve on the first retry.
+async function pushToGithub(filepath, contentObj, message, maxAttempts = 5) {
   const content = JSON.stringify(contentObj, null, 2);
   if (!GITHUB_TOKEN) {
     const fs = require('fs'), path = require('path');
@@ -106,11 +110,24 @@ async function pushToGithub(filepath, contentObj, message) {
     return true;
   }
   const apiPath = `/repos/${GITHUB_REPO}/contents/${filepath}`;
-  const existing = await githubApi('GET', `${apiPath}?ref=${GITHUB_BRANCH}`);
-  const sha = existing.data?.sha;
-  const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH, ...(sha ? { sha } : {}) };
-  const result = await githubApi('PUT', apiPath, body);
-  return result.status === 200 || result.status === 201;
+  const b64 = Buffer.from(content).toString('base64');
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // (re)fetch current sha each attempt so a stale sha can't persist
+    const existing = await githubApi('GET', `${apiPath}?ref=${GITHUB_BRANCH}`);
+    const sha = existing.data?.sha;
+    const body = { message, content: b64, branch: GITHUB_BRANCH, ...(sha ? { sha } : {}) };
+    const result = await githubApi('PUT', apiPath, body);
+    if (result.status === 200 || result.status === 201) return true; // success
+    if (result.status === 409 || result.status === 422) {
+      // sha conflict (another cron committed between our GET and PUT) — back off
+      // and retry with a freshly-fetched sha.
+      await new Promise(r => setTimeout(r, 300 * attempt + Math.floor(Math.random() * 400)));
+      continue;
+    }
+    // any other non-success status: don't spin — report failure
+    return false;
+  }
+  return false; // exhausted retries
 }
 
 module.exports = {
