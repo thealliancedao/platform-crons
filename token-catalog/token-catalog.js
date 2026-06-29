@@ -841,8 +841,10 @@ function githubApiRequest(method, apiPath, body = null) {
     const req = https.request(opts, res => {
       let data = ''; res.on('data', c => data += c);
       res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) { try { resolve(JSON.parse(data)); } catch { resolve(data); } }
-        else reject(new Error(`GitHub ${method} ${apiPath}: ${res.statusCode} ${data.slice(0, 200)}`));
+        let parsed = data; try { parsed = JSON.parse(data); } catch {}
+        // Resolve with status + body so callers can react to specific codes
+        // (e.g. 409 sha-conflict). Non-2xx no longer auto-throws.
+        resolve({ status: res.statusCode, body: parsed, raw: data });
       });
     });
     req.on('error', reject);
@@ -850,13 +852,38 @@ function githubApiRequest(method, apiPath, body = null) {
     req.end();
   });
 }
-async function publishFile(filePath, content, message) {
+// Commit a file with 409-conflict retry. Multiple crons write to the same repo,
+// so the file's sha can change between our GET and PUT (another cron committed
+// first) -> GitHub returns 409 "is at X but expected Y". We re-fetch the fresh
+// sha and retry. This is the standard pattern for concurrent writers to the
+// contents API; almost all collisions resolve on the first retry.
+async function publishFile(filePath, content, message, maxAttempts = 5) {
   const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
-  let sha = null;
-  try { sha = (await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch (e) { /* new file */ }
-  const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
-  if (sha) body.sha = sha;
-  return githubApiRequest('PUT', apiPath, body);
+  const b64 = Buffer.from(content).toString('base64');
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // (re)fetch current sha each attempt so a stale sha can't persist
+    let sha = null;
+    const getRes = await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`);
+    if (getRes.status >= 200 && getRes.status < 300) sha = getRes.body && getRes.body.sha;
+    // (404 on GET = new file, sha stays null — fine)
+
+    const body = { message, content: b64, branch: GITHUB_BRANCH };
+    if (sha) body.sha = sha;
+    const putRes = await githubApiRequest('PUT', apiPath, body);
+
+    if (putRes.status >= 200 && putRes.status < 300) return putRes.body; // success
+    if (putRes.status === 409 || putRes.status === 422) {
+      // sha conflict (another cron committed between our GET and PUT) — back off
+      // a touch and retry with a freshly-fetched sha.
+      lastErr = new Error(`GitHub PUT ${filePath}: ${putRes.status} (sha conflict, attempt ${attempt}/${maxAttempts})`);
+      await new Promise(r => setTimeout(r, 300 * attempt + Math.floor(Math.random() * 400)));
+      continue;
+    }
+    // any other non-2xx is a real error — surface it
+    throw new Error(`GitHub PUT ${filePath}: ${putRes.status} ${String(putRes.raw).slice(0, 200)}`);
+  }
+  throw lastErr || new Error(`GitHub PUT ${filePath}: failed after ${maxAttempts} attempts`);
 }
 
 // -----------------------------------------------------------------------------
@@ -913,7 +940,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.4.1-stage3.1',
+      version: 'token-catalog-1.4.2-stage3.1',
       schemaVersion: 3,
       stage: 'discovery+identity+verification+pricing+dex',
       generated_at: startedAt.toISOString(),
