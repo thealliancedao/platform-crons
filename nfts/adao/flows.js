@@ -46,7 +46,7 @@ const RUN_SPEED     = (process.env.RUN_SPEED || 'fast').toLowerCase(); // fast |
 const RAW = (p) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`;
 const TODAY_PATH   = `${OUTPUT_PATH}/today.json`;
 const NFTS_URL     = RAW('nfts/adao/snapshots/nfts.json');
-const VERSION      = 'nft-flows-0.1.0';
+const VERSION      = 'nft-flows-0.1.1';  // 0.1.1: fix marketplace flatten (bbl+atrium+boost)
 
 // ---- small utils ----
 function todayStr(d = new Date()) { return d.toISOString().slice(0, 10); }
@@ -144,10 +144,14 @@ function countByMarket(listings) {
 // FAST PASS: marketplace events + floor/backing current_state. ~15 min cadence.
 async function runFast(doc) {
   const t = nowIso();
-  const marketplaces = await fetchMarketplaces();
-  // fetchMarketplaces returns { listings, bids, warnings } (or an array — normalize)
-  const listings = Array.isArray(marketplaces) ? marketplaces
-    : (marketplaces.listings || marketplaces.all || []);
+  const mk = await fetchMarketplaces();
+  // fetchMarketplaces returns { bbl, atrium, boost, listingWarnings } — three
+  // arrays, each item already carrying its own `marketplace` field. Flatten them.
+  const listings = [
+    ...(mk.bbl || []),
+    ...(mk.atrium || []),
+    ...(mk.boost || []),
+  ];
   const curIdx = indexListings(listings);
 
   // detect listing/delisting/price events vs last-seen index
