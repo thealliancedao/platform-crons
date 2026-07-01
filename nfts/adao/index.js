@@ -1,6 +1,12 @@
 // =============================================================================
 // NFT Inventory Cron — Rev C.4
 //
+// [org-migrated v2, 2026-07-01] Price source repointed to the org token-catalog
+//   (thealliancedao/tla-core/token-catalog/snapshots/current.json). No old-system
+//   fallback — token-catalog is the single source; USD is skipped (honest null)
+//   if it's unavailable. Historical sale values (notional_usd) are unchanged —
+//   they were independently verified honest against price-history.
+//
 // Rev C.4 (2026-06-11) — Floor history + days-on-market + bid capture:
 //     data/v2/floor-history.json (daily per-tier listing+sales floors via notional_usd,
 //     DOM, backing, bids; upsert-by-date, never-shrink) + listing-first-seen.json.
@@ -122,8 +128,10 @@ const OUTPUT_PATH = 'nfts/adao/snapshots';
 
 // Sister cron data repos (read-only fetches for prices & catalog token metadata)
 // These are PUBLIC — no auth needed.
-const PRICES_DATA_URL  = 'https://raw.githubusercontent.com/defipatriot/network-and-prices-data_2026/main/data/network-and-prices.json';
-const CATALOG_DATA_URL = 'https://raw.githubusercontent.com/defipatriot/tla-chain-registry/main/2026/current.json';
+// Price source: the org token-catalog (new system, denom-keyed multi-source prices).
+// No old-system dependency — token-catalog is the single source. If it's
+// unavailable, USD computation is skipped (honest null, never a stale fallback).
+const TOKEN_CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
 
 // DAODAO pending-claim tracking (Rev B.3). Forward-only state persisted in the data repo.
 const PENDING_CLAIMS_PATH    = `${OUTPUT_PATH}/pending-claims.json`;
@@ -1062,63 +1070,49 @@ async function fetchBackingData(unbrokenCount) {
 //   2. Compute marketplace listing prices in USD (any payment token)
 
 async function fetchPriceData() {
-    console.log('💱 Phase 7: fetching price data from sister crons...');
+    console.log('💱 Phase 7: fetching price data from token-catalog...');
     const t0 = Date.now();
-    const [pricesDoc, catalogDoc] = await Promise.all([
-        tryFetchJson(PRICES_DATA_URL, 'network-and-prices'),
-        tryFetchJson(CATALOG_DATA_URL, 'tla-chain-registry'),
-    ]);
-    if (!pricesDoc && !catalogDoc) {
-        console.warn('  ⚠ Both price sources unavailable — USD computation will be skipped');
+    const catDoc = await tryFetchJson(TOKEN_CATALOG_URL, 'token-catalog');
+    if (!catDoc || !Array.isArray(catDoc.tokens)) {
+        console.warn('  ⚠ token-catalog unavailable — USD computation will be skipped (no stale fallback)');
         return { prices: {}, tokens: {}, ampluna_usd: null, luna_usd: null };
     }
-    // --- LUNA → USD ---
-    // Real network-and-prices schema: token_prices.LUNA.final_price_usd, plus luna_market.usd_price.
-    // (Older assumed schema prices.LUNA.usd / luna_usd kept as last-resort fallbacks.)
-    const luna_usd = pricesDoc?.token_prices?.LUNA?.final_price_usd
-                  ?? pricesDoc?.luna_market?.usd_price
-                  ?? pricesDoc?.prices?.LUNA?.usd
-                  ?? pricesDoc?.luna_usd
-                  ?? null;
 
-    // --- Per-symbol USD price map from network-and-prices token_prices ---
-    // token_prices is keyed by canonical symbol; each carries final_price_usd.
-    const priceBySymbol = {};
-    if (pricesDoc?.token_prices) {
-        for (const [sym, p] of Object.entries(pricesDoc.token_prices)) {
-            const usd = p?.final_price_usd ?? p?.prices?.astroport?.price_usd ?? null;
-            if (usd != null) priceBySymbol[sym] = Number(usd);
+    // token-catalog: tokens are denom-keyed, price at prices.<source>.usd (status ok).
+    // Pick best available source in priority order.
+    const PRICE_SRCS = ['tla', 'astroport', 'coingecko', 'skeletonswap'];
+    const bestUsd = (t) => {
+        const p = t && t.prices || {};
+        for (const src of PRICE_SRCS) {
+            const v = p[src];
+            if (v && v.usd != null && v.status === 'ok') return Number(v.usd);
         }
-    }
+        return null;
+    };
+    const symOf = (t) => (t.discovered && t.discovered.symbol) || null;
 
-    // --- Token map for symbol/decimals/USD lookups ---
-    // The catalog (tla-chain-registry) publishes tokens keyed by address with symbol+decimals
-    // but NO price. We join the per-symbol USD price onto each, so decodeTokenDenom finds
-    // `final_price_usd` keyed by address, the way it expects.
+    // Build denom→token and symbol→usd maps in the shape downstream expects.
     const tokenByAddr = {};
     const tokenBySymbol = {};
-    if (catalogDoc?.tokens) {
-        for (const [addr, t] of Object.entries(catalogDoc.tokens)) {
-            const usd = (t.symbol && priceBySymbol[t.symbol] != null) ? priceBySymbol[t.symbol] : null;
-            const rec = { ...t, address: addr, final_price_usd: usd };
-            tokenByAddr[addr] = rec;
-            if (t.symbol) tokenBySymbol[t.symbol] = rec;
-        }
+    const priceBySymbol = {};
+    for (const t of catDoc.tokens) {
+        const usd = bestUsd(t);
+        const sym = symOf(t);
+        const dec = (t.discovered && t.discovered.decimals != null) ? t.discovered.decimals : 6;
+        const rec = { ...t, address: t.denom, symbol: sym, decimals: dec, final_price_usd: usd };
+        tokenByAddr[t.denom] = rec;
+        if (sym) { tokenBySymbol[sym] = rec; if (usd != null) priceBySymbol[sym] = usd; }
     }
 
-    // --- ampLUNA → USD ---
-    // Primary: token_prices.ampLUNA.final_price_usd (already LUNA × Eris hub ratio).
-    // Fallbacks: lst_ratios.ampLUNA.ratio × luna_usd; then the joined catalog token.
-    let ampluna_usd = priceBySymbol['ampLUNA'] ?? null;
-    if (ampluna_usd == null) {
-        const ratio = pricesDoc?.lst_ratios?.ampLUNA?.ratio;
-        if (ratio != null && luna_usd != null) ampluna_usd = Number(ratio) * Number(luna_usd);
+    // LUNA = uluna
+    const luna_usd = tokenByAddr['uluna'] ? tokenByAddr['uluna'].final_price_usd : null;
+    if (luna_usd == null) {
+        console.warn('  ⚠ token-catalog has no LUNA price — USD computation skipped');
+        return { prices: {}, tokens: {}, ampluna_usd: null, luna_usd: null };
     }
-    if (ampluna_usd == null) {
-        const amplunaToken = tokenByAddr[AMPLUNA_CW20] || tokenBySymbol['ampLUNA'];
-        if (amplunaToken?.final_price_usd != null) ampluna_usd = Number(amplunaToken.final_price_usd);
-    }
-
+    // ampLUNA by its cw20 denom (already LUNA × Eris ratio inside token-catalog).
+    let ampluna_usd = tokenByAddr[AMPLUNA_CW20] ? tokenByAddr[AMPLUNA_CW20].final_price_usd : null;
+    if (ampluna_usd == null && priceBySymbol['ampLUNA'] != null) ampluna_usd = priceBySymbol['ampLUNA'];
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     const pricedCount = Object.values(tokenByAddr).filter(t => t.final_price_usd != null).length;
     console.log(`  ✓ LUNA $${luna_usd?.toFixed?.(4) ?? 'n/a'}, ampLUNA $${ampluna_usd?.toFixed?.(4) ?? 'n/a'}, ${pricedCount}/${Object.keys(tokenByAddr).length} catalog tokens priced in ${elapsed}s`);
@@ -1822,7 +1816,7 @@ async function captureSnapshot() {
     const startedAt = new Date();
     const epoch = currentEpoch();
     const dateKey = todayUtcDate();
-    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v1] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${RUN_MODE})`);
+    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v2 — prices←token-catalog] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${RUN_MODE})`);
     console.log();
 
     // ── Phase 1+2: per-NFT info — scope depends on RUN_MODE ─────────────────
