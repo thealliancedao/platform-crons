@@ -46,7 +46,7 @@ const RUN_SPEED     = (process.env.RUN_SPEED || 'fast').toLowerCase(); // fast |
 const RAW = (p) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`;
 const TODAY_PATH   = `${OUTPUT_PATH}/today.json`;
 const NFTS_URL     = RAW('nfts/adao/snapshots/nfts.json');
-const VERSION      = 'nft-flows-0.1.1';  // 0.1.1: fix marketplace flatten (bbl+atrium+boost)
+const VERSION      = 'nft-flows-0.1.2';  // 0.1.2: baseline vs real-event fix (standing listings not counted as today's events)
 
 // ---- small utils ----
 function todayStr(d = new Date()) { return d.toISOString().slice(0, 10); }
@@ -75,10 +75,14 @@ function httpGetJson(url) {
 //              stake, unstake, break, transfer.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function emptyToday(dateStr) {
+function emptyToday(dateStr, carryListingIndex = null) {
   return {
     date: dateStr, updated_at: nowIso(), version: VERSION,
-    events: [], listing_index: {}, staker_index: null, current_state: {},
+    // carry the prior day's listing set forward as this day's baseline, so the
+    // FIRST run of a new day can already detect overnight changes (rather than
+    // re-recording every standing listing as a fake "new listing").
+    events: [], listing_index: carryListingIndex || {}, staker_index: null,
+    current_state: {},
   };
 }
 
@@ -154,10 +158,22 @@ async function runFast(doc) {
   ];
   const curIdx = indexListings(listings);
 
-  // detect listing/delisting/price events vs last-seen index
-  const listingEvents = diffListings(doc.listing_index, curIdx, t);
-  doc.events.push(...listingEvents);
+  // BASELINE vs EVENT distinction:
+  //   • If we have NO prior listing_index yet (cold start / first run of the day),
+  //     the currently-live listings are STANDING STATE, not things that happened
+  //     today — so we record them as the baseline WITHOUT emitting events.
+  //   • Once a baseline exists, only CHANGES from it (new listing, delisting,
+  //     price change) are real events. That's what the live feed cares about.
+  const hasBaseline = doc.listing_index && Object.keys(doc.listing_index).length > 0;
+  let listingEvents = [];
+  if (hasBaseline) {
+    listingEvents = diffListings(doc.listing_index, curIdx, t);
+    doc.events.push(...listingEvents);
+  } else {
+    console.log(`  baseline set: ${listings.length} standing listings recorded (not counted as today's events)`);
+  }
   doc.listing_index = curIdx;
+  doc.baseline_set_at = doc.baseline_set_at || t;
 
   // backing + prices for current_state (cheap)
   let backing = null, prices = null;
@@ -264,10 +280,12 @@ async function runRollup(doc) {
     await publishFile(mp, JSON.stringify(monthDoc, null, 2),
       `nft-flows: rollup ${dateStr} (${summary.event_count} events, ${summary.sales_count} sales)`);
     console.log(`  ✓ rolled up ${dateStr} → ${mp} (${summary.event_count} events)`);
-    // reset today.json for the NEW day (fresh, empty)
-    const fresh = emptyToday(todayStr());
+    // reset today.json for the NEW day — but carry the prior day's listing set
+    // forward as the baseline, so day-1 runs detect overnight changes (not a
+    // whole day of fake "new listings").
+    const fresh = emptyToday(todayStr(), doc.listing_index);
     await publishFile(TODAY_PATH, JSON.stringify(fresh, null, 2), `nft-flows: reset today for ${fresh.date}`);
-    console.log(`  ✓ reset today.json → ${fresh.date}`);
+    console.log(`  ✓ reset today.json → ${fresh.date} (baseline carried: ${Object.keys(doc.listing_index || {}).length} listings)`);
   } else {
     console.log('  (no GITHUB_TOKEN — rollup computed but not published)');
     console.log('  summary:', JSON.stringify(summary));
@@ -301,10 +319,11 @@ async function run() {
   // rollup job, no counting runs, and it self-heals if a run is skipped.
   if (doc && doc.date && doc.date !== dateStr) {
     console.log(`  ↻ date flipped ${doc.date} → ${dateStr}: rolling up the complete prior day first`);
-    await runRollup(doc);           // finalizes prior day → month-file + resets today.json
-    doc = emptyToday(dateStr);      // start the new day fresh
+    const carry = doc.listing_index;   // preserve yesterday's listing set as today's baseline
+    await runRollup(doc);              // finalizes prior day → month-file + resets today.json
+    doc = emptyToday(dateStr, carry);  // start the new day with the baseline carried
   }
-  if (!doc || doc.date !== dateStr) doc = emptyToday(dateStr);
+  if (!doc || doc.date !== dateStr) doc = emptyToday(dateStr, doc && doc.listing_index);
 
   // RUN_SPEED still selects WHICH capture this run does (both append to today.json):
   //   'fast'  (default, every run)  → marketplace events + floor/backing state
