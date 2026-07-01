@@ -46,7 +46,7 @@ const RUN_SPEED     = (process.env.RUN_SPEED || 'fast').toLowerCase(); // fast |
 const RAW = (p) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`;
 const TODAY_PATH   = `${OUTPUT_PATH}/today.json`;
 const NFTS_URL     = RAW('nfts/adao/snapshots/nfts.json');
-const VERSION      = 'nft-flows-0.1.2';  // 0.1.2: baseline vs real-event fix (standing listings not counted as today's events)
+const VERSION      = 'nft-flows-0.1.3';  // 0.1.3: self-heal stale baseline-dump events + refresh version on write
 
 // ---- small utils ----
 function todayStr(d = new Date()) { return d.toISOString().slice(0, 10); }
@@ -296,6 +296,7 @@ async function runRollup(doc) {
 // ─── publish today.json (fast/state passes) ──────────────────────────────────
 async function publishToday(doc) {
   doc.updated_at = nowIso();
+  doc.version = VERSION;   // always stamp the CURRENT running version (so it's not frozen at creation-time)
   if (!GITHUB_TOKEN) { console.log('  (no GITHUB_TOKEN — today.json not published)'); return; }
   await publishFile(TODAY_PATH, JSON.stringify(doc), `nft-flows: today ${doc.date} (${doc.events.length} events)`);
   await publishFile(`${OUTPUT_PATH}/heartbeat.json`, JSON.stringify({
@@ -311,6 +312,24 @@ async function run() {
   const dateStr = todayStr();
 
   let doc = await loadToday();
+
+  // SELF-HEAL (one-time): the pre-0.1.2 versions wrote the standing listings into
+  // events[] as a fake "baseline dump". If we load a today.json that (a) was
+  // written by an older version and (b) whose events are ALL 'listing' type and
+  // count == the listing_index size (i.e. the classic baseline dump, no real
+  // activity yet), clear them. This is safe: a real day mixes event types and
+  // won't match this exact signature. After this heals once, it never triggers
+  // again (a cleaned/new doc has 0 events).
+  if (doc && Array.isArray(doc.events) && doc.events.length > 0) {
+    const idxSize = Object.keys(doc.listing_index || {}).length;
+    const allListings = doc.events.every(e => e && e.type === 'listing');
+    const looksLikeBaselineDump = allListings && doc.events.length === idxSize && idxSize > 0;
+    const isOldVersion = doc.version !== VERSION;
+    if (looksLikeBaselineDump && isOldVersion) {
+      console.log(`  🧹 self-heal: clearing ${doc.events.length} stale baseline events (pre-${VERSION} dump), keeping ${idxSize}-listing baseline`);
+      doc.events = [];
+    }
+  }
 
   // SINGLE-CRON MODEL: every ~15-min run does the fast pass, and whenever the
   // date has flipped, that run FIRST rolls up the now-complete prior day into
