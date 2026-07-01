@@ -38,7 +38,7 @@
 // enriched: Stage 2/3 add fields to the SAME current.json; the page reads it
 // throughout):
 //   token-catalog/snapshots/current.json        pools[] + tokens[]
-//   token-catalog/snapshots/daily/{date}.json   forward-only daily snapshot
+//   price-history/{YYYY}/{MM}.json               forward rich price capture (canonical)
 //   token-catalog/snapshots/index.json          manifest
 //   token-catalog/snapshots/heartbeat.json      standard heartbeat
 //
@@ -1062,7 +1062,7 @@ async function run() {
 
   const index = {
     schemaVersion: 1, module: 'token-catalog', product: 'snapshots',
-    latest: 'current.json', latest_daily: `daily/${dayStr}.json`,
+    latest: 'current.json',
     updated_at: startedAt.toISOString(), stage: 'discovery',
     counts: catalog.counts,
   };
@@ -1076,8 +1076,7 @@ async function run() {
   if (GITHUB_TOKEN) {
     await publishFile('token-catalog/snapshots/current.json', catContent, `token-catalog ${status} — ${pools.length} pools, ${tokens.length} tokens`);
     console.log('  ✓ token-catalog/snapshots/current.json');
-    await publishFile(`token-catalog/snapshots/daily/${dayStr}.json`, catContent, `token-catalog daily ${dayStr} — ${status}`);
-    console.log(`  ✓ token-catalog/snapshots/daily/${dayStr}.json`);
+    // (daily/ snapshot retired — price-history/ is the canonical forward capture.)
     // Forward-append today's rich price row into canonical price-history (isolated).
     await appendToPriceHistory(catalog, dayStr);
     await publishFile('token-catalog/snapshots/index.json', idxContent, `token-catalog index — ${dayStr}`);
