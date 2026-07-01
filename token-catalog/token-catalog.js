@@ -889,6 +889,63 @@ async function publishFile(filePath, content, message, maxAttempts = 5) {
 // -----------------------------------------------------------------------------
 // MAIN
 // -----------------------------------------------------------------------------
+// ── price-history forward-append (additive; July 2026 clean break) ───────────
+// After writing its own snapshot, token-catalog appends today's lean RICH price
+// row into the canonical price-history/ month-file. This makes price-history
+// self-sustaining: backfill seeded the past, this carries it forward. Uses only
+// in-memory data (token.discovered.symbol + token.prices) — no extra fetch.
+// Fully isolated: any failure here is logged and swallowed so the core cron is
+// never affected. Format matches SPEC-price-history-format.md (rich tier).
+async function appendToPriceHistory(catalog, dayStr) {
+  try {
+    const [year, month] = dayStr.split('-'); // YYYY, MM
+    const filePath = `price-history/${year}/${month}.json`;
+
+    // Build today's rich price row: { SYM: {usd, src, confidence, sources} }
+    const PRICE_SRCS = ['tla', 'astroport', 'coingecko', 'skeletonswap'];
+    const row = {};
+    for (const t of (catalog.tokens || [])) {
+      const sym = t.discovered && t.discovered.symbol;
+      if (!sym) continue; // only named tokens
+      const p = t.prices || {};
+      const sources = {};
+      for (const s of PRICE_SRCS) sources[s] = (p[s] && p[s].usd != null) ? Number(p[s].usd) : null;
+      let usd = null, src = null;
+      for (const s of PRICE_SRCS) { if (sources[s] != null) { usd = sources[s]; src = s; break; } }
+      if (usd == null) continue; // no price today → skip token (honest: no fabrication)
+      row[sym] = { usd, src, confidence: t.price_confidence || null, sources };
+    }
+    if (Object.keys(row).length === 0) { console.log('  (price-history: no priced tokens to append)'); return; }
+
+    // Read existing month-file (if any), merge today's day (per-token merge-safe).
+    let monthDoc = null;
+    try {
+      const existing = await fetchJson(
+        `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${filePath}?t=${Date.now()}`,
+        'price-history-month'
+      );
+      if (existing && existing.days) monthDoc = existing;
+    } catch { /* file may not exist yet — that's fine */ }
+    if (!monthDoc) monthDoc = { meta: { module: 'price-history', format_version: 1 }, days: {} };
+
+    monthDoc.days[dayStr] = { ...(monthDoc.days[dayStr] || {}), ...row };
+    monthDoc.meta = {
+      module: 'price-history', format_version: 1,
+      ...(monthDoc.meta || {}),
+      updated_at: new Date().toISOString(),
+      note: 'rich forward capture (token-catalog)',
+    };
+
+    await publishFile(filePath, JSON.stringify(monthDoc, null, 2),
+      `price-history: append ${dayStr} (${Object.keys(row).length} tokens)`);
+    console.log(`  ✓ price-history/${year}/${month}.json — appended ${dayStr} (${Object.keys(row).length} tokens)`);
+  } catch (e) {
+    // NEVER let this break the core cron.
+    console.warn(`  ⚠ price-history append skipped: ${e.message}`);
+  }
+}
+
+
 async function run() {
   const startedAt = new Date();
   const dayStr = startedAt.toISOString().slice(0, 10);
@@ -1021,6 +1078,8 @@ async function run() {
     console.log('  ✓ token-catalog/snapshots/current.json');
     await publishFile(`token-catalog/snapshots/daily/${dayStr}.json`, catContent, `token-catalog daily ${dayStr} — ${status}`);
     console.log(`  ✓ token-catalog/snapshots/daily/${dayStr}.json`);
+    // Forward-append today's rich price row into canonical price-history (isolated).
+    await appendToPriceHistory(catalog, dayStr);
     await publishFile('token-catalog/snapshots/index.json', idxContent, `token-catalog index — ${dayStr}`);
     console.log('  ✓ token-catalog/snapshots/index.json');
     await publishFile('token-catalog/snapshots/heartbeat.json', hbContent, `heartbeat ${status}`);
