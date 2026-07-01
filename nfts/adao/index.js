@@ -148,11 +148,56 @@ const UNSTAKE_WINDOW_MS      = UNSTAKE_WINDOW_SECONDS * 1000;
 //   full (weekly, default): enumerate + fetch all 10k, full reconcile, (re)write hot-set.json
 //   warm (daily):           hot set ∪ staked sets; merge fresh onto the last full base
 //   hot  (every 15 min):    hot set only (user-held + marketplace + pending); merge onto base
-// Default is 'full' so existing/unconfigured deployments behave exactly as before.
-const RUN_MODE = (process.env.RUN_MODE || 'full').toLowerCase();
+//
+// SINGLE-CRON SELF-ESCALATION (2026-07-01): this runs as ONE Render job on a plain
+// */15 schedule. Each run DECIDES its own depth from the calendar + what's already
+// been done (read from the last heartbeat), instead of a fixed RUN_MODE per job:
+//   • if no FULL has run this ISO-week and it's late in the week → full
+//   • else if no WARM has run today and it's late in the day     → warm
+//   • else                                                        → hot
+// This is self-healing (like the flows date-flip rollup): if a run is skipped, the
+// next late run still catches the escalation — no reliance on hitting one exact slot.
+// RUN_MODE env still works as a MANUAL OVERRIDE (e.g. RUN_MODE=full to force a run).
+const RUN_MODE_OVERRIDE = (process.env.RUN_MODE || '').toLowerCase(); // '' = auto-decide
+// Late-in-day / late-in-week thresholds (UTC). "Late in day" = last ~30 min before
+// midnight; "late in week" = Sunday (ISO day 7) during that same late window.
+const WARM_HOUR_UTC = Number(process.env.WARM_HOUR_UTC || 23);   // warm fires at/after 23:00 UTC
+const WARM_MIN_UTC  = Number(process.env.WARM_MIN_UTC  || 30);   // ...and >= :30
+const FULL_DOW_UTC  = Number(process.env.FULL_DOW_UTC  || 0);    // full on Sunday (0=Sun)
+
+// ISO-week key so "once per week" is unambiguous across month/year boundaries.
+function isoWeekKey(d) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+// Decide the mode for THIS run from the clock + the prior heartbeat.
+function decideRunMode(now, priorHeartbeat) {
+  if (RUN_MODE_OVERRIDE) return RUN_MODE_OVERRIDE; // manual force
+  const dateStr = now.toISOString().slice(0, 10);
+  const weekKey = isoWeekKey(now);
+  const lastFullWeek = priorHeartbeat?.escalation?.last_full_week || null;
+  const lastWarmDate = priorHeartbeat?.escalation?.last_warm_date || null;
+  const isLateInDay = (now.getUTCHours() > WARM_HOUR_UTC) ||
+    (now.getUTCHours() === WARM_HOUR_UTC && now.getUTCMinutes() >= WARM_MIN_UTC);
+  const isFullDay = now.getUTCDay() === FULL_DOW_UTC;
+
+  // FULL: not yet done this week, and it's the full-day, late in the day
+  if (isLateInDay && isFullDay && lastFullWeek !== weekKey) return 'full';
+  // WARM: not yet done today, and it's late in the day
+  if (isLateInDay && lastWarmDate !== dateStr) return 'warm';
+  // otherwise: hot
+  return 'hot';
+}
+
 const HOT_SET_PATH    = `${OUTPUT_PATH}/hot-set.json`;
 const HOT_SET_RAW_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUTPUT_PATH}/hot-set.json`;
 const NFTS_RAW_URL    = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUTPUT_PATH}/nfts.json`;
+const HEARTBEAT_RAW_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUTPUT_PATH}/heartbeat.json`;
 
 // Floor-history / days-on-market / bid capture (2026-06-11, analytics brief items 1-3)
 const SALES_ENRICHED_RAW_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUTPUT_PATH}/sales-enriched.json`;
@@ -1816,23 +1861,31 @@ async function captureSnapshot() {
     const startedAt = new Date();
     const epoch = currentEpoch();
     const dateKey = todayUtcDate();
-    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v2 — prices←token-catalog] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${RUN_MODE})`);
+
+    // SELF-ESCALATION: read the prior heartbeat, then decide this run's depth
+    // (hot/warm/full) from the calendar + what's already been done this day/week.
+    // One cron on */15; RUN_MODE env overrides if set.
+    let priorHeartbeat = null;
+    try { priorHeartbeat = await tryFetchJson(HEARTBEAT_RAW_URL, 'prior heartbeat'); } catch { /* first run */ }
+    const runMode = decideRunMode(startedAt, priorHeartbeat);
+
+    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v3 — self-escalating single-cron] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${runMode}${RUN_MODE_OVERRIDE ? ' [override]' : ' [auto]'})`);
     console.log();
 
-    // ── Phase 1+2: per-NFT info — scope depends on RUN_MODE ─────────────────
+    // ── Phase 1+2: per-NFT info — scope depends on runMode ─────────────────
     // full → enumerate + fetch all 10k. hot/warm → fetch only the in-scope subset
     // and merge it onto the last full inventory (base). If the base or hot-set is
     // unreadable, we fall back to a full scan so output is never incomplete.
-    let records, captureRate, effectiveMode = RUN_MODE;
-    if (RUN_MODE === 'hot' || RUN_MODE === 'warm') {
+    let records, captureRate, effectiveMode = runMode;
+    if (runMode === 'hot' || runMode === 'warm') {
         const base = await loadBaseRecords();
         if (!base) {
-            console.warn(`  ⚠ ${RUN_MODE} mode but base nfts.json unreadable — falling back to FULL scan`);
+            console.warn(`  ⚠ ${runMode} mode but base nfts.json unreadable — falling back to FULL scan`);
             effectiveMode = 'full';
         } else {
             // Scope: hot uses the persisted hot-set; warm derives hot ∪ staked from base.
             let scopeIds = null;
-            if (RUN_MODE === 'hot') {
+            if (runMode === 'hot') {
                 scopeIds = await loadHotSet();
                 if (!scopeIds) {
                     console.warn('  ⚠ hot-set.json unreadable — deriving hot set from base this run');
@@ -1841,7 +1894,7 @@ async function captureSnapshot() {
             } else {
                 scopeIds = deriveWarmSet(base, null);
             }
-            console.log(`📦 ${RUN_MODE} scope: re-fetching ${scopeIds.length} of ${base.length} NFTs (rest carried from last full run)`);
+            console.log(`📦 ${runMode} scope: re-fetching ${scopeIds.length} of ${base.length} NFTs (rest carried from last full run)`);
             const fresh = await fetchAllNftInfo(scopeIds);
             captureRate = scopeIds.length > 0 ? fresh.length / scopeIds.length : 1;
             records = mergeRecords(base, fresh);
@@ -2051,6 +2104,19 @@ async function captureSnapshot() {
         runId: `nft-${startedAt.toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}`,
         runMode: effectiveMode,
         currentEpoch: epoch,
+        // Self-escalation tracking: carry forward the last full/warm markers,
+        // updating whichever this run satisfied. decideRunMode() reads these.
+        escalation: {
+            last_full_week: effectiveMode === 'full'
+                ? isoWeekKey(startedAt)
+                : (priorHeartbeat?.escalation?.last_full_week || null),
+            last_warm_date: (effectiveMode === 'full' || effectiveMode === 'warm')
+                ? startedAt.toISOString().slice(0, 10)
+                : (priorHeartbeat?.escalation?.last_warm_date || null),
+            last_full_at: effectiveMode === 'full'
+                ? startedAt.toISOString()
+                : (priorHeartbeat?.escalation?.last_full_at || null),
+        },
         status,
         stats: {
             total_tokens: records.length,
