@@ -205,6 +205,13 @@ const FIRST_SEEN_PATH        = `${OUTPUT_PATH}/listing-first-seen.json`;
 const FIRST_SEEN_RAW_URL     = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${FIRST_SEEN_PATH}`;
 const FLOOR_HISTORY_PATH     = `${OUTPUT_PATH}/floor-history.json`;
 const FLOOR_HISTORY_RAW_URL  = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${FLOOR_HISTORY_PATH}`;
+// State-history: the daily state-count timeline (broken/unminted/staked/held +
+// backing), computed LIVE from chain each run and rolled into a MONTHLY file
+// (state-history/YYYY/MM.json) — replacing the old per-day daily/<date>.json
+// sprawl. One writer (this cron), one file per month, live from chain. Same
+// pattern as floor-history; written on the daily (warm) / weekly (full) run.
+function stateHistoryPath(dateKey) { const [y, m] = dateKey.split('-'); return `${OUTPUT_PATH}/state-history/${y}/${m}.json`; }
+function stateHistoryRawUrl(dateKey) { return `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${stateHistoryPath(dateKey)}`; }
 // Sales-floor medians: last K sales per tier (analytics brief: broken 5 / base 10 / phoenix 3)
 const SALES_FLOOR_K = { broken: 5, base: 10, phoenix: 3 };
 // Grade-40 (Phoenix Rising) token ids — IMMUTABLE: the collection is fully minted, so this
@@ -1555,6 +1562,22 @@ function upsertFloorHistory(prior, row, nowIso) {
     };
 }
 
+// Upsert one day's state-count entry into the MONTHLY state-history file.
+// prior = the existing YYYY/MM.json (or null). Per-day, immutable prior dates,
+// never-shrink guard — same safety as floor-history. Replaces daily/<date>.json.
+function upsertStateHistory(prior, dateKey, entry, nowIso) {
+    const days = (prior && prior.days && typeof prior.days === 'object') ? { ...prior.days } : {};
+    const priorCount = Object.keys(days).length;
+    days[dateKey] = entry;
+    if (Object.keys(days).length < priorCount) {
+        throw new Error(`state-history would shrink (${priorCount} → ${Object.keys(days).length}) — refusing to publish`);
+    }
+    return {
+        meta: { module: 'nft-inventory', product: 'state-history', format_version: 1, updatedAt: nowIso },
+        days,
+    };
+}
+
 // -----------------------------------------------------------------------------
 // GITHUB PUBLISH
 // -----------------------------------------------------------------------------
@@ -1869,7 +1892,7 @@ async function captureSnapshot() {
     try { priorHeartbeat = await tryFetchJson(HEARTBEAT_RAW_URL, 'prior heartbeat'); } catch { /* first run */ }
     const runMode = decideRunMode(startedAt, priorHeartbeat);
 
-    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v3 — self-escalating single-cron] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${runMode}${RUN_MODE_OVERRIDE ? ' [override]' : ' [auto]'})`);
+    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v3.1 — self-escalating + state-history monthly rollup] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${runMode}${RUN_MODE_OVERRIDE ? ' [override]' : ' [auto]'})`);
     console.log();
 
     // ── Phase 1+2: per-NFT info — scope depends on runMode ─────────────────
@@ -2157,28 +2180,29 @@ async function captureSnapshot() {
     // Daily snapshot — overwrites today's file each run; final write of the day "wins"
     // and represents the day-end state. Subsequent runs see the previous day's snapshot
     // as reference for movement / yield-delta tracking.
-    const dailyDoc = {
-        schemaVersion: 1,
-        date: dateKey,
+    // State-count entry for the day (computed LIVE from chain this run). Rolled
+    // into the MONTHLY state-history file on daily(warm)/weekly(full) runs — the
+    // per-day daily/<date>.json is retired. Hot runs skip it (15-min would spam a
+    // daily file), same rule as floor-history.
+    const stateEntry = {
         capturedAt: startedAt.toISOString(),
-        // Subset of summary suitable for daily timeline (full summary is also at
-        // data/summary.json, but daily snapshot is the time-anchored archive).
+        mode: effectiveMode,
         epoch,
         total_tokens: records.length,
         broken_count: summary.broken_count,
         unbroken_count: summary.unbroken_count,
         unminted_count: summary.unminted_count,
         treasury_held_count: summary.treasury_held_count,
-        dao_wallet_8ywv_held_count: summary.dao_wallet_8ywv_held_count, // Rev B.1
+        dao_wallet_8ywv_held_count: summary.dao_wallet_8ywv_held_count,
         enterprise_staked_count: summary.enterprise_staked_count,
         enterprise_dao_broken_count: summary.enterprise_dao_broken_count,
         daodao_staked_count: summary.daodao_staked_count,
-        daodao_staked_broken_count: summary.daodao_staked_broken_count, // Rev B.1
+        daodao_staked_broken_count: summary.daodao_staked_broken_count,
         bbl_listed_count: summary.bbl_listed_count,
         atrium_listed_count: summary.atrium_listed_count,
         boost_listed_count: summary.boost_listed_count,
         user_held_count: summary.user_held_count,
-        user_held_broken_count: summary.user_held_broken_count, // Rev B.1
+        user_held_broken_count: summary.user_held_broken_count,
         backing: summary.backing,
         marketplaces: summary.marketplaces,
     };
@@ -2202,7 +2226,14 @@ async function captureSnapshot() {
         await pushToGithub(`${OUTPUT_PATH}/nfts.json`,      JSON.stringify(nftsDoc),                 `nft inventory — ${records.length} NFTs (${effectiveMode} run)`);
         await pushToGithub(`${OUTPUT_PATH}/summary.json`,   JSON.stringify(summaryDoc, null, 2),     `nft summary — ${summary.broken_count} broken / ${summary.bbl_listed_count + summary.atrium_listed_count + summary.boost_listed_count} listed`);
         await pushToGithub(`${OUTPUT_PATH}/heartbeat.json`, JSON.stringify(heartbeatDoc, null, 2),   `📍 nft-inventory heartbeat — ${effectiveMode}/${status}`);
-        await pushToGithub(`${OUTPUT_PATH}/daily/${dateKey}.json`, JSON.stringify(dailyDoc, null, 2), `daily snapshot — ${dateKey}`);
+        // State-history: monthly rollup (daily state counts, live from chain). On
+        // full/warm only — hot skips it (same cadence rule as floor-history). This
+        // replaces the retired per-day daily/<date>.json.
+        if (effectiveMode === 'full' || effectiveMode === 'warm') {
+            const priorState = await tryFetchJson(stateHistoryRawUrl(dateKey), 'state-history month');
+            const stateDoc = upsertStateHistory(priorState, dateKey, stateEntry, startedAt.toISOString());
+            await pushToGithub(stateHistoryPath(dateKey), JSON.stringify(stateDoc, null, 2), `state-history — ${dateKey} (${Object.keys(stateDoc.days).length} days this month)`);
+        }
         await pushToGithub(PENDING_CLAIMS_PATH, JSON.stringify(pending.updatedState, null, 2), `pending-claims — ${pending.block.count} pending${pending.block.reconciled === false ? ' (DRIFT)' : ''}`);
         if (effectiveMode === 'full') {
             await pushToGithub(HOT_SET_PATH, JSON.stringify(hotSetDoc, null, 2), `hot-set rebuild — ${hotSetIds.length} tokens`);
@@ -2216,14 +2247,14 @@ async function captureSnapshot() {
         fs.writeFileSync('nfts.json', JSON.stringify(nftsDoc));
         fs.writeFileSync('summary.json', JSON.stringify(summaryDoc, null, 2));
         fs.writeFileSync('heartbeat.json', JSON.stringify(heartbeatDoc, null, 2));
-        fs.writeFileSync(`daily-${dateKey}.json`, JSON.stringify(dailyDoc, null, 2));
+        if (effectiveMode === 'full' || effectiveMode === 'warm') fs.writeFileSync(`state-${dateKey}.json`, JSON.stringify(stateEntry, null, 2));
         fs.writeFileSync('pending-claims.json', JSON.stringify(pending.updatedState, null, 2));
         if (effectiveMode === 'full') fs.writeFileSync('hot-set.json', JSON.stringify(hotSetDoc, null, 2));
         if (floorHistoryDoc) {
             fs.writeFileSync('floor-history.json', JSON.stringify(floorHistoryDoc, null, 2));
             fs.writeFileSync('listing-first-seen.json', JSON.stringify(firstSeenDoc, null, 2));
         }
-        console.log(`  Saved locally: nfts.json (${(JSON.stringify(nftsDoc).length / 1024).toFixed(1)} KB), summary.json, heartbeat.json, daily-${dateKey}.json${effectiveMode === 'full' ? ', hot-set.json' : ''}`);
+        console.log(`  Saved locally: nfts.json (${(JSON.stringify(nftsDoc).length / 1024).toFixed(1)} KB), summary.json, heartbeat.json${(effectiveMode !== 'hot') ? ', state-'+dateKey+'.json' : ''}${effectiveMode === 'full' ? ', hot-set.json' : ''}`);
     }
 
     const elapsed = (Date.now() - startedAt.getTime()) / 1000;
