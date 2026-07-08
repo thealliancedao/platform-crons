@@ -18,6 +18,8 @@ not new code.
 | `token-catalog/` | WORTH — pools, tokens, identity, four-source pricing, LST redemption, scoring | `tla-core/token-catalog/` | ✅ live (all stages complete) |
 | `dex-data/` | DEX trading quality — per-DEX pools, volume (sum), liquidity (avg+min+cv), reserves | `tla-core/dex-data/` | ✅ live (forward-capture; Component A of grading) |
 | `member-data/` | VP layer — held + directed VP, per-bucket voting, influence + utilization (idle VP) | `tla-core/member-data/` | ✅ live (the VP-efficiency intelligence) |
+| `tla-voting/` | Governance EVENTS — votes, locks, bribes, rewards (gauge + escrow + incentive mgr; one-contract-one-owner) | `tla-core/tla-voting/events/` | ✅ live (`org-tla-voting`, 6-hourly; backfilled to contract genesis 2024-08-27 via FCD fill) |
+| `nfts/adao/` | NFT inventory + marketplace flows + analytics for the aDAO collection | `tla-core/nfts/adao/` | ✅ live |
 
 Each cron folder is self-contained (`README.md` + `<cron>.js` + `package.json`) and
 requires only ACTIVE `lib/` files + `config/contracts.js`. New crons are prefixed
