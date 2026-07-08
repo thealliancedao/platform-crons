@@ -53,7 +53,7 @@ const PAGE_LIMIT       = 100;
 const MAX_PAGES        = Number(process.env.MAX_PAGES || 60);
 const SCHEMA_VERSION   = 1;
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-1.0.0';
+const VERSION          = 'org-tla-flows-1.0.1';
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run window (~2h)
 const RETENTION_BLOCKS = Number(process.env.RETENTION_BLOCKS || 86400); // ~6 days @ ~14.4k blocks/day
 
@@ -97,6 +97,8 @@ async function tryGetJson(url, label) { try { return await T.httpGet(url); } cat
 
 // ----------------------------------------------------------------------------- tx_search (resilient ASC pager — verbatim from the proven org engine; F1)
 async function fetchAllTxs(conds, label) {
+  const t0 = Date.now();
+  console.log(`  ${label}: scanning…`);
   const RETRIES = +(process.env.PAGER_RETRIES || 40), ROUNDS = +(process.env.PAGER_ROUNDS || 2);
   const ERR_BACKOFF = +(process.env.PAGER_ERR_BACKOFF || 250), PROBE_DELAY = +(process.env.PAGER_PROBE_DELAY || 40);
   const CONTIG_DELTA = 250000, P1_STABLE = 12;
@@ -116,6 +118,7 @@ async function fetchAllTxs(conds, label) {
     scan(batch); nonEmpty++;
     const minH = Math.min(...batch.map(t => Number(t.height)));
     if (!best1 || minH < best1.minH) { best1 = { batch, minH }; noImprove = 0; } else { noImprove++; }
+    if (a % 8 === 7) console.log(`  ${label}: probing page 1… best start-height=${best1 ? best1.minH : 'n/a'} (${a + 1} probes, ${stats.error} errors)`);
     if (nonEmpty >= 3 && noImprove >= P1_STABLE) break;
     await sleep(PROBE_DELAY);
   }
@@ -125,9 +128,11 @@ async function fetchAllTxs(conds, label) {
     // that's unreachable → incomplete. If probes succeeded with zero rows,
     // that's a genuinely empty result → complete.
     const unreachable = stats.error > 0 && stats.empty === 0;
+    console.log(`  ${label}: DONE — 0 txs | stop=${unreachable ? 'p1-unreachable' : 'clean-end'} | calls=${stats.calls} err=${stats.error} | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     return { txs: [], stop: unreachable ? 'p1-unreachable' : 'clean-end', globalMax: 0 };
   }
   commit(best1.batch);
+  console.log(`  ${label}: page1 start-height=${best1.minH} (${out.length} txs, frontier=${frontier})`);
 
   for (let page = 2; page < MAX_PAGES; page++) {
     const avg = out.length > 1 ? Math.max(1, (frontier - Number(out[0].height)) / (out.length - 1)) : 1;
@@ -152,7 +157,8 @@ async function fetchAllTxs(conds, label) {
     } while (frontier < globalMax && rounds < ROUNDS && (!bestCand || bestCand.freshMin - frontier > LOOSE));
 
     if (bestCand) {
-      commit(bestCand.batch);
+      const added = commit(bestCand.batch);
+      console.log(`  ${label}: page ${page} → ${out.length} txs (frontier=${frontier}, +${added})`);
       if (page === MAX_PAGES - 1) { stop = 'page-cap'; console.warn(`  ⚠ ${label} hit page cap (${MAX_PAGES})`); }
       continue;
     }
@@ -162,7 +168,7 @@ async function fetchAllTxs(conds, label) {
     break;
   }
   out.sort((a, b) => Number(a.height) - Number(b.height) || (a.txhash < b.txhash ? -1 : 1));
-  console.log(`  ${label}: ${out.length} txs | stop=${stop} | pages=${stats.pages} calls=${stats.calls} err=${stats.error}`);
+  console.log(`  ${label}: DONE — ${out.length} txs | stop=${stop} | pages=${stats.pages} calls=${stats.calls} err=${stats.error} | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return { txs: out, stop, globalMax };
 }
 const SCAN_COMPLETE = (stop) => stop === 'complete' || stop === 'clean-end';

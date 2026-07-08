@@ -93,6 +93,14 @@ unique. All scenarios pass (2026-07-08):
 
 ## Recent changes
 
+# Rev B.1.1 — 2026-07-08 — observability (first live run looked hung)
+- The pager lift had dropped tla-voting's progress lines, so a first run
+  (which probes the full ~1-week retained index per contract) printed nothing
+  for many minutes. Restored: `scanning…` announcements, page-1 probe
+  progress every 8 attempts (with error counts), per-page commit lines, and
+  per-contract DONE lines with wall-clock seconds. No loop-logic change;
+  full mock suite re-run — ALL PASSED.
+
 # Rev B.1 — 2026-07-08 — org rework of Rev A.3 (deploy review)
 - Classifier lifted intact from `cron-scripts/tla-flows` Rev A.3 (42/42
   verified) into an org-conformant shell; `<<FLOWS CLASSIFIER v1>>` markers.
