@@ -1,0 +1,8 @@
+{
+  "name": "org-tla-voting",
+  "version": "1.0.0",
+  "description": "TLA voting event capture (forward): votes, locks, bribes, rewards from gauge + escrow + incentive manager into tla-core tla-voting/events",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "license": "MIT"
+}
