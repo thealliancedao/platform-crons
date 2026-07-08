@@ -52,6 +52,12 @@ const STAKING_BUCKETS = {
 };
 const BUCKETS = ['stable', 'project', 'bluechip', 'single'];
 
+// ── TLA zapper (added 2026-07-08 for org-tla-flows) ─────────────────────────
+const ZAPPER = {
+    addr: 'terra1qdjsxsv96aagrdxz83gwtjk8qvf2mrg4y8y3dqjxg556lm79pg5qdgmaxl',
+    role: 'Eris LP zapper (create_lp / withdraw_lp — zap entry/exit legs for tla-flows)',
+};
+
 // ── DAO wallets ─────────────────────────────────────────────────────────────
 const DAO_MAIN_WALLET = {
     addr: 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm',
@@ -118,6 +124,7 @@ module.exports = {
     VOTING_ESCROW,
     BRIBE_MANAGER,
     COMPOUNDER,
+    ZAPPER,
     STAKING_BUCKETS,
     BUCKETS,
     DAO_MAIN_WALLET,
