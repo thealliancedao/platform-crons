@@ -53,7 +53,7 @@ const PAGE_LIMIT       = 100;
 const MAX_PAGES        = Number(process.env.MAX_PAGES || 60);
 const SCHEMA_VERSION   = 1;
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-1.0.1';
+const VERSION          = 'org-tla-flows-1.0.2';
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run window (~2h)
 const RETENTION_BLOCKS = Number(process.env.RETENTION_BLOCKS || 86400); // ~6 days @ ~14.4k blocks/day
 
@@ -76,10 +76,18 @@ function realHttpGet(url, t = 20000) {
   return new Promise((res, rej) => {
     const r = https.get(url, { agent: KEEPALIVE_AGENT, headers: { Accept: 'application/json', Connection: 'keep-alive', 'User-Agent': 'org-tla-flows/1.0' } }, (x) => {
       let b = ''; x.on('data', c => b += c); x.on('end', () => {
+        clearTimeout(deadline);
         if (x.statusCode >= 200 && x.statusCode < 300) { try { res(JSON.parse(b)); } catch { rej(new Error('bad JSON')); } }
         else rej(new Error(`HTTP ${x.statusCode} ${b.slice(0, 120)}`)); });
     });
-    r.on('error', rej); r.setTimeout(t, () => r.destroy(new Error('timeout')));
+    r.on('error', (e) => { clearTimeout(deadline); rej(e); });
+    // idle timeout (socket goes quiet) …
+    r.setTimeout(t, () => r.destroy(new Error('idle-timeout')));
+    // … AND a hard total deadline. A tarpitting server that trickles bytes never
+    // goes idle, so the idle timer alone can hang a run forever (observed on the
+    // first live run, 2026-07-08). destroy() fires the 'error' path → retry.
+    const deadline = setTimeout(() => r.destroy(new Error(`deadline-${Math.round(t * 2 / 1000)}s`)), t * 2);
+    if (deadline.unref) deadline.unref();
   });
 }
 function realGithubApiRequest(method, apiPath, body) {

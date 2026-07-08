@@ -93,6 +93,17 @@ unique. All scenarios pass (2026-07-08):
 
 ## Recent changes
 
+# Rev B.1.2 — 2026-07-08 — hard request deadline (first live run stalled)
+- `httpGet`'s 20s timer was a socket-IDLE timeout only; a tarpitting LCD that
+  trickles bytes never idles → the first live run hung after "first run:"
+  with flat network metrics. Added a hard total deadline (2× idle budget,
+  40s) that destroys the request → error path → normal retry. Idle timer
+  renamed `idle-timeout`; deadline errors read `deadline-40s` in probe logs.
+- ⚠ org-tla-voting shares this transport pattern and has the same latent
+  weakness — port this fix there next time it's touched (queued in
+  CHANGES_PENDING conformance notes).
+- Full mock suite re-run — ALL PASSED.
+
 # Rev B.1.1 — 2026-07-08 — observability (first live run looked hung)
 - The pager lift had dropped tla-voting's progress lines, so a first run
   (which probes the full ~1-week retained index per contract) printed nothing
