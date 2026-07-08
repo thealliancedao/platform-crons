@@ -41,10 +41,16 @@ On 2026-07-07 we discovered public Terra nodes pruned their **tx index to
   (recoverable only via a future archive-node run). The heartbeat monitor is
   not optional.
 - Any hole that does occur is recorded in each stream's `known_gaps` (with the
-  precise resume height) — never silently papered over. Existing gap: votes/
-  locks 2026-06-15→22 (heights ~21.48M→21.59M), an archive-node target.
-- The frozen personal repo is the **sole source** of Aug-2024→Jun-2026 events.
-  It stays frozen (never deleted, never re-run) until archive recovery exists.
+  precise resume height) — never silently papered over.
+
+**Coverage after the FCD archive fill (2026-07-08):** all four streams start at
+TRUE contract genesis (the three contracts deployed 2024-08-27). The FCD
+indexer (`phoenix-fcd.terra.dev` — frozen archive, genesis→~2025-01-07) filled
+everything below the old horizons via `fcd-fill.js`. Remaining holes, recorded
+in `known_gaps` (archive-node targets): votes/locks **2026-06-15→22**, and
+bribes/rewards **Jan-2025→Jun-2026** (FCD freeze → org capture start). The
+frozen `defipatriot/tla-history-data_2026` remains the sole source of
+votes/locks for Jan-2025→Jun-15-2026 — keep frozen, never deleted.
 
 ## Reliability behavior
 
@@ -87,6 +93,10 @@ On 2026-07-07 we discovered public Terra nodes pruned their **tx index to
 
 ## Recent changes
 
+- **2026-07-08 (data, not code)** — FCD archive fill executed: streams extended
+  to contract genesis (votes 8,270 · locks 13,585 · bribes 172 · rewards
+  6,038). Cron code unchanged; it forward-maintains on top of the filled
+  streams. See `tla-core/docs/changelogs/cron-tla-voting-log.md` Rev 2.
 - **1.0.0 (2026-07-08)** — initial forward cron. Classifier v3 (byte-identical
   with seed v3.3): chain-confirmed add_bribe shape, target-contract filter,
   reward union across sweeps, gap honesty with precise resume boundaries,
