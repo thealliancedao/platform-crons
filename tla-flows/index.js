@@ -1,38 +1,30 @@
-#!/usr/bin/env node
 // =============================================================================
 // org-tla-flows — TLA LP flow event capture (deposits / withdrawals / claims
-// + entry/exit slippage), forward cron.
+// + slippage receipts), forward cron. Rev C: BLOCK-WALKER engine.
 //
 // Render job: org-tla-flows · schedule: */15 * * * * · entry: index.js
-// Spec context: PROJECT_KNOWLEDGE "TLA LP-flow event capture" + review of
-// 2026-07-08. Storage per TLA-CORE-STORAGE-DESIGN (corrected 2026-07-08):
-//   tla-core/tla-flows/events/
-//     heartbeat.json  index.json  cursor.json
-//     {YYYY}/{MM}.json          ← monthly JSON arrays, chain-ordered
+// Spec: tla-core/docs/pending-changes/SPEC-tla-flows-walker.md
+// Storage per TLA-CORE-STORAGE-DESIGN (corrected 2026-07-08):
+//   tla-core/tla-flows/events/{heartbeat,index,cursor}.json + {YYYY}/{MM}.json
 //
-// Write pattern (EVENT product law): scan [cursor+1, head] → classify →
-// read touched month files → merge DEDUPED BY TXHASH → never-shrink guard →
-// publish months → index → CURSOR LAST (only if every contract scan was
-// complete) → heartbeat. A crash re-reads the unmoved window; merge-dedupe
-// absorbs the overlap. Page-capped / stuck scans report status "partial" and
-// DO NOT advance the cursor (F7).
+// FORWARD CAPTURE DONE AS FORWARD CAPTURE (platform doctrine): the walker
+// reads each new block since its cursor via RPC — /block (timestamp + raw
+// txs) and /block_results (per-tx events) — classifies txs that touch the six
+// watched contracts, merges into month files (txhash dedupe, never-shrink),
+// and advances cursor = last block processed. Cost scales with elapsed time,
+// never with node retention. No index scanning, no pagers, no probing.
+// (The Rev B tx_search scanner — a backfill species — lives in git history
+// and remains the right tool for one-shot catch-up jobs only.)
 //
-// Retention honesty: public nodes retain ~1 week of tx index. If the cursor
-// has fallen further behind than RETENTION_BLOCKS, the unrecoverable span is
-// recorded in known_gaps (with precise heights) and the cursor moves on —
-// never papered over, never stuck.
+// PHASE-2 DESTINY (approved direction, 2026-07-08): this walker is the seed
+// of the platform-wide capture layer — a registry of watched addresses +
+// message patterns routing matched txs into per-domain buckets, with other
+// crons as consumers, and the future live activity feed on top. Spec'd
+// separately; nothing here changes when that lands except the watch table.
 //
-// The CLASSIFIER block below carries <<FLOWS CLASSIFIER v1>> markers and must
-// stay BYTE-IDENTICAL with the flows-fill derive's copy
-// (tla-core/.github/scripts/tla-flows/) once that ships. Verify with a plain
-// diff after any change. Classification logic is the Rev A.3 parser, verified
-// 42/42 on live compounder data + 8 hand-captured variations; the shell adds
-// only a code!==0 skip (FCD-sourced fills include failed txs).
-//
-// Env (Render): GITHUB_TOKEN (scoped to tla-core), GITHUB_REPO
-// (default thealliancedao/tla-core), GITHUB_BRANCH (main), LCD_PRIMARY /
-// LCD_FALLBACK, MAX_PAGES (60), PAGER_* knobs, TLA_START_HEIGHT (first-run
-// override), TLA_LOOKBACK (first-run window, blocks), RETENTION_BLOCKS.
+// Env (Render): GITHUB_TOKEN (required), GITHUB_REPO/GITHUB_BRANCH,
+// RPC_PRIMARY / RPC_FALLBACK, WALK_CONCURRENCY (4), MAX_BLOCKS_PER_RUN
+// (4000), TLA_LOOKBACK (1200 blocks, first run only).
 // =============================================================================
 
 'use strict';
@@ -41,21 +33,19 @@ const https = require('https');
 const C = require('../config/contracts.js');
 
 // ----------------------------------------------------------------------------- constants
-const TERRA_LCD_PRIMARY  = process.env.LCD_PRIMARY  || 'https://terra-lcd.publicnode.com';
-const TERRA_LCD_FALLBACK = process.env.LCD_FALLBACK || 'https://terra-rest.publicnode.com';
+const RPC_PRIMARY  = process.env.RPC_PRIMARY  || 'https://terra-rpc.publicnode.com';
+const RPC_FALLBACK = process.env.RPC_FALLBACK || 'https://terra-rpc.polkachu.com';
+const crypto = require('crypto');
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const OUT_DIR       = 'tla-flows/events';
 
-const PAGE_LIMIT       = 100;
-const MAX_PAGES        = Number(process.env.MAX_PAGES || 60);
-const SCHEMA_VERSION   = 1;
+const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-1.0.2';
-const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run window (~2h)
-const RETENTION_BLOCKS = Number(process.env.RETENTION_BLOCKS || 86400); // ~6 days @ ~14.4k blocks/day
+const VERSION          = 'org-tla-flows-2.0.0';   // Rev C block-walker
+const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
 // Addresses come from the shared config — never hardcoded (org rule).
@@ -100,86 +90,99 @@ function realGithubApiRequest(method, apiPath, body) {
 }
 const T = { httpGet: realHttpGet, githubApiRequest: realGithubApiRequest, now: () => new Date() };
 
-async function lcdGet(p, label) { try { return await T.httpGet(TERRA_LCD_PRIMARY + p); } catch (e) { try { return await T.httpGet(TERRA_LCD_FALLBACK + p); } catch (e2) { throw new Error(`${label}: both LCDs failed (${e2.message})`); } } }
+async function rpcGet(p, label) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try { return await T.httpGet(RPC_PRIMARY + p); } catch (e) { lastErr = e; }
+    try { return await T.httpGet(RPC_FALLBACK + p); } catch (e) { lastErr = e; }
+    await sleep(300 * attempt);
+  }
+  throw new Error(`${label}: RPC failed after retries (${lastErr && lastErr.message})`);
+}
 async function tryGetJson(url, label) { try { return await T.httpGet(url); } catch (e) { console.warn(`  ⚠ ${label} fetch failed (non-fatal): ${e.message}`); return null; } }
 
-// ----------------------------------------------------------------------------- tx_search (resilient ASC pager — verbatim from the proven org engine; F1)
-async function fetchAllTxs(conds, label) {
-  const t0 = Date.now();
-  console.log(`  ${label}: scanning…`);
-  const RETRIES = +(process.env.PAGER_RETRIES || 40), ROUNDS = +(process.env.PAGER_ROUNDS || 2);
-  const ERR_BACKOFF = +(process.env.PAGER_ERR_BACKOFF || 250), PROBE_DELAY = +(process.env.PAGER_PROBE_DELAY || 40);
-  const CONTIG_DELTA = 250000, P1_STABLE = 12;
-  const txPath = (page) => `/cosmos/tx/v1beta1/txs?query=${encodeURIComponent(conds.join(' AND '))}&order_by=ORDER_BY_ASC&page=${page}&limit=${PAGE_LIMIT}`;
-  const out = [], seen = new Set();
-  const stats = { calls: 0, pages: 0, regress: 0, far: 0, dup: 0, empty: 0, error: 0, reprobe: 0 };
-  let frontier = 0, globalMax = 0, stop = 'complete';
-  const scan = (batch) => { let freshMin = Infinity, fresh = 0; for (const tx of batch) { const h = Number(tx.height); if (h > globalMax) globalMax = h; if (!seen.has(tx.txhash)) { fresh++; if (h < freshMin) freshMin = h; } } return { fresh, freshMin }; };
-  const commit = (batch) => { let added = 0; for (const tx of batch) { const h = Number(tx.height); if (h > frontier) frontier = h; if (!seen.has(tx.txhash)) { seen.add(tx.txhash); out.push(tx); added++; } } stats.pages++; return added; };
+// ----------------------------------------------------------------------------- block walker primitives
+const PRUNED = Symbol('pruned');
+function isPrunedError(e) { return /not available|is not available|lowest height|pruned/i.test(String(e && e.message || e)); }
 
-  let best1 = null, noImprove = 0, nonEmpty = 0;
-  for (let a = 0; a < RETRIES; a++) {
-    stats.calls++;
-    let resp; try { resp = await lcdGet(txPath(1), `${label} p1.${a}`); } catch { stats.error++; await sleep(ERR_BACKOFF); continue; }
-    const batch = resp?.tx_responses || [];
-    if (!batch.length) { stats.empty++; await sleep(ERR_BACKOFF); continue; }
-    scan(batch); nonEmpty++;
-    const minH = Math.min(...batch.map(t => Number(t.height)));
-    if (!best1 || minH < best1.minH) { best1 = { batch, minH }; noImprove = 0; } else { noImprove++; }
-    if (a % 8 === 7) console.log(`  ${label}: probing page 1… best start-height=${best1 ? best1.minH : 'n/a'} (${a + 1} probes, ${stats.error} errors)`);
-    if (nonEmpty >= 3 && noImprove >= P1_STABLE) break;
-    await sleep(PROBE_DELAY);
+async function getHead() {
+  const s = await rpcGet('/status', 'head');
+  return Number(s.result.sync_info.latest_block_height);
+}
+async function getBlock(N) {
+  let r;
+  try { r = await rpcGet(`/block?height=${N}`, `block ${N}`); }
+  catch (e) { if (isPrunedError(e)) return PRUNED; throw e; }
+  if (r.error) { if (isPrunedError(r.error)) return PRUNED; throw new Error(`block ${N}: ${JSON.stringify(r.error).slice(0, 120)}`); }
+  const b = r.result.block;
+  return { time: String(b.header.time).slice(0, 19) + 'Z', txsB64: b.data.txs || [] };
+}
+async function getBlockResults(N) {
+  const r = await rpcGet(`/block_results?height=${N}`, `block_results ${N}`);
+  if (r.error) throw new Error(`block_results ${N}: ${JSON.stringify(r.error).slice(0, 120)}`);
+  return r.result.txs_results || [];
+}
+const txHashOf = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex').toUpperCase();
+
+// Only txs touching a watched contract are classified — block data sees the
+// whole chain, unlike tx_search; without this gate the classifier's claim
+// fallback would capture other protocols (spec D4). Classifier unchanged.
+function touchesWatched(events) {
+  for (const e of events || []) {
+    if (e.type !== 'wasm') continue;
+    for (const a of e.attributes || [])
+      if (a.key === '_contract_address' && WATCH[a.value]) return true;
   }
-  if (!best1) {
-    // Watched-contract windows can legitimately be empty at 15-min cadence —
-    // but "empty" and "unreachable" must stay distinct. If every probe ERRORED,
-    // that's unreachable → incomplete. If probes succeeded with zero rows,
-    // that's a genuinely empty result → complete.
-    const unreachable = stats.error > 0 && stats.empty === 0;
-    console.log(`  ${label}: DONE — 0 txs | stop=${unreachable ? 'p1-unreachable' : 'clean-end'} | calls=${stats.calls} err=${stats.error} | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-    return { txs: [], stop: unreachable ? 'p1-unreachable' : 'clean-end', globalMax: 0 };
+  return false;
+}
+
+// Binary-search the lowest available block in (lo..hi] after hitting pruning.
+async function firstAvailable(lo, hi) {
+  let lb = lo, ub = hi, best = hi;
+  while (lb <= ub) {
+    const mid = Math.floor((lb + ub) / 2);
+    if ((await getBlock(mid)) === PRUNED) lb = mid + 1;
+    else { best = mid; ub = mid - 1; }
   }
-  commit(best1.batch);
-  console.log(`  ${label}: page1 start-height=${best1.minH} (${out.length} txs, frontier=${frontier})`);
+  return best;
+}
 
-  for (let page = 2; page < MAX_PAGES; page++) {
-    const avg = out.length > 1 ? Math.max(1, (frontier - Number(out[0].height)) / (out.length - 1)) : 1;
-    const TIGHT = Math.max(2000, 3 * avg), LOOSE = Math.max(50000, 10 * avg);
-    let bestCand = null, rounds = 0;
-    do {
-      if (rounds > 0) stats.reprobe++;
-      for (let a = 0; a < RETRIES; a++) {
-        stats.calls++;
-        let resp; try { resp = await lcdGet(txPath(page), `${label} p${page}.${a}`); } catch { stats.error++; await sleep(ERR_BACKOFF); continue; }
-        const batch = resp?.tx_responses || [];
-        if (!batch.length) { stats.empty++; await sleep(ERR_BACKOFF); continue; }
-        const { fresh, freshMin } = scan(batch);
-        if (fresh === 0) { stats.dup++; await sleep(PROBE_DELAY); continue; }
-        if (freshMin < frontier) { stats.regress++; await sleep(PROBE_DELAY); continue; }
-        if (freshMin - frontier > CONTIG_DELTA) { stats.far++; await sleep(PROBE_DELAY); continue; }
-        if (!bestCand || freshMin < bestCand.freshMin) bestCand = { batch, freshMin };
-        if (bestCand.freshMin - frontier <= TIGHT) break;
-        await sleep(PROBE_DELAY);
-      }
-      rounds++;
-    } while (frontier < globalMax && rounds < ROUNDS && (!bestCand || bestCand.freshMin - frontier > LOOSE));
-
-    if (bestCand) {
-      const added = commit(bestCand.batch);
-      console.log(`  ${label}: page ${page} → ${out.length} txs (frontier=${frontier}, +${added})`);
-      if (page === MAX_PAGES - 1) { stop = 'page-cap'; console.warn(`  ⚠ ${label} hit page cap (${MAX_PAGES})`); }
+// Walk [from..to] with a small ordered prefetch window. Returns
+// { records, processedTo, gaps } — safe to commit partial progress.
+async function walkBlocks(from, to, budgetNote) {
+  const CONC = Number(process.env.WALK_CONCURRENCY || 4);
+  const records = [], gaps = [];
+  let N = from, inFlight = new Map();
+  const launch = (h) => { if (h <= to && !inFlight.has(h)) inFlight.set(h, getBlock(h)); };
+  for (let h = N; h < N + CONC && h <= to; h++) launch(h);
+  let lastLog = Date.now();
+  while (N <= to) {
+    let blk;
+    try { blk = await inFlight.get(N); } catch (e) { inFlight.delete(N); throw Object.assign(e, { atBlock: N }); }
+    inFlight.delete(N);
+    if (blk === PRUNED) {
+      const avail = await firstAvailable(N, to + 1);
+      gaps.push({ from_height: N, to_height: avail - 1, recorded_at: T.now().toISOString(), reason: 'blocks pruned on both RPC endpoints' });
+      console.warn(`  ⚠ blocks ${N}–${avail - 1} pruned — gap recorded, jumping`);
+      for (const k of [...inFlight.keys()]) if (k < avail) inFlight.delete(k);
+      N = avail; if (N > to) break;
+      for (let h = N; h < N + CONC && h <= to; h++) launch(h);
       continue;
     }
-    if (frontier >= globalMax) { stop = 'clean-end'; break; }
-    stop = `stuck@page${page}`;
-    console.warn(`  ⚠ ${label}: STUCK at page ${page} — frontier ${frontier} < globalMax ${globalMax}`);
-    break;
+    if (blk.txsB64.length) {
+      const results = await getBlockResults(N);
+      for (let i = 0; i < blk.txsB64.length; i++) {
+        const res = results[i]; if (!res) continue;
+        if (!touchesWatched(res.events)) continue;
+        const rec = classifyFlowTx({ txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: res.code || 0, events: res.events });
+        if (rec) records.push(rec);
+      }
+    }
+    if (Date.now() - lastLog > 15000) { console.log(`  walked to ${N} (${to - N} to go, ${records.length} flows)`); lastLog = Date.now(); }
+    N++; launch(N + CONC - 1);
   }
-  out.sort((a, b) => Number(a.height) - Number(b.height) || (a.txhash < b.txhash ? -1 : 1));
-  console.log(`  ${label}: DONE — ${out.length} txs | stop=${stop} | pages=${stats.pages} calls=${stats.calls} err=${stats.error} | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  return { txs: out, stop, globalMax };
+  return { records, processedTo: to, gaps, note: budgetNote };
 }
-const SCAN_COMPLETE = (stop) => stop === 'complete' || stop === 'clean-end';
 
 // =============================================================================
 // SHARED CLASSIFIER — this section must stay BYTE-IDENTICAL with the copy in
@@ -305,59 +308,50 @@ async function run() {
     throw new Error('cursor unreachable while index shows history — aborting');
   }
 
-  // 2. window
+  // 2. window (cursor = last block processed; schema-2, with schema-1 migration)
   let head;
-  try { head = Number((await lcdGet('/cosmos/base/tendermint/v1beta1/blocks/latest', 'head')).block.header.height); }
+  try { head = await getHead(); }
   catch (e) { addErr('head', e); await publishHeartbeat({ startedAt, status: 'error', errors }); throw e; }
 
-  let fromH;
-  let runMode = 'forward';
-  if (cursor && cursor.head_height_at_last_run) fromH = Number(cursor.head_height_at_last_run) + 1;
-  else if (process.env.TLA_START_HEIGHT) { fromH = Number(process.env.TLA_START_HEIGHT); runMode = 'backfill'; }
-  else { fromH = head - DEFAULT_LOOKBACK; runMode = 'bootstrap'; console.log(`  first run: head ${head}, starting ${DEFAULT_LOOKBACK} blocks back at ${fromH}`); }
-  if (fromH > head) {
-    console.log(`  no new blocks (cursor ${fromH - 1} >= head ${head})`);
-    await publishHeartbeat({ startedAt, status: 'ok', errors, counts: { new_events: 0 }, lastHeights: { cursor: fromH - 1, head }, gaps: index.known_gaps });
+  let lastBlock = null;
+  if (cursor) lastBlock = cursor.last_block != null ? Number(cursor.last_block)
+                        : (cursor.head_height_at_last_run != null ? Number(cursor.head_height_at_last_run) : null); // v1 migration
+  let fromB, runMode = 'forward';
+  if (lastBlock != null) fromB = lastBlock + 1;
+  else if (process.env.TLA_START_HEIGHT) { fromB = Number(process.env.TLA_START_HEIGHT); runMode = 'bootstrap'; }
+  else { fromB = head - DEFAULT_LOOKBACK; runMode = 'bootstrap'; console.log(`  first run: head ${head}, walking from ${fromB} (${DEFAULT_LOOKBACK} blocks back)`); }
+  if (fromB > head) {
+    console.log(`  no new blocks (cursor ${fromB - 1} >= head ${head})`);
+    await publishHeartbeat({ startedAt, status: 'ok', errors, runMode, counts: { new_events: 0 }, lastHeights: { cursor: fromB - 1, head }, gaps: index.known_gaps });
     return;
   }
 
-  // 3. retention honesty — record the unrecoverable span, then move on
-  const gaps = Array.isArray(index.known_gaps) ? [...index.known_gaps] : [];
-  let gapRecorded = null;
-  if (runMode === 'forward' && head - fromH > RETENTION_BLOCKS) {
-    gapRecorded = {
-      from_height: fromH,
-      to_height_approx: head - RETENTION_BLOCKS,
-      recorded_at: startedAt.toISOString(),
-      reason: `cursor fell behind public-node retention (~${RETENTION_BLOCKS} blocks); span likely pruned — archive-node target`,
-    };
-    gaps.push(gapRecorded);
-    console.warn(`  ⚠ retention gap recorded: ${gapRecorded.from_height} → ~${gapRecorded.to_height_approx}`);
-  }
+  // 3. budget (catch-up is safe partial progress in walker-world)
+  const BUDGET = Number(process.env.MAX_BLOCKS_PER_RUN || 4000);
+  let toB = head, note;
+  if (toB - fromB + 1 > BUDGET) { toB = fromB + BUDGET - 1; note = `catching-up (${head - toB} blocks remain)`; runMode = 'catch-up'; console.log(`  budget: walking ${fromB}–${toB}, ${head - toB} deferred to next run`); }
 
-  // 4. scan the six contracts
-  const seen = new Set(); const records = [];
-  let allComplete = true;
-  const perContract = {};
-  for (const [addr, name] of Object.entries(WATCH)) {
-    let res;
-    try { res = await fetchAllTxs([`wasm._contract_address='${addr}'`], name); }
-    catch (e) { addErr(`scan:${name}`, e); allComplete = false; continue; }
-    if (!SCAN_COMPLETE(res.stop)) allComplete = false;
-    perContract[name] = { stop: res.stop, txs_seen: res.txs.length };
-    let kept = 0;
-    for (const txr of res.txs) {
-      const h = Number(txr.height);
-      if (h < fromH || h > head) continue;                 // client-side window
-      if (seen.has(txr.txhash)) continue; seen.add(txr.txhash);
-      const rec = classifyFlowTx(txr); if (rec) { records.push(rec); kept++; }
-    }
-    perContract[name].classified = kept;
+  // 4. walk
+  const gaps = Array.isArray(index.known_gaps) ? [...index.known_gaps] : [];
+  let walk;
+  let cursorTarget;
+  try {
+    walk = await walkBlocks(fromB, toB, note);
+    cursorTarget = walk.processedTo;
+  } catch (e) {
+    // mid-walk failure: commit nothing from this run, cursor holds; next run re-walks
+    addErr(`walk@${e.atBlock || '?'}`, e);
+    await publishHeartbeat({ startedAt, status: 'partial', errors, runMode, counts: { new_events: 0 }, lastHeights: { cursor: fromB - 1, head, failed_at: e.atBlock || null }, gaps });
+    console.warn('  ⚠ walk failed — cursor NOT advanced (window will be re-walked)');
+    return;
   }
+  for (const g of walk.gaps) gaps.push(g);
+  const records = walk.records;
   records.sort((a, b) => a.height - b.height || (a.txhash < b.txhash ? -1 : 1));
   const byType = {};
   for (const r of records) byType[r.type] = (byType[r.type] || 0) + 1;
-  console.log(`  classified ${records.length} flow events ${JSON.stringify(byType)} | window [${fromH}, ${head}] | complete=${allComplete}`);
+  console.log(`  walked ${fromB}–${cursorTarget}: ${records.length} flow events ${JSON.stringify(byType)}`);
+  let allComplete = true;
 
   // 5. merge + publish touched months (read → dedupe → never-shrink → publish)
   const byMonth = {};
@@ -380,7 +374,7 @@ async function run() {
   }
 
   // 6. index (never-shrink totals)
-  if (totalAdded > 0 || gapRecorded) {
+  if (totalAdded > 0 || walk.gaps.length) {
     index.schemaVersion = SCHEMA_VERSION;
     index.total_events = (index.total_events || 0) + totalAdded;
     for (const t in byType) index.by_type[t] = (index.by_type[t] || 0) + byType[t];
@@ -397,33 +391,33 @@ async function run() {
     catch (e) { addErr('publish:index', e); allComplete = false; }
   }
 
-  // 7. cursor LAST — only on fully complete scans (F7)
+  // 7. cursor LAST — walker semantics: advance to the last block actually
+  // processed (partial progress is safe; unpublished months block advancement)
   if (allComplete) {
     try {
       await publishFile(`${OUT_DIR}/cursor.json`, {
         schemaVersion: SCHEMA_VERSION,
-        head_height_at_last_run: head,
-        window_scanned: { from: fromH, to: head },
+        last_block: cursorTarget,
+        window_walked: { from: fromB, to: cursorTarget },
         updatedAt: startedAt.toISOString(),
-      }, `tla-flows cursor @ ${head}`);
+      }, `tla-flows cursor @ ${cursorTarget}`);
     } catch (e) { addErr('publish:cursor', e); allComplete = false; }
   } else {
-    console.warn('  ⚠ incomplete scan — cursor NOT advanced (window will be re-read)');
+    console.warn('  ⚠ publish failure — cursor NOT advanced (window will be re-walked)');
   }
 
   // 8. heartbeat
-  const status = errors.length ? (allComplete ? 'ok' : 'partial') : (allComplete ? 'ok' : 'partial');
   await publishHeartbeat({
-    startedAt, status: errors.length && !totalAdded && !allComplete ? 'error' : status, errors, runMode,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, per_contract: perContract },
-    lastHeights: { cursor: allComplete ? head : (cursor ? cursor.head_height_at_last_run : null), head, window_from: fromH },
+    startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1 },
+    lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });
-  console.log(`\n✅ done — +${totalAdded} events, cursor ${allComplete ? `advanced to ${head}` : 'HELD'}\n`);
+  console.log(`\n✅ done — +${totalAdded} events, cursor ${allComplete ? `advanced to ${cursorTarget}` : 'HELD'}${note ? ' · ' + note : ''}\n`);
 }
 
 // ----------------------------------------------------------------------------- entry
 if (require.main === module) {
   run().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
-module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsEventsOf, mergeMonth, monthKey, publishFile, T, WATCH };
+module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsEventsOf, mergeMonth, monthKey, publishFile, T, WATCH, txHashOf, touchesWatched };

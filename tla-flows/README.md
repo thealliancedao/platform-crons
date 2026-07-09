@@ -93,6 +93,22 @@ unique. All scenarios pass (2026-07-08):
 
 ## Recent changes
 
+# Rev C (2.0.0) — 2026-07-08 — BLOCK-WALKER engine (forward capture done right)
+- The tx_search index-scanner (a backfill species) is deleted from this cron;
+  the engine now walks each new block since its cursor via RPC — /block
+  (header time + raw txs, SHA-256 → txhash) + /block_results (per-tx events),
+  skipped for empty blocks. Cost scales with elapsed time, never node
+  retention. No pagers, no probing, no empty-page rituals.
+- New: watched-contract gate (block data sees the whole chain — spec D4),
+  block budget with safe catch-up partial progress (D8), exact pruned-block
+  gap recording (D10), cursor = last_block (schema 2, migrates v1).
+- Unchanged: <<FLOWS CLASSIFIER v1>> byte-identical · monthly merge/dedupe/
+  never-shrink · publisher · heartbeat · Render job/env/token.
+- Mock suite rebuilt (8 scenarios) — ALL PASSED on real data, including the
+  REAL RPC block 21,823,668 verbatim: one record, hash chain-verified
+  (2334BA2B…), withdraw/amplified/via_zap. Doctrine now in the spec (§0):
+  backfill tools and forward tools are different species.
+
 # Rev B.1.2 — 2026-07-08 — hard request deadline (first live run stalled)
 - `httpGet`'s 20s timer was a socket-IDLE timeout only; a tarpitting LCD that
   trickles bytes never idles → the first live run hung after "first run:"
