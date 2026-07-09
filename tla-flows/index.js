@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-2.0.0';   // Rev C block-walker
+const VERSION          = 'org-tla-flows-2.1.0';   // Rev C.1: API state reads + index guard
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -259,7 +259,20 @@ async function publishFile(filePath, contentObj, message) {
     }
   }
 }
-const RAW = (file) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUT_DIR}/${file}?t=${Date.now()}`;
+// Rev C.1: ALL state reads go through the authenticated Contents API — never
+// the raw CDN. The CDN serves stale/429 responses under load; on 2026-07-09 a
+// 429 on index.json made this cron rebuild the index from empty (month data
+// unaffected; metadata clobbered). API reads are authoritative + higher-limit.
+async function apiGetJson(file) {
+  try {
+    const r = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${OUT_DIR}/${file}?ref=${GITHUB_BRANCH}`);
+    return { ok: true, data: JSON.parse(Buffer.from(r.content, 'base64').toString('utf8')) };
+  } catch (e) {
+    if (e.statusCode === 404) return { ok: true, data: null };   // genuinely absent
+    console.warn(`  ⚠ API read failed for ${file}: ${e.message}`);
+    return { ok: false, data: null };                            // UNKNOWN — not absent
+  }
+}
 
 // ----------------------------------------------------------------------------- heartbeat (tla-core standard)
 async function publishHeartbeat(h) {
@@ -297,9 +310,15 @@ async function run() {
 
   if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN missing — refusing to run (no publish target).');
 
-  // 1. committed priors
-  const cursor = await tryGetJson(RAW('cursor.json'), 'cursor');
-  const index  = await tryGetJson(RAW('index.json'),  'index') ||
+  // 1. committed priors (API reads; fetch-failure ≠ absence — abort, never rebuild)
+  const cr = await apiGetJson('cursor.json');
+  const ir = await apiGetJson('index.json');
+  if (!cr.ok || !ir.ok) {
+    await publishHeartbeat({ startedAt, status: 'error', errors: [{ step: 'priors', message: 'state read failed (API) — refusing to run on unknown priors' }] });
+    throw new Error('state read failed — aborting rather than risk rebuilding over history');
+  }
+  const cursor = cr.data;
+  const index = ir.data ||
     { schemaVersion: SCHEMA_VERSION, product: 'tla-flows/events', total_events: 0, by_type: {}, months_present: {}, known_gaps: [], first_date: null, latest_date: null, latest_height: null };
   if (!cursor && index.total_events > 0) {
     // Never-seed rule: priors exist but the cursor is unreachable — abort loudly
@@ -359,7 +378,9 @@ async function run() {
   let totalAdded = 0;
   for (const mk of Object.keys(byMonth).sort()) {
     const file = `${mk}.json`;
-    const existing = (await tryGetJson(RAW(file), `month ${mk}`)) || [];
+    const mr = await apiGetJson(file);
+    if (!mr.ok) { addErr(`month:${mk}`, new Error('month read failed — skipping publish this run')); allComplete = false; continue; }
+    const existing = mr.data || [];
     if (!Array.isArray(existing)) { addErr(`month:${mk}`, new Error('existing month file is not an array — refusing to overwrite')); allComplete = false; continue; }
     const { merged, added } = mergeMonth(existing, byMonth[mk]);
     if (merged.length < existing.length) { addErr(`month:${mk}`, new Error(`never-shrink violation: merged ${merged.length} < committed ${existing.length}`)); allComplete = false; continue; }
