@@ -86,9 +86,11 @@ cron.T.httpGet = async (url) => {
   }
   throw new Error('mock httpGet: unhandled ' + url);
 };
-cron.T.githubApiRequest = async (method, apiPath, body) => {
+cron.T.githubApiRequest = async (method, apiPath, body, accept) => {
   const p = (apiPath.match(/contents\/(.+?)(\?|$)/) || [])[1];
-  if (method === 'GET') { if (M.store[p] === undefined) { const e = new Error('404'); e.statusCode = 404; throw e; } return { sha: 's' + M.store[p].length, content: Buffer.from(M.store[p]).toString('base64') }; }
+  if (method === 'GET') { if (M.store[p] === undefined) { const e = new Error('404'); e.statusCode = 404; throw e; }
+    if (accept === 'application/vnd.github.raw') return JSON.parse(M.store[p]);
+    return { sha: 's' + M.store[p].length, content: Buffer.from(M.store[p]).toString('base64') }; }
   if (method === 'PUT') {
     if (p.endsWith('cursor.json') && M.failCursorPut > 0) { M.failCursorPut--; const e = new Error('mock 500'); e.statusCode = 500; throw e; }
     M.store[p] = Buffer.from(body.content, 'base64').toString('utf8'); return { ok: 1 };

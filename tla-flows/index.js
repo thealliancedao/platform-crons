@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-2.1.0';   // Rev C.1: API state reads + index guard
+const VERSION          = 'org-tla-flows-2.1.1';   // Rev C.1.1: raw-media reads (>1MB files)
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -80,9 +80,9 @@ function realHttpGet(url, t = 20000) {
     if (deadline.unref) deadline.unref();
   });
 }
-function realGithubApiRequest(method, apiPath, body) {
+function realGithubApiRequest(method, apiPath, body, accept) {
   return new Promise((resolve, reject) => {
-    const opts = { hostname: 'api.github.com', path: apiPath, method, headers: { 'User-Agent': 'org-tla-flows', 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } };
+    const opts = { hostname: 'api.github.com', path: apiPath, method, headers: { 'User-Agent': 'org-tla-flows', 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': accept || 'application/vnd.github+json' } };
     if (body) opts.headers['Content-Type'] = 'application/json';
     const req = https.request(opts, res => { let data = ''; res.on('data', c => data += c); res.on('end', () => { if (res.statusCode >= 200 && res.statusCode < 300) { try { resolve(JSON.parse(data)); } catch { resolve(data); } } else { const err = new Error(`GitHub ${method} ${apiPath}: ${res.statusCode} ${data.slice(0, 200)}`); err.statusCode = res.statusCode; reject(err); } }); });
     req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end();
@@ -265,8 +265,9 @@ async function publishFile(filePath, contentObj, message) {
 // unaffected; metadata clobbered). API reads are authoritative + higher-limit.
 async function apiGetJson(file) {
   try {
-    const r = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${OUT_DIR}/${file}?ref=${GITHUB_BRANCH}`);
-    return { ok: true, data: JSON.parse(Buffer.from(r.content, 'base64').toString('utf8')) };
+    // raw media type: Contents API returns EMPTY content for files >1MB
+    const d = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${OUT_DIR}/${file}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw');
+    return { ok: true, data: typeof d === 'string' ? JSON.parse(d) : d };
   } catch (e) {
     if (e.statusCode === 404) return { ok: true, data: null };   // genuinely absent
     console.warn(`  ⚠ API read failed for ${file}: ${e.message}`);
