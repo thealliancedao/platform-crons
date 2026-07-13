@@ -93,6 +93,19 @@ unique. All scenarios pass (2026-07-08):
 
 ## Recent changes
 
+# Rev C.1.1 (2.1.1) — 2026-07-09 — raw-media state reads
+- GitHub Contents API returns EMPTY content for files >1MB (hit live when
+  2026/06.json crossed it): reads now use `application/vnd.github.raw` (no
+  size limit); shas fetched separately, content never parsed. Mock re-run OK.
+
+# Rev C.1 (2.1.0) — 2026-07-09 — API state reads + index never-seed guard
+- A raw-CDN 429 made 2.0.0 rebuild index.json from empty (month data
+  untouched; metadata repaired via tla-core's one-off tla-flows-rebuild-index
+  Action, ground-truthed from month files). All state reads moved to the
+  authenticated Contents API; fetch-failure ≠ absence — the run ABORTS rather
+  than rebuild over history. Rule: never read state through the raw CDN.
+
+
 # Rev C (2.0.0) — 2026-07-08 — BLOCK-WALKER engine (forward capture done right)
 - The tx_search index-scanner (a backfill species) is deleted from this cron;
   the engine now walks each new block since its cursor via RPC — /block
