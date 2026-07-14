@@ -51,6 +51,7 @@ const FLOOR_CONFIRM = 3;      // consecutive floor-shaped responses to certify
 const FETCH_RETRIES = 3;      // attempts per period (alternating LCDs inside)
 const PACE_MS = 150;          // gentle pacing between period fetches
 
+// <<DISTRIBUTIONS CORE v1>> — byte-identical in tla-core/.github/scripts/tla-voting/harvest-distributions.js. Diff-verify the marked block after ANY change (same rule as <<FLOWS CLASSIFIER v1>>).
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ---- transport: HARD deadline (flows 1.0.2 port). r.setTimeout is an IDLE
@@ -170,6 +171,8 @@ function buildIndex(entries, { floorCertificate, knownGaps, runNote }) {
         note: runNote || undefined,
     };
 }
+
+// <<DISTRIBUTIONS CORE v1 END>>
 
 // ---- forward capture (index.js §4): self-healing — verify committed head ==
 // current finalized period; backfill anything missing in between. Lateness is
