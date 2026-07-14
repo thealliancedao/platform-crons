@@ -34,7 +34,7 @@ const C = require('../config/contracts.js');
 const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-const VERSION = 'member-data-1.0.2';
+const VERSION = 'member-data-1.1.0';  // 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 
@@ -67,11 +67,15 @@ async function run() {
   console.log(`${VERSION} — VP layer census`);
   const errors = [];
 
-  // 1) Enumerate all lock NFTs (held VP source) + load pool names in parallel.
-  const [{ tokens: tokenIds, incomplete }, poolNames] = await Promise.all([
+  // 1) Enumerate all lock NFTs (held VP source) + pool names + the escrow's
+  //    own system total (SPEC-vp-definition-fix: total_vamp.vp = fixed +
+  //    voting_power is the CANONICAL Total TLA VP — matches the TLA UI header).
+  const [{ tokens: tokenIds, incomplete }, poolNames, totalVamp] = await Promise.all([
     enumerateAllTokens(TLA_VOTING_ESCROW),
     buildPoolNameMap(),
+    queryContract(TLA_VOTING_ESCROW, { total_vamp: {} }),
   ]);
+  if (!totalVamp) errors.push('total_vamp query failed — canonical total missing this run');
   if (incomplete) errors.push('lock enumeration incomplete (a page query failed) — census is PARTIAL');
   console.log(`  locks enumerated: ${tokenIds.length}${incomplete ? ' (INCOMPLETE)' : ''}`);
 
@@ -93,8 +97,11 @@ async function run() {
     if (!locksByWallet.has(r.owner)) locksByWallet.set(r.owner, []);
     locksByWallet.get(r.owner).push({
       token_id: r.token_id,
-      vp_raw: r.lock?.voting_power || '0',
-      vp_human: (parseFloat(r.lock?.voting_power) || 0) / 1e6,
+      // SPEC-vp-definition-fix (2026-07-13): vp is TOTAL = boost + fixed,
+      // matching the held-VP definition it cross-checks against.
+      vp_boost_raw: r.lock?.voting_power || '0',
+      vp_fixed_raw: r.lock?.fixed_amount || '0',
+      vp_human: ((parseFloat(r.lock?.voting_power) || 0) + (parseFloat(r.lock?.fixed_amount) || 0)) / 1e6,
       end_period: r.lock?.end?.period ?? null,
       coefficient: r.lock?.coefficient ? Number(r.lock.coefficient) : null,
       asset: r.lock?.asset || null,
@@ -119,7 +126,8 @@ async function run() {
     if (!r || r._error) { uiErrors++; continue; }
     const v = parseWalletVoting(r.userInfo, poolNames);
     v.address = r.wallet;
-    // attach held-from-locks (cross-check vs userInfo.voting_power)
+    // attach held-from-locks (cross-check vs userInfo boost+fixed total —
+    // both sides total-basis per SPEC-vp-definition-fix)
     const locks = locksByWallet.get(r.wallet) || [];
     v.lock_count = locks.length;
     v.vp_from_locks_human = locks.reduce((s, l) => s + l.vp_human, 0);
@@ -156,8 +164,16 @@ async function run() {
   const current = {
     meta,
     system: {
-      // METRIC 1: total available VP (canonical = max bucket)
-      canonical_total_vp: agg.canonical_total_vp,
+      // METRIC 1 — canonical Total TLA VP = escrow total_vamp (fixed + boost).
+      // SPEC-vp-definition-fix (2026-07-13): matches the TLA UI "Total Voting
+      // Power" header; retires the old max-bucket convention.
+      total_tla_vp: totalVamp ? {
+        fixed: parseFloat(totalVamp.fixed) || 0,
+        voting_power: parseFloat(totalVamp.voting_power) || 0,
+        vp: parseFloat(totalVamp.vp) || 0,
+        vp_human: (parseFloat(totalVamp.vp) || 0) / 1e6,
+      } : null,
+      max_bucket_vp_reference: agg.max_bucket_vp,  // lower-bound sanity check
       total_vp_held_all_wallets: Number(walletVotings.reduce((s, v) => s + (v.total_vp_held_human || 0), 0).toFixed(2)),
       // METRIC 2: VP voting per bucket
       vp_voting_per_bucket: agg.vp_voting_per_bucket,
@@ -185,11 +201,12 @@ async function run() {
   const ok4 = await pushToGithub('member-data/snapshots/heartbeat.json', {
     version: VERSION, generated_at: started.toISOString(), epoch: currentEpoch(),
     status, wallet_count: walletVotings.length, lock_count: tokenIds.length,
-    canonical_total_vp: agg.canonical_total_vp,
+    total_tla_vp_human: totalVamp ? (parseFloat(totalVamp.vp) || 0) / 1e6 : null,
+    max_bucket_vp_reference: agg.max_bucket_vp,
   }, `member-data: heartbeat ${date}`);
 
   console.log(`  outputs: ${[ok1, ok2, ok3, ok4].filter(Boolean).length}/4 written`);
-  console.log(`  canonical Total TLA VP: ${agg.canonical_total_vp.toLocaleString()}`);
+  console.log(`  canonical Total TLA VP (total_vamp.vp): ${totalVamp ? ((parseFloat(totalVamp.vp)||0)/1e6).toLocaleString() : 'MISSING'} | max-bucket ref: ${agg.max_bucket_vp.toLocaleString()}`);
   console.log(`  VP voting per bucket:`, agg.vp_voting_per_bucket);
   console.log(`  status: ${status}`);
   if (status !== 'ok' && !ok1) process.exit(1);

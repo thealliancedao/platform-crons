@@ -69,7 +69,7 @@ member-data/snapshots/daily/<date>.json  forward-only daily archive
 member-data/snapshots/heartbeat.json     freshness signal
 ```
 
-`current.json` shape: `system { canonical_total_vp, total_vp_held_all_wallets,
+`current.json` shape: `system { total_tla_vp {fixed, voting_power, vp, vp_human}, max_bucket_vp_reference, total_vp_held_all_wallets,
 vp_voting_per_bucket }` + `wallets[] { address, rank, total_vp_held_human,
 vp_from_locks_human, lock_count, buckets{<bucket>{ allocations, utilization_pct,
 idle_bps }}, unvoted_buckets, avg_utilization_pct, fully_utilized, influence }`.
