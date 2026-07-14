@@ -12,7 +12,9 @@
 //      - utilization: how much of its available VP is actually deployed vs IDLE
 //
 // KEY CONCEPTS (from the Eris voting model + ecosystem-knowledge):
-//   - A wallet's total VP (userInfo.voting_power) is what it CAN direct.
+//   - A wallet's total VP = userInfo.voting_power (boost) + userInfo.fixed_amount
+//     — SPEC-vp-definition-fix (2026-07-13): boost alone understates ~11%
+//     (worse for short locks); the gauge tallies and pays against the SUM.
 //   - gauge_votes[] gives its allocation per bucket: votes = [[poolKey, bps]].
 //     Weights are basis points; 10000 bps = 100% of that bucket's vote slot.
 //   - In TLA, a wallet votes PER BUCKET — it can allocate up to 100% (10000 bps)
@@ -21,8 +23,11 @@
 //   - IDLE VP: a bucket the wallet hasn't voted in at all, or bps summing under
 //     10000 within a bucket = VP left on the table (could earn bribes/direct
 //     rewards but isn't).
-//   - CANONICAL total VP = max bucket VP (pool-summing 4x-inflates because each
-//     wallet's VP allocates once per bucket). See ecosystem-knowledge tla.vp_canonical.
+//   - CANONICAL system total VP = escrow total_vamp.vp (fixed + voting_power;
+//     matches the TLA UI header). Max bucket VP remains a useful lower-bound
+//     sanity reference (pool-summing 4x-inflates because each wallet's VP
+//     allocates once per bucket) but is NO LONGER the canonical total —
+//     the old "max bucket ≈ total" convention is retired per the spec.
 // =============================================================================
 
 // SINGLE SOURCE OF TRUTH: bucket names come from the shared config, not a local
@@ -34,8 +39,11 @@ const FULL_BPS = 10000;
 // Parse one wallet's userInfo (gauge_controller) into a normalized voting shape.
 // Returns held VP + per-bucket allocations with utilization.
 function parseWalletVoting(userInfo, poolNameByGaugeId = new Map()) {
-  const totalVpHuman = (parseFloat(userInfo?.voting_power) || 0) / 1e6;
+  // SPEC-vp-definition-fix (2026-07-13): held VP = voting_power (boost) +
+  // fixed_amount — the chain-canonical total the gauge tallies and pays against.
+  const vpBoostHuman = (parseFloat(userInfo?.voting_power) || 0) / 1e6;
   const fixedAmountHuman = (parseFloat(userInfo?.fixed_amount) || 0) / 1e6;
+  const totalVpHuman = vpBoostHuman + fixedAmountHuman;
 
   // per-bucket allocation
   const buckets = {};
@@ -77,7 +85,8 @@ function parseWalletVoting(userInfo, poolNameByGaugeId = new Map()) {
   const avgUtilizationPct = Number((perBucketUtil.reduce((a, c) => a + c, 0) / BUCKETS.length).toFixed(2));
 
   return {
-    total_vp_held_human: totalVpHuman,   // what this wallet CAN direct
+    total_vp_held_human: totalVpHuman,   // what this wallet CAN direct (boost + fixed)
+    vp_boost_human: vpBoostHuman,
     fixed_amount_human: fixedAmountHuman,
     buckets,                             // per-bucket allocation + utilization
     unvoted_buckets: unvotedBuckets,     // buckets with zero allocation (idle)
@@ -115,7 +124,7 @@ function aggregateBucketVoting(walletVotings) {
   return {
     vp_voting_per_bucket: Object.fromEntries(BUCKETS.map(b => [b, Number(bucketVp[b].toFixed(2))])),
     vp_per_pool_per_bucket: bucketPoolVp, // for influence-% denominators
-    canonical_total_vp: Number(maxBucket.toFixed(2)), // max bucket = canonical Total TLA VP
+    max_bucket_vp: Number(maxBucket.toFixed(2)), // lower-bound reference — canonical total = escrow total_vamp.vp (SPEC-vp-definition-fix)
   };
 }
 
