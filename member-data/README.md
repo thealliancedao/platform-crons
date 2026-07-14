@@ -12,9 +12,11 @@ one member.
 ## The three metrics (the product)
 
 **1. Total Available VP** — all VP held in TLA locks (the system ceiling). The
-canonical figure is the **max bucket VP**, because pool-summing 4x-inflates (each
-wallet's VP allocates once per bucket across 4 buckets — see ecosystem-knowledge
-`tla.vp_canonical`).
+canonical figure is the escrow's **`total_vamp.vp` = fixed + voting_power**
+(published as `system.total_tla_vp` — matches the TLA UI header; SPEC-vp-definition-fix,
+shipped 1.1.0). Max-bucket VP is kept only as a sanity reference
+(`max_bucket_vp_reference`) — pool-summing 4x-inflates because each wallet's VP
+allocates once per bucket across 4 buckets.
 
 **2. VP Voting per Bucket** — how much VP is actually cast into each of the 4
 buckets. NOT an even split of the total: voters allocate unevenly and some VP
@@ -44,7 +46,8 @@ see 25M in stable, 21M in project).
    returns `gauge_votes[]`: per-bucket allocations as `[[poolKey, weight_bps]]`
    (10000 bps = 100% of that bucket's vote slot).
 3. **Compute** — utilization (bps vs 10000 per bucket; idle buckets), system
-   per-bucket voting totals, canonical max-bucket total, and per-wallet influence.
+   per-bucket voting totals, the canonical `total_vamp` total (max-bucket kept
+   as reference), and per-wallet influence.
 
 Pool names are read from token-catalog (`gauge_pool_id` -> name) rather than
 re-queried — reuse, not duplication. Names are cosmetic; VP math is unaffected if
@@ -87,6 +90,14 @@ idle_bps }}, unvoted_buckets, avg_utilization_pct, fully_utilized, influence }`.
 
 ## Recent changes
 
+- **1.1.0 (2026-07-14)** — VP definition fix (SPEC-vp-definition-fix). Held VP
+  = **boost + fixed** everywhere (`lib/vp.js` doctrine header corrected);
+  queries the escrow's `total_vamp` and publishes
+  `system.total_tla_vp {fixed, voting_power, vp, vp_human}` as CANONICAL —
+  `canonical_total_vp` renamed `max_bucket_vp_reference` (sanity check only);
+  per-lock census entries + the held-vs-locks cross-check move to total basis.
+  Live-verified on Render: Total TLA VP **27,973,049.25** = TLA UI, 4/4
+  outputs, status ok. (Mock: 11/11 assertions on real chain fixtures.)
 - **1.0.0** — initial VP layer. Three metrics (available VP, per-bucket voting,
   per-wallet influence + utilization/idle). Walks the lock enumeration once +
   user_info per wallet (Option A: held + directed in one coherent snapshot).
