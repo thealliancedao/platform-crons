@@ -93,6 +93,17 @@ votes/locks for Jan-2025→Jun-15-2026 — keep frozen, never deleted.
 
 ## Recent changes
 
+- **1.1.0 (2026-07-14)** — distributions forward capture + tarpit fix. New
+  `lib/distributions.js` (`<<DISTRIBUTIONS CORE v1>>` marked block,
+  byte-identical with `tla-core/.github/scripts/tla-voting/harvest-distributions.js`
+  — diff-verify after ANY change): after each epoch boundary, queries the
+  just-finalized `distributions{time:{period}}` and appends to
+  `tla-voting/distributions/history.json` (single-file layout, DECIDED —
+  Deviation Register §7); self-heals via `last_captured_period ==
+  current_period − 1` (lateness is free, state is retained); heartbeat gains
+  `distributions_head`. Also ports the **40s hard-deadline `httpGet`**
+  (closes the idle-timeout-only tarpit hang shared with tla-flows Rev B).
+  Full story: `tla-core/docs/changelogs/cron-tla-voting-log.md` Rev 3.
 - **2026-07-08 (data, not code)** — FCD archive fill executed: streams extended
   to contract genesis (votes 8,270 · locks 13,585 · bribes 172 · rewards
   6,038). Cron code unchanged; it forward-maintains on top of the filled
