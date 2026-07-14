@@ -63,7 +63,8 @@ const SEED_MAX_PAGES = Number(process.env.MAX_PAGES || 60); // retained window i
 const PAGE_LIMIT     = 100;
 const SCHEMA_VERSION = 3;
 const FORWARD_CADENCE_HOURS = 6;
-const VERSION = 'org-tla-voting-1.0.0';
+const VERSION = 'org-tla-voting-1.1.0'; // 1.1.0 (2026-07-14): hard-deadline httpGet port (flows 1.0.2) + distributions forward capture (SPEC-distributions-capture §4)
+const { forwardDistributions } = require('./lib/distributions.js');
 // ----------------------------------------------------------------------------- action maps
 // CHAIN-CONFIRMED — gauge + escrow (probe 2026-06-15); incentive mgr:
 // CHAIN-CONFIRMED (probe + seed 2026-07-07) — incentive manager (add_bribe).
@@ -109,14 +110,20 @@ const BRIBE_ACTION_KEYS = {
 // ----------------------------------------------------------------------------- http (proven transport)
 const KEEPALIVE_AGENT = new https.Agent({ keepAlive: true, maxSockets: 1, keepAliveMsecs: 30000 });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-function httpGet(url, t = 20000) {
+function httpGet(url, t = 40000) {
+    // HARD deadline (flows 1.0.2 port, landed with SPEC-distributions-capture):
+    // the previous r.setTimeout was an IDLE timeout — it resets on every byte,
+    // so a tarpit trickling data hangs the run forever. This destroys the
+    // request when the wall clock says so, regardless of activity.
     return new Promise((res, rej) => {
-        const r = https.get(url, { agent: KEEPALIVE_AGENT, headers: { Accept: 'application/json', Connection: 'keep-alive', 'User-Agent': 'org-tla-voting/1.0' } }, (x) => {
+        const r = https.get(url, { agent: KEEPALIVE_AGENT, headers: { Accept: 'application/json', Connection: 'keep-alive', 'User-Agent': 'org-tla-voting/1.1' } }, (x) => {
             let b = ''; x.on('data', c => b += c); x.on('end', () => {
+                clearTimeout(killer);
                 if (x.statusCode >= 200 && x.statusCode < 300) { try { res(JSON.parse(b)); } catch { rej(new Error('bad JSON')); } }
                 else rej(new Error(`HTTP ${x.statusCode} ${b.slice(0, 120)}`)); });
         });
-        r.on('error', rej); r.setTimeout(t, () => r.destroy(new Error('timeout')));
+        const killer = setTimeout(() => r.destroy(new Error(`deadline ${t}ms`)), t);
+        r.on('error', (e) => { clearTimeout(killer); rej(e); });
     });
 }
 async function lcdGet(p, label) { try { return await httpGet(TERRA_LCD_PRIMARY + p); } catch (e) { try { return await httpGet(TERRA_LCD_FALLBACK + p); } catch (e2) { throw new Error(`${label}: both LCDs failed (${e2.message})`); } } }
@@ -767,9 +774,24 @@ async function run() {
     await publishFile(`${OUT_DIR}/cursor.json`, cursor, `tla-voting cursor`);
     await publishFile(`${OUT_DIR}/index.json`,  index,  `tla-voting index`);
 
+    // ---- distributions forward capture (SPEC-distributions-capture §4) ----
+    // Self-healing: reads the committed distributions index, backfills every
+    // finalized period newer than it (retained contract state — lateness is
+    // free). Never seeds (2.1.0 doctrine): an empty module means the one-shot
+    // harvest hasn't run. Failures here NEVER block the event streams above.
+    let dist = null;
+    try {
+        dist = await forwardDistributions({ publishFile, log: console });
+        console.log(`  distributions: ${dist.skipped ? `skipped (${dist.reason})` : `+${dist.appended} → period ${dist.head}`}`);
+    } catch (e) {
+        addErr('distributions', e);
+        console.warn(`  ⚠ distributions forward step failed (event streams unaffected): ${e.message}`);
+    }
+
     const allComplete = gComplete && eComplete && iComplete;
     await publishHeartbeat({ startedAt, status: allComplete ? 'ok' : 'partial', errors, discovered,
-        counts: { votes: vm.merged.length, locks: lm.merged.length, bribes: bm.merged.length, rewards: rm.merged.length, wallets: rollups.wallet_count, added: vm.added + lm.added + bm.added + rm.added },
+        counts: { votes: vm.merged.length, locks: lm.merged.length, bribes: bm.merged.length, rewards: rm.merged.length, wallets: rollups.wallet_count, added: vm.added + lm.added + bm.added + rm.added,
+                  distributions_head: dist && dist.head || undefined, distributions_appended: dist && dist.appended || undefined },
         lastHeights: { gauge: gauge.globalMax || 0, escrow: escrow.globalMax || 0, incentive: incentive.globalMax || 0 },
         horizons, gaps: Object.fromEntries(Object.entries(knownGaps).filter(([, v]) => v.length)) });
 
