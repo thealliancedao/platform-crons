@@ -31,6 +31,7 @@
 
 const { fetchJsonWithRetry, queryContract } = require('../lib/fetch');
 const { normalizePool } = require('./_contract');
+const { fetchBucketTruth, joinBucket } = require('../lib/bucket-truth');
 
 const POOLS_LIST_URL = 'https://skeletonswap.backbonelabs.io/mainnet/phoenix-1/pools_list.json';
 
@@ -87,6 +88,13 @@ async function capture() {
   const captured_at = new Date().toISOString();
   const metas = await fetchPoolsList();
 
+  // Gauge truth for bucket labels (1.1.0 — the old code labeled NOTHING here;
+  // "join is downstream" was a gap, not a design: 27 gauge pools shipped
+  // bucket:null). Memoized in-process — free when astroport already fetched it.
+  let truth = null;
+  try { truth = await fetchBucketTruth(); }
+  catch (e) { truth = { ok: false, byPair: {}, errors: { all: e.message } }; }
+
   // Query reserves from chain for every pool (bounded concurrency).
   const reserveResults = await mapWithConcurrency(
     metas, POOL_QUERY_CONCURRENCY, (m) => queryReserves(m.swap_address)
@@ -109,14 +117,15 @@ async function capture() {
       chainFail++;
     }
 
+    const { bucket, tla_relevant, gauge } = joinBucket(truth, meta.swap_address);
     normalized.push(
       normalizePool({
         dex: 'skeletonswap',
         pool_address: meta.swap_address || '?',
         pool_name: poolName(meta),
         pool_type: meta.pool_type || null, // null if pools_list doesn't carry it
-        bucket: null,            // TLA-relevance join is downstream
-        tla_relevant: false,
+        bucket,                  // gauge truth (whitelisted_asset_details), 1.1.0
+        tla_relevant,
         assets: assets.slice(0, 2).map((a, idx) => ({
           symbol: a.symbol || null,
           denom: a.denom || a.address || null,
@@ -135,6 +144,7 @@ async function capture() {
           reserve_0, reserve_1, total_share,
           chain_status,          // 'ok' | 'failed' — per-pool reserve query result
           pool_id: meta.pool_id || null,
+          ...(gauge ? { gauge } : {}),
         },
       })
     );
@@ -144,8 +154,10 @@ async function capture() {
     pools: normalized,
     meta: {
       captured_at,
-      source: 'pools_list.json (metadata) + direct chain {"pool":{}} (reserves)',
+      source: 'pools_list.json (metadata) + direct chain {"pool":{}} (reserves) + gauge whitelisted_asset_details (bucket truth)',
+      bucket_source: 'whitelisted_asset_details (gauge truth) — 1.1.0',
       pools_total: normalized.length,
+      bucket_errors: (truth && truth.ok) ? (truth.errors || null) : ((truth && truth.errors) || { all: 'bucket truth unavailable' }),
       chain_ok: chainOk,
       chain_failed: chainFail,
       volume_note: 'SkeletonSwap has no trustworthy volume source — volume fields are honestly null, not fabricated.',
