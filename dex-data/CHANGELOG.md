@@ -1,3 +1,42 @@
+# 1.1.0 — 2026-07-15 — bucket labels now GAUGE TRUTH (defect register #8, closed)
+
+The bug, found by cross-checking tonight's committed snapshots against
+token-catalog's gauge truth (join on pair_address): Astroport derived buckets
+from `total_staked_balances` MEMBERSHIP — where LP happens to be STAKED — which
+disagrees with the gauge's own classification exactly where cross-bucket strays
+exist. Three live mislabels: LUNA-SOLID stable→project, USDC-USDT
+bluechip→single, LUNA-WHALE null→project. SkeletonSwap labeled NOTHING (27
+gauge pools bucket:null — "join is downstream" was a gap, not a design).
+
+The fix — `lib/bucket-truth.js`, shared by both adapters:
+- Truth source: `whitelisted_asset_details` on the 4 bucket contracts (the
+  COMPLETE gauge set, active + below-threshold + dewhitelisted, each flagged
+  whitelisted:true|false — the same source token-catalog's discovery uses).
+  Contracts now imported from config/contracts.js (EDIT RULE honored; the
+  adapter's hardcoded copy retired).
+- Pair resolution, self-contained: cw20 LP → `{minter:{}}` → pair address;
+  native factory LP → denom parse. Both adapters join on pool_address; no
+  reads of other crons' output.
+- Honesty rules: multi-bucket appearances keep ALL of them — whitelisted wins,
+  canonical order breaks ties, `ambiguous_buckets` DECLARED (the USDC-USDT
+  bluechip stray is now data, not a mislabel). Dewhitelisted-only assets keep
+  their bucket with whitelisted:false (ghosts visible, not hidden). Total
+  truth failure → bucket:null + meta.bucket_errors — NEVER a fallback to
+  staked-membership; a missing label is honest, a wrong one is not.
+- `raw.gauge` per TLA pool: gauge_pool_id, whitelisted, ambiguity.
+  meta.bucket_source declared in both adapters.
+- Memoized per process — one truth fetch serves both adapters per run.
+
+Mock gate NEW (mock-run.js, binding for future main-loop changes): 31/31 —
+pure resolution rules, the crafted chain reproducing all three real mislabels
++ ghost + factory-native + minter-failure + total-failure paths, both
+adapters end-to-end on stubbed network.
+
+Deploy: commit the folder — no schedule/env change. Verify next run:
+LUNA-SOLID shows project, USDC-USDT single, SS pools carry buckets.
+
+---
+
 # dex-data — changelog
 
 ## 1.0.2 — 2026-06-29 — concurrent-write hardening

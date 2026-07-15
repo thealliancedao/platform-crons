@@ -40,7 +40,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const LOCAL_OUT = process.env.LOCAL_OUT || './out';
 
-const VERSION = 'dex-data-1.0.2';
+const VERSION = 'dex-data-1.1.0';
 
 // TLA epoch math (epochs are weekly; used to tag snapshots).
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');

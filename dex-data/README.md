@@ -7,6 +7,16 @@ right primitives correctly NOW so trustworthy, un-gameable history accrues.
 This cron CAPTURES; it does not grade. The grade composes later (asset-value
 rubric + support gap) once history is statistically real. Get the data right first.
 
+## Bucket labels (1.1.0)
+
+Buckets come from the gauge's own `whitelisted_asset_details` classification
+via `lib/bucket-truth.js` — never from staked-balance membership (retired
+1.1.0; it mislabeled cross-bucket strays). Both adapters join on pool address
+(cw20 LP minter / factory-denom parse). Per-pool gauge extras in `raw.gauge`;
+`meta.bucket_source` + `meta.bucket_errors` declare provenance and failures.
+Mock gate: `node mock-run.js` (31 assertions, stubbed network) — re-run after
+any main-loop change.
+
 ## Per-DEX separation (by design)
 
 Each DEX is a **self-contained, independently pluggable** adapter in `dexes/`.
