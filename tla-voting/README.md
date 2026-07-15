@@ -1,7 +1,7 @@
-# tla-voting — org-tla-voting 2.0.0 (TLA voting capture, forward)
+# tla-voting — org-tla-voting 2.1.0 (TLA voting capture, forward)
 
 **Render job:** `org-tla-voting` · schedule `0 * * * *` (hourly — D6) · entry `index.js`
-**Specs:** `tla-core/docs/pending-changes/SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
+**Specs:** `SPEC-tla-voting-rollups.md` (2.1.0 rollups + classifier v5) + `SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
 **Data:** `tla-core/tla-voting/events/` (monthly per-stream partitions + cursor + heartbeat + index) and `tla-core/tla-voting/vote-state/` (per-period state harvest) and `tla-core/tla-voting/distributions/`
 
 Scope: ONLY the voting layer of the three governance contracts — the act of
@@ -47,7 +47,7 @@ tla-voting/
 ├── events/                    index schemaVersion ≥ 4 REQUIRED (self-enforcing
 │   ├── {votes,locks,bribes,rewards}/{YYYY}/{MM}.json    deploy sequencing)
 │   ├── index.json  cursor.json  heartbeat.json
-│   ├── rollups.json           FROZEN at 2.0.0 — build #2 recomputes on events+state
+│   ├── rollups.json           schema 4 — rebuilt on harvest runs (SPEC-tla-voting-rollups)
 │   └── reconciliation.json    detail artifact (2026-07-14 diagnostic)
 ├── vote-state/
 │   ├── {YYYY}/{MM}.json       per-(period,wallet) records, dedup + never-shrink
@@ -56,7 +56,34 @@ tla-voting/
 └── distributions/             unchanged (single history.json, DECIDED deviation)
 ```
 
-## <<CLASSIFIER v4>> — sole live home
+## rollups.json schema 4 (build #2 — the honest merge)
+
+Rebuilt on harvest runs (or `FORCE_ROLLUPS=1`), from vote-state ∪ events —
+state wins, `events_visibility: 'full'|'none'` says which voters events can
+see (contract-path voters like the Votion vaults finally rank; #1 by VP).
+Per voter: state (vp, stamped gauge allocations), event vote detail, canonical
+lock net-by-denom, and the THREE-NUMBER CLAIMS model: raw `amount`,
+`usd_at_claim` ("if sold when claimed" — immutable, priced per-claim from
+price-history), `usd_at_build` (fallback — **the site computes live
+today-value as amount × current price**). Pending recipe (display-side):
+**live earned = claims.totals + `user_claimable` + `user_pending_rebase`**.
+Honesty ledger in the file: `claim_coverage` declares the
+2025-01-08→2026-06-14 reward-capture hole; `bribers_coverage_note` declares
+the ~97% tribute blind spot (build #3); zero-claims split as `claim_tx_count`
+vs `paid_claim_count`; unjoinable denoms land in `unpriced[]`, never dropped.
+Pots retired to `distributions/history.json` (one truth per fact).
+
+## <<CLASSIFIER v5>> — sole live home
+
+v5 = v4 + the **rebase-income promotion**: the gauge's own
+`wasm {action:'gauge/claim_rebase', rebase_amount, user}` event declares the
+claimed amount even when the recipient is a wrapper (chain-proven live on tx
+`9B2DD008…` — Votion vault compound; trimmed real fixture at
+`fixtures/compound_probe.json`). compound events get coins from it (income at
+the GAUGE boundary — pre-swap, pre-wrapper-fee) with
+`coins_source:'gauge_event'`; claim_rebase gets the same backstop when the
+coin parse finds nothing; true zero-claims stay `coins:null`. Forward-only —
+pre-2.1.0 compound events keep null (fill rider queued).
 
 v4 = v3 verbatim + the lock **token_id promotion**: null token_ids are filled
 from the tx's own escrow wasm events (CW721 `mint` on creates — chain-proven on
@@ -148,6 +175,14 @@ completion/vote_capture/enumeration-abort. Passed 2026-07-15 pre-delivery.
 Re-run after ANY main-loop change (binding).
 
 ## Recent changes
+
+- **2.1.0 (2026-07-15) — build #2 (SPEC-tla-voting-rollups).** rollups.json
+  schema 4 (`lib/rollups.js`): voters from vote-state ∪ events with
+  visibility flags, three-number claims (amount / usd_at_claim /
+  usd_at_build + live today-value recipe), canonical lock sums, bribers with
+  blind-spot label, pots retired to distributions, claim-coverage honesty
+  ledger. `<<CLASSIFIER v5>>` rebase-income promotion. Mock gate 63/63 on
+  real fixtures (incl. the live compound probe tx). Changelog Rev 6.
 
 - **2.0.0 (2026-07-15) — the capture fix (SPEC-tla-voting-capture-fix).**
   Walker transport replaces tx_search (Rev C lift; gated by-hash decode);

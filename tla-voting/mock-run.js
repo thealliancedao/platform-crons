@@ -235,7 +235,7 @@ console.log('\nT3 — walker end-to-end: gate, decode, classify, monthly merge, 
     assert(idx.streams.votes.count === 1 && idx.streams.votes.months_present['2026'].includes('07'), 'index counts + months updated');
     assert(cur.last_block === 104, `cursor advanced to 104 (${cur.last_block})`);
     assert(hb.status === 'ok' && hb.counts.gated_txs === 2, `heartbeat ok, gated_txs 2 (foreign gated out) — got ${hb.status}/${hb.counts.gated_txs}`);
-    assert(hb.version === 'org-tla-voting-2.0.0' && hb.schemaVersion === 4, 'heartbeat carries 2.0.0 / schema 4');
+    assert(hb.version === 'org-tla-voting-2.1.0' && hb.schemaVersion === 4, 'heartbeat carries 2.1.0 / schema 4');
     // idempotence: re-walk the same window (cursor rolled back) → dedup absorbs
     REPO.set('tla-voting/events/cursor.json', JSON.stringify({ schemaVersion: 4, last_block: 100 }));
     await M.run();
@@ -453,6 +453,105 @@ console.log('\nT13 — vote-state enumeration failure aborts the whole harvest')
     catch (e) { threw = e; }
     assert(threw && /universe incomplete/i.test(threw.message), 'harvest aborted on incomplete universe');
     assert(REPO.size === 0, 'nothing published on the aborted harvest');
+}
+
+// =============================================================================
+// build #2 additions (SPEC-tla-voting-rollups §4): classifier v5 + rollups 4
+// =============================================================================
+const { buildRollups4 } = require('./lib/rollups.js');
+
+console.log('\nR5 — classifier v5: rebase-income promotion on the REAL probe tx');
+{
+    const probe = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'compound_probe.json'), 'utf8'));
+    const tr = probe.tx_response;
+    const e = M.classifyEscrowTxs([tr], {});
+    const comp = e.rewardEvents.find(ev => ev.type === 'compound');
+    assert(comp && Array.isArray(comp.coins) && comp.coins[0].amount === '13966383' &&
+           comp.coins[0].denom === 'cw20:terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct' &&
+           comp.coins_source === 'gauge_event',
+        `compound income filled from gauge event: ${comp && JSON.stringify(comp.coins)} (${comp && comp.coins_source})`);
+    assert(M.extractLockTokenId(tr, null) === '748', 'v4 regression: token_id 748 still extracted from the same real tx');
+    // true zero-claim stays null: same tx WITHOUT the gauge/claim_rebase event
+    const noGauge = JSON.parse(JSON.stringify(tr));
+    noGauge.events = noGauge.events.filter(ev => !(ev.attributes || []).some(a => a.value === 'gauge/claim_rebase'));
+    const e2 = M.classifyEscrowTxs([noGauge], {});
+    const comp2 = e2.rewardEvents.find(ev => ev.type === 'compound');
+    assert(comp2 && comp2.coins === null && comp2.coins_source === undefined, 'zero-claim (no gauge declaration) stays coins:null');
+}
+
+console.log('\nR1–R4, R6, R7 — rollups schema 4 on real vote-state + crafted claim edges');
+{
+    REPO.clear();
+    const TC = fs.readFileSync(path.join(TLA_CORE, 'token-catalog', 'snapshots', 'current.json'), 'utf8');
+    const realVS = JSON.parse(fs.readFileSync(path.join(TLA_CORE, 'tla-voting', 'vote-state', '2026', '07.json'), 'utf8'));
+    const wDirect = 'terra1mockdirectvoter', wX = 'terra1mockclaimer';
+    const vsMonth = [...realVS,
+        { schemaVersion: 1, period: 193, wallet: wDirect, vp: { fixed: '1', boost: '9', total: '10' }, gauge_votes: [], voted_this_period: false, raw_gauge_votes: [], capturedAt: '2026-07-15T00:00:00Z', source: 'state-harvest' }];
+    REPO.set('tla-voting/events/index.json', JSON.stringify({ schemaVersion: 4, streams: {
+        votes:   { count: 2, months_present: { '2026': ['07'] } },
+        locks:   { count: 4, months_present: { '2026': ['07'] } },
+        bribes:  { count: 1, months_present: { '2026': ['07'] } },
+        rewards: { count: 4, months_present: { '2026': ['07'] } } }, files: { 'rollups.json': {} } }));
+    REPO.set('tla-voting/vote-state/index.json', JSON.stringify({ schemaVersion: 1, last_harvested_period: 193, months_present: { '2026': ['07'] } }));
+    REPO.set('tla-voting/vote-state/2026/07.json', JSON.stringify(vsMonth));
+    REPO.set('token-catalog/snapshots/current.json', TC);
+    REPO.set('tla-voting/events/votes/2026/07.json', JSON.stringify([
+        { type: 'vote', wallet: wDirect, gauge: 'project', votes: [['cw20:poolA', 10000]], height: 1, timestamp: '2026-07-02T00:00:00Z', tx_hash: 'V1' },
+        { type: 'vote', wallet: wDirect, gauge: 'stable', votes: [['cw20:poolB', 10000]], height: 2, timestamp: '2026-07-03T00:00:00Z', tx_hash: 'V2' }]));
+    REPO.set('tla-voting/events/locks/2026/07.json', JSON.stringify([
+        { type: 'lock_create', canonical: true, wallet: wX, amount: 5000000, asset: 'cw20:terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct', timestamp: '2026-07-01T00:00:00Z', height: 1, tx_hash: 'L1' },
+        { type: 'lock_create', canonical: false, wallet: wX, amount: 7777777, asset: 'cw20:terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct', timestamp: '2026-07-01T01:00:00Z', height: 2, tx_hash: 'L2' },
+        { type: 'withdraw', canonical: true, wallet: wX, amount: 1000000, timestamp: '2026-07-02T00:00:00Z', height: 3, tx_hash: 'L3' },
+        { type: 'lock_extend_time', canonical: true, wallet: wX, timestamp: '2026-07-03T00:00:00Z', height: 4, tx_hash: 'L4' }]));
+    REPO.set('tla-voting/events/bribes/2026/07.json', JSON.stringify([
+        { type: 'bribe_add', briber: 'terra1mockbriber', pool: 'cw20:poolA', gauge: 'project', epoch_start: 194, coins: [{ amount: '180000000', denom: 'native:uluna' }], timestamp: '2026-07-02T00:00:00Z', height: 5, tx_hash: 'B1' }]));
+    REPO.set('tla-voting/events/rewards/2026/07.json', JSON.stringify([
+        { type: 'claim_bribes', kind: 'wallet_claim', wallet: wX, coins: [{ amount: '1000000', denom: 'native:uluna' }], timestamp: '2026-07-02T10:00:00Z', height: 6, tx_hash: 'C1' },
+        { type: 'claim_bribes', kind: 'wallet_claim', wallet: wX, coins: [{ amount: '2000000', denom: 'native:uluna' }], timestamp: '2026-07-05T10:00:00Z', height: 7, tx_hash: 'C2' },
+        { type: 'claim_rebase', kind: 'wallet_claim', wallet: wX, coins: null, timestamp: '2026-07-06T10:00:00Z', height: 8, tx_hash: 'C3' },
+        { type: 'claim_bribes', kind: 'wallet_claim', wallet: wX, coins: [{ amount: '500', denom: 'native:ibc/UNKNOWNDENOM' }], timestamp: '2026-07-06T11:00:00Z', height: 9, tx_hash: 'C4' }]));
+    REPO.set('price-history/2026/07.json', JSON.stringify({ meta: {}, days: {
+        '2026-07-02': { LUNA: { usd: 0.30 } },
+        '2026-07-04': { LUNA: { usd: 0.40 } } } }));   // 07-05 claim → walks back to 07-04
+
+    const ru = await buildRollups4({ publishFile: memPublish, apiGetJson: memRead, epochOf: () => 193, log: console });
+    const roll = repoJson('tla-voting/events/rollups.json');
+    const vBy = Object.fromEntries(roll.voters.map(v => [v.wallet, v]));
+
+    // R1 — the honest merge
+    const maxVP = vsMonth.filter(r => r.vp).sort((a, b) => (BigInt(b.vp.total) > BigInt(a.vp.total) ? 1 : -1))[0];
+    assert(roll.voters[0].wallet === maxVP.wallet && roll.voters[0].events_visibility === 'none',
+        `top voter by VP is the real contract-path #1 (${roll.voters[0].wallet.slice(0, 14)}…), visibility none`);
+    const adao = roll.voters.find(v => v.wallet.startsWith('terra1sffd4'));
+    assert(adao && adao.state && adao.state.gauges.length === 4, 'aDAO in the rollup with its 4-gauge state');
+    assert(vBy[wDirect].events_visibility === 'full' && vBy[wDirect].votes.event_count === 2 &&
+           vBy[wDirect].votes.pools_voted.length === 2, 'direct voter: visibility full + event detail');
+    assert(vBy[wX].state === null, 'events-only wallet keeps state:null (history is history)');
+    assert(roll.voter_count === roll.voters.length && roll.voter_count > realVS.length, `union grew past state-only (${roll.voter_count} > ${realVS.length})`);
+
+    // R2 — three-number claims math (exact)
+    const luna = vBy[wX].claims.by_token.LUNA;
+    assert(luna.amount === '3000000' && luna.amount_display === 3 && luna.claim_count === 2, `LUNA amounts (${luna.amount}, ×${luna.claim_count})`);
+    assert(luna.usd_at_claim === 1.10, `usd_at_claim 0.3×1 + 0.4×2 = 1.10 (${luna.usd_at_claim})`);
+    assert(luna.usd_at_build === 1.20, `usd_at_build latest 0.40 × 3.0 = 1.20 (${luna.usd_at_build})`);
+    assert(vBy[wX].claims.totals.usd_at_claim === 1.10 && vBy[wX].claims.totals.usd_at_build === 1.20, 'wallet totals match');
+
+    // R3 — price edges + coverage honesty
+    assert(vBy[wX].claims.unpriced.some(u => u.denom === 'native:ibc/UNKNOWNDENOM' && /token-catalog/.test(u.reason)), 'unjoinable denom lands in unpriced, never dropped');
+    assert(roll.claim_coverage.some(c => /HOLE/.test(c.source)), 'the 2025→2026 capture hole is DECLARED in the file');
+
+    // R4 — canonical-only lock sums
+    const net = vBy[wX].locks.net_by_denom['cw20:terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct'];
+    assert(net.in === '5000000' && net.out === '1000000', `canonical net in/out 5M/1M (${net.in}/${net.out}) — non-canonical 7.78M excluded`);
+    assert(vBy[wX].locks.first_lock_ts === '2026-07-01T00:00:00Z', 'first_lock_ts from the canonical create');
+
+    // R6 — zero-claims honest split
+    assert(vBy[wX].claims.claim_tx_count === 4 && vBy[wX].claims.paid_claim_count === 3, `claim_tx 4 vs paid 3 (${vBy[wX].claims.claim_tx_count}/${vBy[wX].claims.paid_claim_count})`);
+
+    // R7 — pots retired + briber blind-spot label
+    assert(roll.pots && /distributions\/history/.test(roll.pots.moved_to) && !roll.protocol_pots_by_epoch, 'pots retired to distributions pointer');
+    assert(/blind/.test(roll.bribers_coverage_note) && roll.bribers[0].briber === 'terra1mockbriber' &&
+           roll.bribers[0].by_epoch['194'].coins['native:uluna'] === '180000000', 'bribers aggregated + coverage note present');
 }
 
 // =============================================================================

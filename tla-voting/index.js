@@ -73,12 +73,13 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.0.0';        // 2.0.0 (SPEC-tla-voting-capture-fix): walker transport + monthly writes + vote-state harvest + <<CLASSIFIER v4>> token_id promotion + vote_capture invariant
+const VERSION = 'org-tla-voting-2.1.0';        // 2.1.0 (SPEC-tla-voting-rollups): rollups schema 4 (state∪events voters, three-number claims) + <<CLASSIFIER v5>> rebase-income promotion — on 2.0.0 (walker + monthly + vote-state + v4 token_id)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
 const { forwardDistributions } = require('./lib/distributions.js');
 const { forwardVoteState } = require('./lib/vote-state.js');
+const { buildRollups4 } = require('./lib/rollups.js');
 
 // ----------------------------------------------------------------------------- action maps
 // CHAIN-CONFIRMED — gauge + escrow (probe 2026-06-15); incentive mgr:
@@ -308,12 +309,13 @@ async function fetchDecodedTx(hash, height, blockTime) {
     return tr;
 }
 
-// SHARED CLASSIFIER — <<CLASSIFIER v4>> (2.0.0, SPEC-tla-voting-capture-fix §4).
-// v4 = v3 verbatim + the lock token_id promotion (extractLockTokenId + its two
-// call hooks in classifyEscrowTxs) — nothing else. Since 2.0.0 this cron is the
-// classifier's SOLE live home: the seed and fcd-fill are layout-guarded off and
-// keep v3 for git-history reference. Any future monthly-aware fill must lift v4
-// FROM HERE and diff-verify the block (the standing rule).
+// SHARED CLASSIFIER — <<CLASSIFIER v5>> (2.1.0, SPEC-tla-voting-rollups D6).
+// v5 = v4 + the rebase-income promotion (extractRebaseIncome + its call hook in
+// rewardEventFromMsg's escrow path) — nothing else. v4 = v3 + the lock token_id
+// promotion. Since 2.0.0 this cron is the classifier's SOLE live home: the seed
+// and fcd-fill are layout-guarded off and keep v3 for git-history reference.
+// Any future monthly-aware fill must lift the CURRENT block FROM HERE and
+// diff-verify it (the standing rule).
 // =============================================================================
 
 // ----------------------------------------------------------------------------- msg decoding
@@ -483,6 +485,49 @@ function extractLockTokenId(tr, wallet) {
     }
     return cands.size === 1 ? [...cands][0] : null;
 }
+// v5 rebase-income promotion (SPEC-tla-voting-rollups D6). The GAUGE's own
+// wasm event `{action:'gauge/claim_rebase', rebase_amount, user}` declares the
+// claimed amount even when the recipient is a wrapper (chain-proven on the
+// live probe tx 9B2DD008… — Votion vault compound, rebase_amount 13966383;
+// trimmed fixture: fixtures/compound_probe.json). Used to fill coins on
+// compound events (income measured at the gauge boundary — pre-swap,
+// pre-wrapper-fee) and as a backstop for claim_rebase when the coin parse
+// found nothing. The denom is taken from the same-tx cw20 transfer OUT OF the
+// gauge with the exact amount (chain-derived); ampLUNA constant is the last
+// resort. Ambiguity (0 or 2+ candidate events for the claimer) stays null.
+const AMPLUNA_CW20 = 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct';
+function extractRebaseIncome(tr, claimers) {
+    const cands = [];
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        let contract = null, action = null, amt = null, user = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === '_contract_address') contract = kv.value;
+            else if (kv.key === 'action') action = kv.value;
+            else if (kv.key === 'rebase_amount') amt = kv.value;
+            else if (kv.key === 'user') user = kv.value;
+        }
+        if (contract !== TLA_GAUGE_CONTROLLER || action !== 'gauge/claim_rebase') continue;
+        if (!amt || !/^\d+$/.test(amt) || amt === '0') continue;
+        if (user && claimers.length && !claimers.includes(user)) continue;
+        cands.push(amt);
+    }
+    if (cands.length !== 1) return null;
+    const amount = cands[0];
+    let denom = null;
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        let contract = null, action = null, amt = null, from = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === '_contract_address') contract = kv.value;
+            else if (kv.key === 'action') action = kv.value;
+            else if (kv.key === 'amount') amt = kv.value;
+            else if (kv.key === 'from') from = kv.value;
+        }
+        if (action === 'transfer' && from === TLA_GAUGE_CONTROLLER && amt === amount && contract) { denom = `cw20:${contract}`; break; }
+    }
+    return [{ amount, denom: denom || `cw20:${AMPLUNA_CW20}` }];
+}
 function classifyEscrowTxs(txResponses, discovered) {
     const lockEvents = [], rewardEvents = [];
     for (const tr of txResponses) {
@@ -511,7 +556,17 @@ function classifyEscrowTxs(txResponses, discovered) {
             const a = msg[key] || {};
             const rtype = REWARD_ESCROW_KEYS[key];
             if (rtype) {
-                rewardEvents.push({ type: rtype, kind: 'wallet_claim', wallet: m.sender, msg_index: mi, ...meta, token_id: a.token_id != null ? String(a.token_id) : null, coins: coinsReceivedBy(tr, m.sender), args: a });
+                const ev = { type: rtype, kind: 'wallet_claim', wallet: m.sender, msg_index: mi, ...meta, token_id: a.token_id != null ? String(a.token_id) : null, coins: coinsReceivedBy(tr, m.sender), args: a };
+                // v5: rebase-income promotion — when the coin parse found nothing
+                // (compound restakes; wrapped claims pay the wrapper), the gauge's
+                // own gauge/claim_rebase event declares the claimed amount. The
+                // claimer is the msg sender (direct) or the msg target contract
+                // (wrapped — e.g. a Votion vault). True zero-claims stay null.
+                if (!ev.coins) {
+                    const inc = extractRebaseIncome(tr, [m.sender, m.contract].filter(Boolean));
+                    if (inc) { ev.coins = inc; ev.coins_source = 'gauge_event'; }
+                }
+                rewardEvents.push(ev);
                 matchedThisTx = true;
                 return;
             }
@@ -712,7 +767,7 @@ function buildRollups(voteEvents, lockEvents, bribeEvents, rewardEvents, epochOf
         protocol_pots_by_epoch: pots,
     };
 }
-// <<CLASSIFIER v4 END>>
+// <<CLASSIFIER v5 END>>
 
 // ----------------------------------------------------------------------------- heartbeat (tla-core standard, schema 4)
 async function publishHeartbeat(h) {
@@ -725,6 +780,7 @@ async function publishHeartbeat(h) {
         known_gaps_walker: h.walkerGaps && h.walkerGaps.length ? h.walkerGaps : undefined,
         vote_state: h.voteState || undefined,
         vote_capture: h.voteCapture || undefined,
+        rollups: h.rollups || undefined,
         next_expected_run_at: new Date(h.startedAt.getTime() + FORWARD_CADENCE_HOURS * 3600000).toISOString(),
         error_count: h.errors.length, recent_errors: h.errors.slice(-5),
     };
@@ -877,7 +933,7 @@ async function run() {
         index.schemaVersion = SCHEMA_VERSION;
         index.updatedAt = startedAt.toISOString();
         index.known_gaps_walker = walkerGaps.length ? walkerGaps : undefined;
-        if (index.files && index.files['rollups.json']) index.files['rollups.json'].note = 'FROZEN at 2.0.0 — mis-attributed by contract-path voters; build #2 (rollup rebuilds) recomputes on events + vote-state';
+        if (index.files && index.files['rollups.json']) index.files['rollups.json'].note = 'schema 4 (SPEC-tla-voting-rollups) — rebuilt on harvest runs from vote-state ∪ events; pots live in distributions/history.json';
         try { await publishFile(`${OUT_DIR}/index.json`, index, `tla-voting index: +${totalAdded}`); }
         catch (pe) { addErr('publish:index', pe); allComplete = false; }
     }
@@ -923,6 +979,19 @@ async function run() {
         console.log(`  vote-state: ${vs.skipped ? `skipped (${vs.reason})` : `period ${vs.period} — ${vs.wallets} wallets, ${vs.voted} voted, ${vs.pending} pending`}`);
     } catch (ve) { addErr('vote-state', ve); console.warn(`  ⚠ vote-state step failed (event streams unaffected): ${ve.message}`); }
 
+    // 11b. rollups schema 4 (SPEC-tla-voting-rollups D2) — rebuilt after a
+    // clean full harvest (the run that already paid for reading vote months),
+    // or on demand via FORCE_ROLLUPS=1. Pure derived; failures abort this
+    // step only.
+    let ru = null;
+    const harvestLanded = vs && !vs.skipped && vs.pending === 0;
+    if (harvestLanded || process.env.FORCE_ROLLUPS === '1') {
+        try {
+            ru = await buildRollups4({ apiGetJson, publishFile, epochOf, log: console });
+            console.log(`  rollups: schema 4 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
+        } catch (re) { addErr('rollups', re); console.warn(`  ⚠ rollups step failed (streams/state unaffected): ${re.message}`); }
+    }
+
     // 12. heartbeat
     const status = (allComplete && !errors.length) ? 'ok' : (allComplete ? 'partial' : 'partial');
     const horizons = {};
@@ -935,6 +1004,7 @@ async function run() {
         walkerGaps,
         voteState: vs && !vs.skipped ? { period: vs.period, wallets: vs.wallets, voted: vs.voted, pending: vs.pending } : (vs && vs.reason ? { skipped: vs.reason } : undefined),
         voteCapture: vs && vs.vote_capture || undefined,
+        rollups: ru || undefined,
     });
     console.log(`\n✅ done — +${totalAdded} events (${JSON.stringify(addedByStream)}), cursor ${allComplete ? `advanced to ${cursorTarget}` : 'HELD'}, status ${status}${note ? ' · ' + note : ''}\n`);
 }
