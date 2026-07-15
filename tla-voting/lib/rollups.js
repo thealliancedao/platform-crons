@@ -1,7 +1,8 @@
 // =============================================================================
-// tla-voting / lib / rollups.js — rollups.json schema 4 (build #2)
-// SPEC-tla-voting-rollups (approved 2026-07-15). Layer 3 — recomputable
-// forever; a bug here costs a recompute, never touches the streams.
+// tla-voting / lib / rollups.js — rollups.json schema 5 (build #2 + #3.5)
+// SPEC-tla-voting-rollups (approved 2026-07-15) + the #3.5 bribers upgrade
+// (SPEC-tla-voting-bribe-state D8 rider). Layer 3 — recomputable forever;
+// a bug here costs a recompute, never touches the streams.
 //
 // THE HONEST MERGE: voters = vote-state ∪ events. Schema 3 was event-only —
 // blind to every contract-path voter the capture fix surfaced (aDAO's
@@ -21,9 +22,18 @@
 // reconstruction anywhere: every number is chain truth or declared missing.
 //
 // Honesty ledger lives IN the file: claim_coverage windows (the
-// 2025-01-08→2026-06-14 hole is declared, not hidden), bribers_coverage_note
-// (~97% blind pending build #3), per-voter events_visibility, unpriced[]
-// for unjoinable denoms (never dropped, never guessed).
+// 2025-01-08→2026-06-14 hole is declared, not hidden), per-voter
+// events_visibility, unpriced[] for unjoinable denoms (never dropped, never
+// guessed), and — since schema 5 — bribe_ledger, which RETIRED the
+// bribers_coverage_note by replacing the "~97% blind" label with measured
+// numbers: per-period per-denom state totals (bribe-state, the complete
+// chain ledger) vs event-attributed amounts, unattributed remainder
+// explicit. THE NO-DIVISION LAW (Rev 7): raw amounts are never apportioned
+// here — an event spanning multiple epochs is attributed in full ONLY to
+// lifetime sums, never split across periods (bribe_capture's linear split
+// is a heartbeat COVERAGE metric, not ledger math). Events for periods the
+// state harvest hasn't reached land in events_outside_state — declared,
+// never skewing a remainder.
 //
 // Pure derived: reads ONLY committed repo files (no chain calls). Rebuilt on
 // harvest runs + FORCE_ROLLUPS=1. Any source read failure aborts THIS step
@@ -31,9 +41,10 @@
 // =============================================================================
 'use strict';
 
-const ROLLUPS_SCHEMA = 4;
+const ROLLUPS_SCHEMA = 5;
 const OUT = 'tla-voting/events/rollups.json';
 const VS_DIR = 'tla-voting/vote-state';
+const BS_DIR = 'tla-voting/bribe-state';
 const TOKEN_CATALOG = 'token-catalog/snapshots/current.json';
 const PRICE_DIR = 'price-history';
 const DISTRIBUTIONS_POINTER = 'tla-voting/distributions/history.json';
@@ -85,6 +96,92 @@ function buildTokenMap(catalog) {
     return map;
 }
 const bareDenom = (canonical) => String(canonical || '').replace(/^(native:|cw20:)/, '');
+// state-record asset info -> canonical denom (mirror of index.js
+// normalizeAssetId; duplicated 6 lines to avoid a circular require)
+function canonicalOfInfo(info) {
+    if (info == null) return null;
+    if (typeof info === 'string') return info;
+    if (info.token?.contract_addr) return `cw20:${info.token.contract_addr}`;
+    if (info.native_token?.denom) return `native:${info.native_token.denom}`;
+    if (info.cw20) return `cw20:${info.cw20}`;
+    if (info.native) return `native:${info.native}`;
+    return JSON.stringify(info);
+}
+const addBig = (obj, key, amt) => { obj[key] = (BigInt(obj[key] || '0') + BigInt(String(amt))).toString(); };
+
+// ---- bribe_ledger (#3.5): state totals vs event attribution ------------------
+// bribeStateIndex: null = product not deployed/started yet (declared, not an
+// error); read FAILURES throw upstream (abort the rollups step, spec conduct).
+function buildBribeLedger(bsIndex, bsRecords, bribeEvents) {
+    if (!bsIndex) return {
+        status: 'awaiting bribe-state (build #3) — no index committed yet',
+        source: `${BS_DIR}/`,
+    };
+    const harvested = new Set();
+    const periods = {};   // "N" -> { by_denom: { canonical: {state, attributed, unattributed} } }
+    for (const rec of bsRecords) {
+        if (rec?.period == null || harvested.has(rec.period)) continue;   // dedup safety
+        harvested.add(rec.period);
+        const slot = (periods[String(rec.period)] ||= { by_denom: {} });
+        for (const b of rec.buckets || []) for (const a of b.assets || []) {
+            const den = canonicalOfInfo(a.info);
+            if (!den || !/^\d+$/.test(String(a.amount))) continue;
+            const d = (slot.by_denom[den] ||= { state: '0', attributed: '0' });
+            addBig(d, 'state', a.amount);
+        }
+    }
+    // events: single-period → exact per-period attribution; multi-period /
+    // unknown-epoch → lifetime-only (full amount, NEVER divided); events whose
+    // period the harvest hasn't reached → events_outside_state.
+    const lifetime = {};            // canonical -> {state, attributed_exact, attributed_spanning}
+    const outside = {};             // canonical -> amount (declared)
+    let spanningCount = 0, outsideCount = 0;
+    for (const p of Object.keys(periods)) for (const [den, d] of Object.entries(periods[p].by_denom)) {
+        const l = (lifetime[den] ||= { state: '0', attributed_exact: '0', attributed_spanning: '0' });
+        addBig(l, 'state', d.state);
+    }
+    for (const ev of bribeEvents) {
+        if (ev.type !== 'bribe_add' || !Array.isArray(ev.coins)) continue;
+        const single = ev.epoch_start != null && (ev.epoch_end == null || ev.epoch_end === ev.epoch_start);
+        for (const c of ev.coins) {
+            if (!c?.denom || !/^\d+$/.test(String(c.amount))) continue;
+            const l = (lifetime[c.denom] ||= { state: '0', attributed_exact: '0', attributed_spanning: '0' });
+            if (single && harvested.has(ev.epoch_start)) {
+                const slot = periods[String(ev.epoch_start)].by_denom[c.denom]
+                    ||= { state: '0', attributed: '0' };
+                addBig(slot, 'attributed', c.amount);
+                addBig(l, 'attributed_exact', c.amount);
+            } else if (single) {
+                addBig(outside, c.denom, c.amount); outsideCount++;
+            } else {
+                addBig(l, 'attributed_spanning', c.amount); spanningCount++;
+            }
+        }
+    }
+    // remainders — clamped at zero; an event surplus is DECLARED, not negated
+    for (const p of Object.values(periods)) for (const d of Object.values(p.by_denom)) {
+        const rem = BigInt(d.state) - BigInt(d.attributed);
+        d.unattributed = (rem > 0n ? rem : 0n).toString();
+        if (rem < 0n) d.event_surplus = (-rem).toString();
+    }
+    const lifetimeOut = {};
+    for (const [den, l] of Object.entries(lifetime)) {
+        const rem = BigInt(l.state) - BigInt(l.attributed_exact) - BigInt(l.attributed_spanning);
+        lifetimeOut[den] = { ...l, unattributed: (rem > 0n ? rem : 0n).toString(),
+            ...(rem < 0n ? { event_surplus: (-rem).toString() } : {}) };
+    }
+    return {
+        source: `${BS_DIR}/ (complete per-period chain ledger) + events (attribution)`,
+        state_through_period: bsIndex.last_harvested_period ?? null,
+        walked_down_to: bsIndex.walked_down_to ?? null,
+        floor_period: bsIndex.floor_period ?? null,
+        semantics: 'state = the manager\u2019s verbatim per-period totals; attributed = event-derived (direct + v6 promoted), single-period events only per period; spanning/unknown-epoch events count toward lifetime ONLY (full amounts, never divided); unattributed = state \u2212 attributed, clamped \u2265 0 with any surplus declared',
+        periods,
+        lifetime: lifetimeOut,
+        events_outside_state: outsideCount ? { by_denom: outside, event_coin_count: outsideCount, note: 'single-period bribe events for periods the state harvest has not reached (pre-floor or ahead of head)' } : undefined,
+        spanning_event_coin_count: spanningCount || undefined,
+    };
+}
 
 // ---- price lookup with lazy month cache (D5) ---------------------------------
 function makePriceLookup(apiGetJson, log) {
@@ -284,14 +381,25 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
         return bv - av || (a.wallet < b.wallet ? -1 : 1);
     });
 
-    // -- bribers (event-derived; blind spot declared, fixed by build #3)
+    // -- bribe-state (#3.5): the complete chain ledger joins the build --------
+    const bsIdxR = await apiGetJson(`${BS_DIR}/index.json`);
+    if (!bsIdxR.ok) throw new Error('rollups: bribe-state index read failed');
+    const bsIndex = bsIdxR.data || null;                    // null = not deployed yet (declared)
+    let bsRecords = [];
+    if (bsIndex) bsRecords = await readAllMonths(apiGetJson, BS_DIR, bsIndex.months_present);
+    const bribe_ledger = buildBribeLedger(bsIndex, bsRecords, bribes);
+
+    // -- bribers (event-derived attribution — the ONLY per-briber source; the
+    //    state ledger knows pools and amounts, not who paid. Completeness is
+    //    now MEASURED in bribe_ledger, not disclaimed in a note.)
     const bribersBy = new Map();
     for (const ev of bribes) {
         if (ev.type !== 'bribe_add' || !ev.briber) continue;
         const epoch = ev.epoch_start ?? (epochOf ? epochOf(ev.timestamp) : null);
         let b = bribersBy.get(ev.briber);
-        if (!b) { b = { event_count: 0, by_epoch: {} }; bribersBy.set(ev.briber, b); }
+        if (!b) { b = { event_count: 0, via: { msg: 0, wasm_event: 0 }, by_epoch: {} }; bribersBy.set(ev.briber, b); }
         b.event_count++;
+        b.via[ev.via === 'wasm_event' ? 'wasm_event' : 'msg']++;
         const ek = String(epoch ?? 'unknown');
         const slot = (b.by_epoch[ek] ||= { pools: {}, coins: {} });
         if (ev.pool) slot.pools[ev.pool] = (slot.pools[ev.pool] || 0) + 1;
@@ -309,6 +417,8 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
         built_on_period: vsIndex.last_harvested_period ?? null,
         sources: {
             vote_state_through_period: vsIndex.last_harvested_period ?? null,
+            bribe_state_through_period: bsIndex ? (bsIndex.last_harvested_period ?? null) : null,
+            bribe_state_floor: bsIndex ? (bsIndex.floor_period ?? null) : null,
             events_index_counts: Object.fromEntries(Object.entries(index.streams || {}).map(([s, m]) => [s, m.count])),
             distributions_pointer: DISTRIBUTIONS_POINTER,
         },
@@ -317,11 +427,11 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
         voter_count: voters.length,
         voters,
         bribers,
-        bribers_coverage_note: '~97% blind to contract-initiated add_bribe (take-rate tributes) until build #3 — present, NOT complete',
+        bribe_ledger,
         pots: { moved_to: DISTRIBUTIONS_POINTER, note: 'schema-3 event-derived pots retired; distributions is the chain-complete per-period ledger' },
     };
-    await publishFile(OUT, JSON.stringify(rollups), `rollups schema 4: ${voters.length} voters, built on period ${rollups.built_on_period}`);
+    await publishFile(OUT, JSON.stringify(rollups), `rollups schema 5: ${voters.length} voters, built on period ${rollups.built_on_period}`);
     return { voters: voters.length, bribers: bribers.length, built_on_period: rollups.built_on_period };
 }
 
-module.exports = { buildRollups4, ROLLUPS_SCHEMA, buildTokenMap, makePriceLookup, bareDenom, CLAIM_COVERAGE };
+module.exports = { buildRollups4, buildBribeLedger, ROLLUPS_SCHEMA, buildTokenMap, makePriceLookup, bareDenom, CLAIM_COVERAGE };
