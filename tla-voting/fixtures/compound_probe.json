@@ -1,1 +1,59 @@
-
+{
+  "_note": "TRIMMED from the live LCD probe 2026-07-15 (Camron browser paste). Real tx 9B2DD008… — Votion arbLUNA-MAX vault compound. Kept: the compound msg + every event relevant to classifier v5 (gauge/claim_rebase rebase_amount, ampLUNA transfer, deposit_for, metadata_changed) with EXACT chain values. Full tx_response is in the 2026-07-15 session transcript.",
+  "tx_response": {
+    "height": "21711878",
+    "txhash": "9B2DD0085116BFBE0E8E24CAFBC044266DD96AA012E65DB53E05333CCD41BF16",
+    "code": 0,
+    "timestamp": "2026-07-01T10:00:21Z",
+    "tx": {
+      "body": {
+        "messages": [
+          {
+            "@type": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "sender": "terra1alqg9kfy0nlvfr7rmww8nhrdpekwnvacqnmr5w",
+            "contract": "terra13aae4futz6jk7hmdv0gwm2xs6p4nxv4xwz5tc0c2vt4960u4j6jqpqmye9",
+            "msg": { "compound": { "assets": [ { "cw20": "terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct" } ] } },
+            "funds": []
+          }
+        ]
+      }
+    },
+    "events": [
+      { "type": "wasm", "attributes": [
+        { "key": "_contract_address", "value": "terra13aae4futz6jk7hmdv0gwm2xs6p4nxv4xwz5tc0c2vt4960u4j6jqpqmye9" },
+        { "key": "action", "value": "votion-la/compound" },
+        { "key": "msg_index", "value": "0" } ] },
+      { "type": "wasm", "attributes": [
+        { "key": "_contract_address", "value": "terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj" },
+        { "key": "action", "value": "gauge/claim_rebase" },
+        { "key": "rebase_amount", "value": "13966383" },
+        { "key": "user", "value": "terra13aae4futz6jk7hmdv0gwm2xs6p4nxv4xwz5tc0c2vt4960u4j6jqpqmye9" },
+        { "key": "msg_index", "value": "0" } ] },
+      { "type": "wasm", "attributes": [
+        { "key": "_contract_address", "value": "terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct" },
+        { "key": "action", "value": "transfer" },
+        { "key": "amount", "value": "13966383" },
+        { "key": "from", "value": "terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj" },
+        { "key": "to", "value": "terra13aae4futz6jk7hmdv0gwm2xs6p4nxv4xwz5tc0c2vt4960u4j6jqpqmye9" },
+        { "key": "msg_index", "value": "0" } ] },
+      { "type": "wasm", "attributes": [
+        { "key": "_contract_address", "value": "terra13aae4futz6jk7hmdv0gwm2xs6p4nxv4xwz5tc0c2vt4960u4j6jqpqmye9" },
+        { "key": "action", "value": "votion-la/callback_increase_lock" },
+        { "key": "amount", "value": "9238062" },
+        { "key": "protocol_fee", "value": "1026451" },
+        { "key": "strategy_fee", "value": "0" },
+        { "key": "msg_index", "value": "0" } ] },
+      { "type": "wasm", "attributes": [
+        { "key": "_contract_address", "value": "terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg" },
+        { "key": "action", "value": "ve/deposit_for" },
+        { "key": "fixed_power", "value": "632775499664" },
+        { "key": "lock_end", "value": "permanent" },
+        { "key": "voting_power", "value": "5694979496976" },
+        { "key": "msg_index", "value": "0" } ] },
+      { "type": "wasm-metadata_changed", "attributes": [
+        { "key": "_contract_address", "value": "terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg" },
+        { "key": "token_id", "value": "748" },
+        { "key": "msg_index", "value": "0" } ] }
+    ]
+  }
+}
