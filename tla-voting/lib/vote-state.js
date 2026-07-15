@@ -35,6 +35,13 @@
 // product has no history to clobber, and the first harvest is the heal.
 // Dedup ((period,wallet)) + never-shrink still apply on every write.
 //
+// LOCK-STATE RETENTION RIDER (2.2.0): the enumeration pays for lock_info on
+// every token every harvest — since 2.2.0 the analytic fields (end,
+// underlying_amount, asset, amounts, VP components) are RETAINED as one
+// per-period record in `vote-state/locks/{YYYY}/{MM}.json` instead of being
+// discarded after the owner extraction. Soft-fail (surfaces, never blocks
+// the harvest); full harvests only (completion mode has no enumeration).
+//
 // COMPLETION MODE (F2 without all-or-nothing): individual user_info failures
 // land in index.pending_wallets; last_harvested_period advances ONLY when
 // pending is empty. The next run retries pending only (state is retained —
@@ -110,6 +117,23 @@ async function allTokens() {
         await sleep(PACE_MS);
     }
     return out;
+}
+// Lock-state retention rider (2.2.0, CHANGES_PENDING item 3 analytics riders):
+// the harvest already pays for lock_info on every token — retain the analytic
+// fields per lock instead of discarding everything but the owner. Downstream
+// derivables: avg lock duration, permanent-vs-timed split, per-lock sizes,
+// LST composition of total VP. `end` kept verbatim ({period:N} | 'permanent').
+function lockStateOf(tokenId, v) {
+    return {
+        token_id: String(tokenId), owner: v.owner ?? null,
+        asset: normalizeAssetId(v.asset?.info ?? null),
+        amount: v.asset?.amount != null ? String(v.asset.amount) : null,
+        underlying_amount: v.underlying_amount != null ? String(v.underlying_amount) : null,
+        start: v.start ?? null, end: v.end ?? null,
+        coefficient: v.coefficient ?? null, slope: v.slope != null ? String(v.slope) : null,
+        voting_power: v.voting_power != null ? String(v.voting_power) : null,
+        fixed_amount: v.fixed_amount != null ? String(v.fixed_amount) : null,
+    };
 }
 const lockInfo = (tokenId) => CH.queryContract(VOTING_ESCROW, { lock_info: { token_id: String(tokenId), time: 'current' } });
 const userInfo = (wallet)  => CH.queryContract(GAUGE_CONTROLLER, { user_info: { user: wallet, time: 'next' } });
@@ -261,6 +285,7 @@ async function forwardVoteState({ publishFile, apiGetJson, readVoteEvents, log =
 
     // ---- universe
     let universe;
+    let lockSnapshot = null;   // lock-state retention rider (full harvests only)
     if (completionMode) {
         universe = [...pending];
         log.log(`  vote-state: completion mode — retrying ${universe.length} pending wallet(s) for period ${period}`);
@@ -278,6 +303,9 @@ async function forwardVoteState({ publishFile, apiGetJson, readVoteEvents, log =
             owners.add(r.value.owner);
         });
         if (lockFails.length) throw new Error(`lock_info failures (${lockFails.length}/${tokenIds.length}) — universe incomplete, aborting harvest: ${lockFails[0]}`);
+        // lock-state retention rider — the enumeration succeeded (aborted above
+        // otherwise), so every lock_info answer is on hand: retain it.
+        lockSnapshot = tokenIds.map((t, i2) => lockStateOf(t, li[i2].value));
         universe = [...new Set([...owners, ...(idx.wallets_seen || [])])];
         log.log(`  vote-state: period ${period} — ${tokenIds.length} locks, ${owners.size} owners, universe ${universe.length}`);
     }
@@ -308,6 +336,30 @@ async function forwardVoteState({ publishFile, apiGetJson, readVoteEvents, log =
     if (merged.length < existing.length) throw new Error(`vote-state never-shrink violation: ${merged.length} < ${existing.length}`);
     if (added > 0) await publishFile(monthPath, JSON.stringify(merged), `vote-state ${yyyy}/${mm}: period ${period} +${added} (${merged.length} total)`);
 
+    // ---- lock-state retention rider: one record per period (dedup on period,
+    // never-shrink; capturedAt-month routing like vote-state — no backfill).
+    // Publish failure is soft (dedup makes the retry free) but surfaces.
+    let lock_state = null;
+    if (!completionMode && lockSnapshot) {
+        try {
+            const lockPath = `${VS_DIR}/locks/${yyyy}/${mm}.json`;
+            const lr = await apiGetJson(lockPath);
+            if (!lr.ok) throw new Error('locks month read failed');
+            const lexisting = Array.isArray(lr.data) ? lr.data : [];
+            if (lr.data != null && !Array.isArray(lr.data)) throw new Error('locks month file is not an array — refusing to overwrite');
+            if (!lexisting.some(r => r.period === period)) {
+                const lmerged = [...lexisting, { schemaVersion: VS_SCHEMA_VERSION, period, capturedAt, source: 'state-harvest', lock_count: lockSnapshot.length, locks: lockSnapshot }]
+                    .sort((a, b) => a.period - b.period);
+                if (lmerged.length < lexisting.length) throw new Error(`lock-state never-shrink violation: ${lmerged.length} < ${lexisting.length}`);
+                await publishFile(lockPath, JSON.stringify(lmerged), `vote-state locks ${yyyy}/${mm}: period ${period} (${lockSnapshot.length} locks)`);
+            }
+            lock_state = { period, lock_count: lockSnapshot.length };
+        } catch (e) {
+            lock_state = { error: String(e.message || e) };
+            log.warn(`  ⚠ lock-state retention publish failed (soft — retries next harvest): ${e.message}`);
+        }
+    }
+
     // ---- vote_capture (full harvests only — a partial universe = invalid rate)
     let vote_capture = null;
     if (!completionMode) {
@@ -333,19 +385,23 @@ async function forwardVoteState({ publishFile, apiGetJson, readVoteEvents, log =
         wallets_seen,
         months_present: (() => { const mp = { ...(idx.months_present || {}) }; ((mp[yyyy] ||= []).includes(mm)) || mp[yyyy].push(mm); mp[yyyy].sort(); return mp; })(),
         counts: { records: (idx.counts?.records || 0) + added, last_harvest_wallets: uiByWallet.size, last_harvest_voted: votedCount },
+        lock_state: lock_state && !lock_state.error
+            ? { last_period: lock_state.period, months_present: (() => { const mp = { ...(idx.lock_state?.months_present || {}) }; ((mp[yyyy] ||= []).includes(mm)) || mp[yyyy].push(mm); mp[yyyy].sort(); return mp; })() }
+            : (idx.lock_state ?? undefined),
         stamp_field_note: 'period stamps parsed tolerantly (period/vote_period/last_vote_period); raw_gauge_votes retained verbatim per record — pin the field via probe (spec §3)',
     };
     await publishFile(`${VS_DIR}/index.json`, newIdx, `vote-state index: period ${newIdx.last_harvested_period}${failed.length ? ` (${failed.length} pending)` : ''}`);
     await publishFile(`${VS_DIR}/heartbeat.json`, {
         schemaVersion: VS_SCHEMA_VERSION, cron: 'tla-voting', product: 'vote-state',
         capturedAt, runMode: completionMode ? 'completion' : 'harvest',
-        status: failed.length ? 'partial' : 'ok',
+        status: (failed.length || (lock_state && lock_state.error)) ? 'partial' : 'ok',
         period, wallets: uiByWallet.size, voted: votedCount, added,
+        lock_state: lock_state || undefined,
         pending_wallets: failed.length ? failed : undefined,
         vote_capture: vote_capture && vote_capture.counts ? { ...vote_capture.counts, match_rate_pct: vote_capture.match_rate_pct } : undefined,
     }, `vote-state heartbeat ${failed.length ? 'partial' : 'ok'}`);
 
-    return { period, wallets: uiByWallet.size, voted: votedCount, added, pending: failed.length, vote_capture: vote_capture && vote_capture.counts ? { ...vote_capture.counts, match_rate_pct: vote_capture.match_rate_pct } : undefined };
+    return { period, wallets: uiByWallet.size, voted: votedCount, added, pending: failed.length, lock_state: lock_state || undefined, vote_capture: vote_capture && vote_capture.counts ? { ...vote_capture.counts, match_rate_pct: vote_capture.match_rate_pct } : undefined };
 }
 
-module.exports = { forwardVoteState, CH, VS_DIR, VS_SCHEMA_VERSION, buildRecord, computeVoteCapture, normAlloc, stampOf, mapLimit };
+module.exports = { forwardVoteState, CH, VS_DIR, VS_SCHEMA_VERSION, buildRecord, computeVoteCapture, normAlloc, stampOf, mapLimit, lockStateOf };
