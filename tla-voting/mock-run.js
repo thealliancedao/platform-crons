@@ -248,7 +248,7 @@ console.log('\nT3 — walker end-to-end: gate, decode, classify, monthly merge, 
     assert(idx.streams.votes.count === 1 && idx.streams.votes.months_present['2026'].includes('07'), 'index counts + months updated');
     assert(cur.last_block === 104, `cursor advanced to 104 (${cur.last_block})`);
     assert(hb.status === 'ok' && hb.counts.gated_txs === 2, `heartbeat ok, gated_txs 2 (foreign gated out) — got ${hb.status}/${hb.counts.gated_txs}`);
-    assert(hb.version === 'org-tla-voting-2.2.0' && hb.schemaVersion === 4, 'heartbeat carries 2.2.0 / schema 4');
+    assert(hb.version === 'org-tla-voting-2.3.0' && hb.schemaVersion === 4, 'heartbeat carries 2.2.0 / schema 4');
     // idempotence: re-walk the same window (cursor rolled back) → dedup absorbs
     REPO.set('tla-voting/events/cursor.json', JSON.stringify({ schemaVersion: 4, last_block: 100 }));
     await M.run();
@@ -506,7 +506,7 @@ console.log('\nR5 — classifier v5: rebase-income promotion on the REAL probe t
     assert(comp2 && comp2.coins === null && comp2.coins_source === undefined, 'zero-claim (no gauge declaration) stays coins:null');
 }
 
-console.log('\nR1–R4, R6, R7 — rollups schema 4 on real vote-state + crafted claim edges');
+console.log('\nR1–R4, R6, R7, R13a — rollups schema 5 on real vote-state + crafted claim + bribe_ledger');
 {
     REPO.clear();
     const TC = fs.readFileSync(path.join(TLA_CORE, 'token-catalog', 'snapshots', 'current.json'), 'utf8');
@@ -531,7 +531,16 @@ console.log('\nR1–R4, R6, R7 — rollups schema 4 on real vote-state + crafted
         { type: 'withdraw', canonical: true, wallet: wX, amount: 1000000, timestamp: '2026-07-02T00:00:00Z', height: 3, tx_hash: 'L3' },
         { type: 'lock_extend_time', canonical: true, wallet: wX, timestamp: '2026-07-03T00:00:00Z', height: 4, tx_hash: 'L4' }]));
     REPO.set('tla-voting/events/bribes/2026/07.json', JSON.stringify([
-        { type: 'bribe_add', briber: 'terra1mockbriber', pool: 'cw20:poolA', gauge: 'project', epoch_start: 194, coins: [{ amount: '180000000', denom: 'native:uluna' }], timestamp: '2026-07-02T00:00:00Z', height: 5, tx_hash: 'B1' }]));
+        { type: 'bribe_add', briber: 'terra1mockbriber', pool: 'cw20:poolA', gauge: 'project', epoch_start: 194, coins: [{ amount: '180000000', denom: 'native:uluna' }], timestamp: '2026-07-02T00:00:00Z', height: 5, tx_hash: 'B1' },
+        { type: 'bribe_add', via: 'wasm_event', briber: 'terra1tributecontract', briber_source: 'msg_target', pool: null, epoch_start: 195, epoch_end: 195, coins: [{ amount: '15000000', denom: 'native:uluna' }], timestamp: '2026-07-03T00:00:00Z', height: 6, tx_hash: 'B2' },
+        { type: 'bribe_add', via: 'wasm_event', briber: 'terra1tributecontract', briber_source: 'msg_target', pool: null, epoch_start: 190, epoch_end: 194, coins: [{ amount: '5000000', denom: 'native:uluna' }], timestamp: '2026-07-03T01:00:00Z', height: 7, tx_hash: 'B3' }]));
+    // #3.5: the bribe-state ledger joins the build — period 194 state totals
+    REPO.set('tla-voting/bribe-state/index.json', JSON.stringify({ schemaVersion: 1, last_harvested_period: 194, walked_down_to: 96, floor_period: 96, months_present: { '2026': ['07'] } }));
+    REPO.set('tla-voting/bribe-state/2026/07.json', JSON.stringify([
+        { schemaVersion: 1, period: 194, harvested_at: '2026-07-15T00:00:00Z', source: 'state-harvest', buckets: [
+            { gauge: 'project', asset: { cw20: 'terra1poolA' }, assets: [
+                { info: { native_token: { denom: 'uluna' } }, amount: '200000000' },
+                { info: { token: { contract_addr: 'terra1astro' } }, amount: '9000000' }] }] }]));
     REPO.set('tla-voting/events/rewards/2026/07.json', JSON.stringify([
         { type: 'claim_bribes', kind: 'wallet_claim', wallet: wX, coins: [{ amount: '1000000', denom: 'native:uluna' }], timestamp: '2026-07-02T10:00:00Z', height: 6, tx_hash: 'C1' },
         { type: 'claim_bribes', kind: 'wallet_claim', wallet: wX, coins: [{ amount: '2000000', denom: 'native:uluna' }], timestamp: '2026-07-05T10:00:00Z', height: 7, tx_hash: 'C2' },
@@ -575,10 +584,49 @@ console.log('\nR1–R4, R6, R7 — rollups schema 4 on real vote-state + crafted
     // R6 — zero-claims honest split
     assert(vBy[wX].claims.claim_tx_count === 4 && vBy[wX].claims.paid_claim_count === 3, `claim_tx 4 vs paid 3 (${vBy[wX].claims.claim_tx_count}/${vBy[wX].claims.paid_claim_count})`);
 
-    // R7 — pots retired + briber blind-spot label
+    // R7 — pots retired + bribers (schema 5: measured ledger, note RETIRED)
     assert(roll.pots && /distributions\/history/.test(roll.pots.moved_to) && !roll.protocol_pots_by_epoch, 'pots retired to distributions pointer');
-    assert(/blind/.test(roll.bribers_coverage_note) && roll.bribers[0].briber === 'terra1mockbriber' &&
-           roll.bribers[0].by_epoch['194'].coins['native:uluna'] === '180000000', 'bribers aggregated + coverage note present');
+    assert(roll.schemaVersion === 5 && roll.bribers_coverage_note === undefined, 'schema 5: bribers_coverage_note RETIRED');
+    const mockBriber = roll.bribers.find(b => b.briber === 'terra1mockbriber');
+    const tribBriber = roll.bribers.find(b => b.briber === 'terra1tributecontract');
+    assert(mockBriber.by_epoch['194'].coins['native:uluna'] === '180000000' && mockBriber.via.msg === 1 && mockBriber.via.wasm_event === 0,
+        'direct briber aggregated + via counts (msg)');
+    assert(tribBriber.event_count === 2 && tribBriber.via.wasm_event === 2, 'v6-promoted briber carries via.wasm_event counts');
+
+    // R13a — bribe_ledger math inside the full build
+    const bl = roll.bribe_ledger;
+    assert(bl.floor_period === 96 && bl.state_through_period === 194 && roll.sources.bribe_state_through_period === 194 && roll.sources.bribe_state_floor === 96,
+        'ledger + sources carry the bribe-state cursor and floor');
+    const p194 = bl.periods['194'].by_denom;
+    assert(p194['native:uluna'].state === '200000000' && p194['native:uluna'].attributed === '180000000' && p194['native:uluna'].unattributed === '20000000',
+        `period 194 uluna: state 200M, attributed 180M (single-period event), unattributed 20M MEASURED`);
+    assert(p194['cw20:terra1astro'].state === '9000000' && p194['cw20:terra1astro'].attributed === '0' && p194['cw20:terra1astro'].unattributed === '9000000',
+        'state-only denom: fully unattributed, never dropped (canonicalOfInfo token branch)');
+    const lt = bl.lifetime['native:uluna'];
+    assert(lt.state === '200000000' && lt.attributed_exact === '180000000' && lt.attributed_spanning === '5000000' && lt.unattributed === '15000000',
+        `lifetime uluna: spanning event counts in FULL (5M, never divided) → unattributed 15M`);
+    assert(bl.events_outside_state.by_denom['native:uluna'] === '15000000' && bl.events_outside_state.event_coin_count === 1,
+        'single-period event ahead of the harvested head → events_outside_state, not a skewed remainder');
+    assert(bl.spanning_event_coin_count === 1 && bl.periods['190'] === undefined,
+        'spanning event NEVER lands in per-period rows (no-division law)');
+}
+
+console.log('\nR13 — bribe_ledger edges: grace, surplus clamp, dedup');
+{
+    const { buildBribeLedger } = require('./lib/rollups.js');
+    // absent index (pre-deploy) → declared grace, never a throw
+    const grace = buildBribeLedger(null, [], []);
+    assert(/awaiting bribe-state/.test(grace.status), 'absent bribe-state index → declared awaiting status');
+    // event surplus over state → unattributed clamped 0, surplus DECLARED
+    const idx = { last_harvested_period: 194, floor_period: 96 };
+    const recs = [{ period: 194, buckets: [{ gauge: 'g', assets: [{ info: { native: 'uluna' }, amount: '100' }] }] },
+                  { period: 194, buckets: [{ gauge: 'g', assets: [{ info: { native: 'uluna' }, amount: '999999' }] }] }];  // dup period — must be ignored
+    const evs = [{ type: 'bribe_add', epoch_start: 194, epoch_end: 194, coins: [{ denom: 'native:uluna', amount: '150' }] }];
+    const led = buildBribeLedger(idx, recs, evs);
+    const d = led.periods['194'].by_denom['native:uluna'];
+    assert(d.state === '100', 'duplicate period record ignored (dedup safety — state stays 100)');
+    assert(d.unattributed === '0' && d.event_surplus === '50', `surplus clamped: unattributed 0, event_surplus 50 declared (${JSON.stringify(d)})`);
+    assert(led.lifetime['native:uluna'].unattributed === '0' && led.lifetime['native:uluna'].event_surplus === '50', 'lifetime surplus mirrors');
 }
 
 // =============================================================================

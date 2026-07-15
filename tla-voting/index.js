@@ -73,7 +73,7 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.2.0';        // 2.2.0 (SPEC-tla-voting-bribe-state): bribe-state harvest (walk-down + forward) + <<CLASSIFIER v6>> contract-bribe promotion + bribe_capture — on 2.1.0 (rollups 4 + v5) on 2.0.0 (walker + monthly + vote-state)
+const VERSION = 'org-tla-voting-2.3.0';        // 2.3.0 (build #3.5): rollups schema 5 — bribe_ledger (state totals vs event attribution, unattributed MEASURED) + bribers via counts, note retired — on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
@@ -1086,7 +1086,7 @@ async function run() {
     if (harvestLanded || process.env.FORCE_ROLLUPS === '1') {
         try {
             ru = await buildRollups4({ apiGetJson, publishFile, epochOf, log: console });
-            console.log(`  rollups: schema 4 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
+            console.log(`  rollups: schema 5 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
         } catch (re) { addErr('rollups', re); console.warn(`  ⚠ rollups step failed (streams/state unaffected): ${re.message}`); }
     }
 

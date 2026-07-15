@@ -1,4 +1,4 @@
-# tla-voting — org-tla-voting 2.2.0 (TLA voting capture, forward)
+# tla-voting — org-tla-voting 2.3.0 (TLA voting capture, forward)
 
 **Render job:** `org-tla-voting` · schedule `0 * * * *` (hourly — D6) · entry `index.js`
 **Specs:** `SPEC-tla-voting-bribe-state.md` (2.2.0 bribe-state + classifier v6) + `SPEC-tla-voting-rollups.md` (2.1.0 rollups + classifier v5) + `SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
@@ -93,9 +93,20 @@ complete per-period, per-pool, per-denom ledger (retention PROVEN to period
   events are structurally partial (that's why state exists); the alarm is
   coverage DROPPING for direct-bribe denominators.
 
-Rollups' `bribers` section still reads events only — build #3.5 upgrades it
-to consume bribe-state, at which point the `bribers_coverage_note` blind-spot
-label retires.
+## rollups schema 5 (build #3.5) — the blind spot becomes a number
+
+`bribe_ledger` in rollups.json joins the two sources by what each can know:
+**state** = the manager's verbatim per-period, per-denom totals (complete
+back to the floor); **attributed** = event-derived amounts (direct bribes +
+v6 promoted — the only per-briber source; the chain ledger knows pools and
+amounts, not who paid); **unattributed** = state − attributed, clamped ≥ 0
+with any surplus declared. THE NO-DIVISION LAW: an event spanning multiple
+epochs counts in FULL toward lifetime sums only, never split across periods;
+single-period events for periods the harvest hasn't reached land in
+`events_outside_state`. `bribers[]` gains `via` counts (msg vs wasm_event).
+`bribers_coverage_note` is RETIRED — replaced by measured remainders that
+shrink as v6 captures forward. Grace: no bribe-state index yet → a declared
+`awaiting` status, never a failure.
 
 ## rollups.json schema 4 (build #2 — the honest merge)
 
@@ -233,17 +244,25 @@ Jan-2025→Jun-15-2026 — never deleted.
 
 ## Mock gate
 
-`TLA_CORE_DIR=<tla-core checkout> node mock-run.js` — 96 assertions on REAL
+`TLA_CORE_DIR=<tla-core checkout> node mock-run.js` — 108 assertions on REAL
 fixtures (FCD txs vs committed events): classifier v4/v5/v6 parity, token_id
 promotion, walker gate/budget/crash/pruned/corrupt/migration/layout-guard,
 vote-state harvest/completion/vote_capture/enumeration-abort + lock-state
-rider, rollups schema 4, bribe-state walk-down/floor-confirm/forward/
+rider, rollups schema 5, bribe-state walk-down/floor-confirm/forward/
 epoch-month-routing/verbatim (R8–R12 incl. the real take-rate tx
-69D072693314). Passed 2026-07-15 pre-delivery. Re-run after ANY main-loop
+69D072693314), bribe_ledger math + edges (R13a/R13). Passed 2026-07-15
+pre-delivery. Re-run after ANY main-loop
 change (binding). Note: the harness reads the committed streams' MONTHLY
 layout (post-restructure) since 2.2.0.
 
 ## Recent changes
+
+- **2.3.0 (2026-07-15) — build #3.5.** Rollups schema 5: `bribe_ledger`
+  (state totals vs event attribution per period/denom, unattributed
+  remainder measured, no-division law, events_outside_state declared,
+  surplus clamped + declared), `bribers[].via` counts,
+  `bribers_coverage_note` retired. Mock gate 108/108 (R7 rewritten, R13a +
+  R13 added). Changelog Rev 8.
 
 - **2.2.0 (2026-07-15) — build #3 (SPEC-tla-voting-bribe-state).** NEW
   `bribe-state/` product (`lib/bribe-state.js`): budgeted in-cron genesis

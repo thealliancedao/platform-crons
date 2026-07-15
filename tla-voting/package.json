@@ -1,6 +1,6 @@
 {
   "name": "org-tla-voting",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "TLA voting capture (forward): block-walker events + per-period vote-state + bribe-state harvests + distributions + rollups schema 4, into tla-core tla-voting/",
   "main": "index.js",
   "scripts": {
