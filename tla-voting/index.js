@@ -1,56 +1,68 @@
 // =============================================================================
-// tla-voting / index.js — org-tla-voting (Render forward cron)
-// TLA VOTING event capture: votes, locks, bribes, rewards — forward maintenance
-// Spec: tla-core/docs/pending-changes/SPEC-tla-voting.md
+// tla-voting / index.js — org-tla-voting 2.0.0 (Render forward cron)
+// TLA VOTING event capture: votes, locks, bribes, rewards — WALKER TRANSPORT
+// Spec: tla-core/docs/pending-changes/SPEC-tla-voting-capture-fix.md
+// (module contract: SPEC-tla-voting.md · transport doctrine: SPEC-tla-flows-walker.md §0)
 // =============================================================================
 //
-// The FORWARD half of the tla-voting pipeline. The one-time seed lives in
-// tla-core/.github/scripts/tla-voting/ (GitHub Action): it built
-// tla-voting/events/ as if this cron had been running all along (incl. the
-// legacy Aug-2024→Jun-2026 bootstrap). This cron picks up from there: every
-// run sweeps the public nodes' retained tx window (~1 WEEK as of 2026-07-07 —
-// they pruned hard; see README), classifies, merges append-only into the
-// committed streams, and advances the cursor.
+// 2.0.0 (the capture fix) replaces the tx_search pager with the proven Rev C
+// BLOCK-WALKER (lifted from platform-crons/tla-flows): walk every block since
+// the cursor via RPC, gate on the three governance contracts, fetch each gated
+// tx DECODED by hash from the LCD (we are hours behind head at most — the tx
+// provably exists and is well inside the index retention), and feed the same
+// tx_response shape the classifiers always consumed. Forward capture done as
+// forward capture: completeness comes from block data, which cannot lie the
+// way tx_search pagination was proven to (Rev 4, Finding 2).
 //
-// ⚠ RETENTION STAKES: with a ~7-day public-node window, an outage longer than
-// a few days loses events PERMANENTLY (recoverable only via archive node).
-// The heartbeat monitor watching this cron is not optional. Any gap that does
-// occur is recorded honestly in known_gaps — never silently papered over.
+// Also in 2.0.0:
+//   • MONTHLY stream writes — events/{votes,locks,bribes,rewards}/{YYYY}/{MM}.json
+//     (post-restructure layout; this cron REFUSES to run against the monolith
+//     layout: index schemaVersion must be ≥ 4 → the deploy sequencing is
+//     self-enforcing).
+//   • <<CLASSIFIER v4>> — v3 + the lock token_id promotion (sole live home of
+//     the classifier; seed/fcd-fill are layout-guarded off).
+//   • vote-state HARVEST (lib/vote-state.js) — the per-period completeness +
+//     attribution layer: enumerate lock owners → user_info → period stamps.
+//     Catches Votion vaults, DAO DAO executions, Polytone, and silent drops BY
+//     CONSTRUCTION. The first harvest IS the heal of the Rev 4 misses.
+//   • events-vs-state vote_capture invariant in the heartbeat (the reconcile
+//     fold-in, SPEC-tla-voting-reconcile §4 promise).
+//   • rollups.json FROZEN — mis-attributed by exactly the actors this fix
+//     addresses; build #2 (rollup rebuilds) recomputes it on events + state.
 //
-// One-contract-one-owner (spec §1): gauge + escrow + incentive manager belong
-// to THIS cron. No other cron may scan them; this cron scans nothing else.
+// This cron NEVER seeds events (unchanged): unreachable priors → abort with an
+// error heartbeat. vote-state MAY self-start (its first harvest has no history
+// to clobber — dedup + never-shrink still apply; see lib/vote-state.js).
 //
-// This cron NEVER seeds: if the committed priors are unreachable it aborts
-// with an error heartbeat rather than publishing a shallow "fresh start" over
-// history. Recovery path = the seed Action, which owns bootstrap logic.
+// Reliability: F1 no pagination left to truncate (walker); F2 null ≠ [] on
+// every read; F3 never-shrink per touched month; F7 heartbeat honesty + cursor
+// advances only when every publish landed; F8 horizons untouched (historical
+// floors), pruned-block gaps recorded with EXACT bounds (walker D10).
 //
-// Reliability: F1 resilient ASC pager (publicnode offset quirk), F2 null≠[],
-// F3 never-shrink per stream, F7 heartbeat honesty + cursor advances only on
-// complete scans, F8 honest horizons (only ever move down).
-//
-// The CLASSIFIER block below is BYTE-IDENTICAL to the seed script's
-// (<<CLASSIFIER v3>> markers). Never edit one without the other — drift must
-// be visible in a plain diff.
-//
-// Env (Render): GITHUB_TOKEN (scoped to tla-core), GITHUB_REPO
-// (default thealliancedao/tla-core), GITHUB_BRANCH (main), LCD_PRIMARY /
-// LCD_FALLBACK, MAX_PAGES (60), PAGER_* knobs. Schedule: 0 */6 * * *.
+// Env (Render): GITHUB_TOKEN (scoped to tla-core), GITHUB_REPO/GITHUB_BRANCH,
+// RPC_PRIMARY / RPC_FALLBACK, LCD_PRIMARY / LCD_FALLBACK, WALK_CONCURRENCY (4),
+// MAX_BLOCKS_PER_RUN (2000), CONFIRM_LAG (3), TLA_LOOKBACK (700, cursor-
+// migration fallback only). Schedule: 0 * * * * (hourly — D6).
 // =============================================================================
 
 'use strict';
 
 const https = require('https');
+const crypto = require('crypto');
 const C = require('../config/contracts.js');
 
 // ----------------------------------------------------------------------------- constants
+const RPC_PRIMARY  = process.env.RPC_PRIMARY  || 'https://terra-rpc.publicnode.com';
+const RPC_FALLBACK = process.env.RPC_FALLBACK || 'https://terra-rpc.polkachu.com';
 const TERRA_LCD_PRIMARY  = process.env.LCD_PRIMARY  || 'https://terra-lcd.publicnode.com';
 const TERRA_LCD_FALLBACK = process.env.LCD_FALLBACK || 'https://terra-rest.publicnode.com';
 
 // One-contract-one-owner: single source of truth is the shared config.
-// (Constant names must match the seed's so the classifier block stays identical.)
+// (Constant names preserved so the classifier block stays v3-verbatim.)
 const TLA_GAUGE_CONTROLLER  = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW     = C.VOTING_ESCROW.addr;
 const TLA_INCENTIVE_MANAGER = C.BRIBE_MANAGER.addr;
+const WATCH_SET = new Set([TLA_GAUGE_CONTROLLER, TLA_VOTING_ESCROW, TLA_INCENTIVE_MANAGER]);
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
@@ -59,12 +71,15 @@ const OUT_DIR       = 'tla-voting/events';
 
 const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/docs/epoch_1-300_date.json`;
 
-const SEED_MAX_PAGES = Number(process.env.MAX_PAGES || 60); // retained window is ~3 pages/contract; generous cap
-const PAGE_LIMIT     = 100;
-const SCHEMA_VERSION = 3;
-const FORWARD_CADENCE_HOURS = 6;
-const VERSION = 'org-tla-voting-1.1.0'; // 1.1.0 (2026-07-14): hard-deadline httpGet port (flows 1.0.2) + distributions forward capture (SPEC-distributions-capture §4)
+const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
+const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
+const VERSION = 'org-tla-voting-2.0.0';        // 2.0.0 (SPEC-tla-voting-capture-fix): walker transport + monthly writes + vote-state harvest + <<CLASSIFIER v4>> token_id promotion + vote_capture invariant
+const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
+const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
+const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
 const { forwardDistributions } = require('./lib/distributions.js');
+const { forwardVoteState } = require('./lib/vote-state.js');
+
 // ----------------------------------------------------------------------------- action maps
 // CHAIN-CONFIRMED — gauge + escrow (probe 2026-06-15); incentive mgr:
 // CHAIN-CONFIRMED (probe + seed 2026-07-07) — incentive manager (add_bribe).
@@ -86,119 +101,219 @@ const LOCK_ACTION_KEYS = {
 const LOCK_HOOK_KEYS = { create_lock: 'lock_create', extend_lock_amount: 'lock_extend_amount', deposit_for: 'lock_deposit_for' };
 
 // Reward-class verbs (spec §3 reward-events). Wallet claims + protocol distributions.
-// Counts from the 6/15 unfiltered sweep prove these exist at volume.
 const REWARD_GAUGE_KEYS = {           // on the gauge controller
-    claim_bribes: 'claim_bribes',                     // voter claims bribes
+    claim_bribes: 'claim_bribes',
     claim_rewards: 'claim_rewards',
-    distribute_take_rate: 'distribute_take_rate',     // protocol pots (per-epoch)
+    distribute_take_rate: 'distribute_take_rate',
     distribute_rebase: 'distribute_rebase',
     distribute_bribes: 'distribute_bribes',
 };
 const REWARD_ESCROW_KEYS = {          // on the voting escrow
-    claim_rebase: 'claim_rebase',                     // locker claims rebase
-    compound: 'compound',                             // Votion-side compounding
+    claim_rebase: 'claim_rebase',
+    compound: 'compound',
 };
 const PROTOCOL_REWARD_TYPES = new Set(['distribute_take_rate', 'distribute_rebase', 'distribute_bribes']);
 
-// PROVISIONAL bribe verbs (incentive manager) — sample run confirms/extends.
-// Anything not listed still lands losslessly as `event:incentive/<key>`.
 const BRIBE_ACTION_KEYS = {
     add_bribe: 'bribe_add', bribe: 'bribe_add', deposit_bribe: 'bribe_add', incentivize: 'bribe_add',
     withdraw_bribe: 'bribe_withdraw', remove_bribe: 'bribe_withdraw',
 };
 
-// ----------------------------------------------------------------------------- http (proven transport)
+// ----------------------------------------------------------------------------- transport (injectable: mock-run.js monkey-patches T.*)
 const KEEPALIVE_AGENT = new https.Agent({ keepAlive: true, maxSockets: 1, keepAliveMsecs: 30000 });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-function httpGet(url, t = 40000) {
-    // HARD deadline (flows 1.0.2 port, landed with SPEC-distributions-capture):
-    // the previous r.setTimeout was an IDLE timeout — it resets on every byte,
-    // so a tarpit trickling data hangs the run forever. This destroys the
-    // request when the wall clock says so, regardless of activity.
+function realHttpGet(url, t = 40000) {
+    // HARD deadline (flows 1.0.2 port): destroys the request when the wall
+    // clock says so — an idle timeout alone lets a tarpit hang the run.
     return new Promise((res, rej) => {
-        const r = https.get(url, { agent: KEEPALIVE_AGENT, headers: { Accept: 'application/json', Connection: 'keep-alive', 'User-Agent': 'org-tla-voting/1.1' } }, (x) => {
+        const r = https.get(url, { agent: KEEPALIVE_AGENT, headers: { Accept: 'application/json', Connection: 'keep-alive', 'User-Agent': 'org-tla-voting/2.0' } }, (x) => {
             let b = ''; x.on('data', c => b += c); x.on('end', () => {
                 clearTimeout(killer);
                 if (x.statusCode >= 200 && x.statusCode < 300) { try { res(JSON.parse(b)); } catch { rej(new Error('bad JSON')); } }
-                else rej(new Error(`HTTP ${x.statusCode} ${b.slice(0, 120)}`)); });
+                else { const err = new Error(`HTTP ${x.statusCode} ${b.slice(0, 120)}`); err.statusCode = x.statusCode; rej(err); } });
         });
         const killer = setTimeout(() => r.destroy(new Error(`deadline ${t}ms`)), t);
         r.on('error', (e) => { clearTimeout(killer); rej(e); });
     });
 }
-async function lcdGet(p, label) { try { return await httpGet(TERRA_LCD_PRIMARY + p); } catch (e) { try { return await httpGet(TERRA_LCD_FALLBACK + p); } catch (e2) { throw new Error(`${label}: both LCDs failed (${e2.message})`); } } }
-async function tryGetJson(url, label) { try { return await httpGet(url); } catch (e) { console.warn(`  ⚠ ${label} fetch failed (non-fatal): ${e.message}`); return null; } }
+function realGithubApiRequest(method, apiPath, body, accept) {
+    return new Promise((resolve, reject) => {
+        const opts = { hostname: 'api.github.com', path: apiPath, method, headers: { 'User-Agent': 'org-tla-voting', 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': accept || 'application/vnd.github+json' } };
+        if (body) opts.headers['Content-Type'] = 'application/json';
+        const req = https.request(opts, res => { let data = ''; res.on('data', c => data += c); res.on('end', () => { if (res.statusCode >= 200 && res.statusCode < 300) { try { resolve(JSON.parse(data)); } catch { resolve(data); } } else { const err = new Error(`GitHub ${method} ${apiPath}: ${res.statusCode} ${data.slice(0, 200)}`); err.statusCode = res.statusCode; reject(err); } }); });
+        req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end();
+    });
+}
+const T = { httpGet: realHttpGet, githubApiRequest: realGithubApiRequest, now: () => new Date() };
 
-// ----------------------------------------------------------------------------- tx_search (resilient ASC pager — verbatim from proven engine; F1)
-async function fetchAllTxs(conds, label) {
-    const RETRIES = +(process.env.PAGER_RETRIES || 40), ROUNDS = +(process.env.PAGER_ROUNDS || 2);
-    const ERR_BACKOFF = +(process.env.PAGER_ERR_BACKOFF || 250), PROBE_DELAY = +(process.env.PAGER_PROBE_DELAY || 40);
-    const CONTIG_DELTA = 250000, P1_STABLE = 12;
-    const txPath = (page) => `/cosmos/tx/v1beta1/txs?query=${encodeURIComponent(conds.join(' AND '))}&order_by=ORDER_BY_ASC&page=${page}&limit=${PAGE_LIMIT}`;
-    const out = [], seen = new Set();
-    const stats = { calls: 0, pages: 0, regress: 0, far: 0, dup: 0, empty: 0, error: 0, reprobe: 0 };
-    let frontier = 0, globalMax = 0, stop = 'complete';
-    const scan = (batch) => { let freshMin = Infinity, fresh = 0; for (const tx of batch) { const h = Number(tx.height); if (h > globalMax) globalMax = h; if (!seen.has(tx.txhash)) { fresh++; if (h < freshMin) freshMin = h; } } return { fresh, freshMin }; };
-    const commit = (batch) => { let added = 0; for (const tx of batch) { const h = Number(tx.height); if (h > frontier) frontier = h; if (!seen.has(tx.txhash)) { seen.add(tx.txhash); out.push(tx); added++; } } stats.pages++; return added; };
-
-    let best1 = null, noImprove = 0, nonEmpty = 0;
-    for (let a = 0; a < RETRIES; a++) {
-        stats.calls++;
-        let resp; try { resp = await lcdGet(txPath(1), `${label} p1.${a}`); } catch { stats.error++; await sleep(ERR_BACKOFF); continue; }
-        const batch = resp?.tx_responses || [];
-        if (!batch.length) { stats.empty++; await sleep(ERR_BACKOFF); continue; }
-        scan(batch); nonEmpty++;
-        const minH = Math.min(...batch.map(t => Number(t.height)));
-        if (!best1 || minH < best1.minH) { best1 = { batch, minH }; noImprove = 0; } else { noImprove++; }
-        if (a % 8 === 7) console.log(`  ${label}: probing page 1… best start-height=${best1 ? best1.minH : 'n/a'} (${a + 1} probes)`);
-        if (nonEmpty >= 3 && noImprove >= P1_STABLE) break;
-        await sleep(PROBE_DELAY);
+async function rpcGet(p, label) {
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try { return await T.httpGet(RPC_PRIMARY + p); } catch (e) { lastErr = e; }
+        try { return await T.httpGet(RPC_FALLBACK + p); } catch (e) { lastErr = e; }
+        await sleep(300 * attempt);
     }
-    if (!best1) { console.warn(`  ⚠ ${label}: page 1 unreachable after ${RETRIES} tries (treating as empty)`); return { txs: [], stop: 'p1-unreachable', globalMax: 0 }; }
-    commit(best1.batch);
-    console.log(`  ${label}: page1 start-height=${best1.minH} (${out.length} txs, frontier=${frontier})`);
+    throw new Error(`${label}: RPC failed after retries (${lastErr && lastErr.message})`);
+}
+async function lcdGet(p, label) {
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try { return await T.httpGet(TERRA_LCD_PRIMARY + p); } catch (e) { lastErr = e; }
+        try { return await T.httpGet(TERRA_LCD_FALLBACK + p); } catch (e) { lastErr = e; }
+        await sleep(300 * attempt);
+    }
+    throw new Error(`${label}: both LCDs failed after retries (${lastErr && lastErr.message})`);
+}
+async function tryGetJson(url, label) { try { return await T.httpGet(url); } catch (e) { console.warn(`  ⚠ ${label} fetch failed (non-fatal): ${e.message}`); return null; } }
 
-    for (let page = 2; page < SEED_MAX_PAGES; page++) {
-        const avg = out.length > 1 ? Math.max(1, (frontier - Number(out[0].height)) / (out.length - 1)) : 1;
-        const TIGHT = Math.max(2000, 3 * avg), LOOSE = Math.max(50000, 10 * avg);
-        let bestCand = null, rounds = 0;
-        do {
-            if (rounds > 0) stats.reprobe++;
-            for (let a = 0; a < RETRIES; a++) {
-                stats.calls++;
-                let resp; try { resp = await lcdGet(txPath(page), `${label} p${page}.${a}`); } catch { stats.error++; await sleep(ERR_BACKOFF); continue; }
-                const batch = resp?.tx_responses || [];
-                if (!batch.length) { stats.empty++; await sleep(ERR_BACKOFF); continue; }
-                const { fresh, freshMin } = scan(batch);
-                if (fresh === 0) { stats.dup++; await sleep(PROBE_DELAY); continue; }
-                if (freshMin < frontier) { stats.regress++; await sleep(PROBE_DELAY); continue; }
-                if (freshMin - frontier > CONTIG_DELTA) { stats.far++; await sleep(PROBE_DELAY); continue; }
-                if (!bestCand || freshMin < bestCand.freshMin) bestCand = { batch, freshMin };
-                if (bestCand.freshMin - frontier <= TIGHT) break;
-                await sleep(PROBE_DELAY);
-            }
-            rounds++;
-        } while (frontier < globalMax && rounds < ROUNDS && (!bestCand || bestCand.freshMin - frontier > LOOSE));
-
-        if (bestCand) {
-            const added = commit(bestCand.batch);
-            if (page % 10 === 0 || added === 0) console.log(`  ${label}: ${out.length} txs (page ${page}, frontier=${frontier}, +${added})`);
-            if (page === SEED_MAX_PAGES - 1) { stop = 'page-cap'; console.warn(`  ⚠ ${label} hit page cap (${SEED_MAX_PAGES})`); }
-            continue;
+// ----------------------------------------------------------------------------- GitHub publish + state reads (org standard: 409-retry, API raw media)
+async function publishFile(filePath, contentObj, message) {
+    const content = typeof contentObj === 'string' ? contentObj : JSON.stringify(contentObj, null, 2);
+    const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        let sha = null;
+        try { sha = (await T.githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch { /* new file */ }
+        const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
+        if (sha) body.sha = sha;
+        try { return await T.githubApiRequest('PUT', apiPath, body); }
+        catch (e) {
+            if (e.statusCode === 409 && attempt < 3) { console.warn(`  ⚠ 409 on ${filePath} — re-fetching sha (attempt ${attempt})`); await sleep(400 * attempt); continue; }
+            throw e;
         }
-        if (frontier >= globalMax) { stop = 'clean-end'; break; }
-        stop = `stuck@page${page}`;
-        console.warn(`  ⚠ ${label}: STUCK at page ${page} — frontier ${frontier} < globalMax ${globalMax}`);
-        break;
     }
-    out.sort((a, b) => Number(a.height) - Number(b.height) || (a.txhash < b.txhash ? -1 : 1));
-    console.log(`  ${label}: DONE — ${out.length} txs | stop=${stop} | pages=${stats.pages} calls=${stats.calls} reprobe=${stats.reprobe} regress=${stats.regress} far=${stats.far} dup=${stats.dup} empty=${stats.empty} error=${stats.error}`);
-    return { txs: out, stop, globalMax };
+}
+// ALL state reads via the authenticated Contents API with the raw media type —
+// never the raw CDN (stale/429 under load), never base64 content (>1MB empty).
+// Takes a FULL repo path (events + vote-state share this reader).
+async function apiGetJson(repoPath) {
+    try {
+        const d = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${repoPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw');
+        return { ok: true, data: typeof d === 'string' ? JSON.parse(d) : d };
+    } catch (e) {
+        if (e.statusCode === 404) return { ok: true, data: null };   // genuinely absent
+        console.warn(`  ⚠ API read failed for ${repoPath}: ${e.message}`);
+        return { ok: false, data: null };                            // UNKNOWN — not absent
+    }
 }
 
-// SHARED CLASSIFIER — this section must stay BYTE-IDENTICAL with the copy in
-// platform-crons/history/ (the Render forward cron). Any drift must show in a
-// plain diff. Marker: <<CLASSIFIER v3>>
+// ----------------------------------------------------------------------------- block walker (Rev C lift — SPEC-tla-flows-walker D1–D10)
+const PRUNED = Symbol('pruned');
+function isPrunedError(e) { return /not available|is not available|lowest height|pruned/i.test(String(e && e.message || e)); }
+
+async function getHead() {
+    const s = await rpcGet('/status', 'head');
+    return Number(s.result.sync_info.latest_block_height);
+}
+async function getBlock(N) {
+    let r;
+    try { r = await rpcGet(`/block?height=${N}`, `block ${N}`); }
+    catch (e) { if (isPrunedError(e)) return PRUNED; throw e; }
+    if (r.error) { if (isPrunedError(r.error)) return PRUNED; throw new Error(`block ${N}: ${JSON.stringify(r.error).slice(0, 120)}`); }
+    const b = r.result.block;
+    return { time: String(b.header.time).slice(0, 19) + 'Z', txsB64: b.data.txs || [] };
+}
+async function getBlockResults(N) {
+    const r = await rpcGet(`/block_results?height=${N}`, `block_results ${N}`);
+    if (r.error) throw new Error(`block_results ${N}: ${JSON.stringify(r.error).slice(0, 120)}`);
+    return r.result.txs_results || [];
+}
+const txHashOf = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex').toUpperCase();
+
+// Gate: only txs touching one of the THREE governance contracts proceed to the
+// decoded fetch + classification. Block data sees the whole chain — without
+// the gate, foreign contracts' 'vote'/'claim' verbs would leak in.
+function touchesWatched(events) {
+    for (const e of events || []) {
+        if (e.type !== 'wasm') continue;
+        for (const a of e.attributes || [])
+            if (a.key === '_contract_address' && WATCH_SET.has(a.value)) return true;
+    }
+    return false;
+}
+// Route decoded txs to per-contract classifier feeds (reproduces the tx_search
+// per-contract sweeps EXACTLY — a tx touching several contracts appears in
+// each feed; the reward dedup handles the union, as it always did).
+function contractsTouched(events) {
+    const s = new Set();
+    for (const e of events || []) {
+        if (e.type !== 'wasm') continue;
+        for (const a of e.attributes || [])
+            if (a.key === '_contract_address' && WATCH_SET.has(a.value)) s.add(a.value);
+    }
+    return s;
+}
+
+async function firstAvailable(lo, hi) {
+    let lb = lo, ub = hi, best = hi;
+    while (lb <= ub) {
+        const mid = Math.floor((lb + ub) / 2);
+        if ((await getBlock(mid)) === PRUNED) lb = mid + 1;
+        else { best = mid; ub = mid - 1; }
+    }
+    return best;
+}
+
+// Walk [from..to]; collect GATED tx descriptors (hash/height/code) — decoding
+// happens after the walk (targeted LCD by-hash lookups). Partial progress is
+// safe to commit (walker D8); returns { watched, processedTo, gaps }.
+async function walkBlocks(from, to, budgetNote) {
+    const CONC = Number(process.env.WALK_CONCURRENCY || 4);
+    const watched = [], gaps = [];
+    let N = from, inFlight = new Map();
+    const launch = (h) => { if (h <= to && !inFlight.has(h)) inFlight.set(h, getBlock(h)); };
+    for (let h = N; h < N + CONC && h <= to; h++) launch(h);
+    let lastLog = Date.now();
+    while (N <= to) {
+        let blk;
+        try { blk = await inFlight.get(N); } catch (e) { inFlight.delete(N); throw Object.assign(e, { atBlock: N }); }
+        inFlight.delete(N);
+        if (blk === PRUNED) {
+            const avail = await firstAvailable(N, to + 1);
+            gaps.push({ from_height: N, to_height: avail - 1, recorded_at: T.now().toISOString(), reason: 'blocks pruned on both RPC endpoints' });
+            console.warn(`  ⚠ blocks ${N}–${avail - 1} pruned — gap recorded, jumping`);
+            for (const k of [...inFlight.keys()]) if (k < avail) inFlight.delete(k);
+            N = avail; if (N > to) break;
+            for (let h = N; h < N + CONC && h <= to; h++) launch(h);
+            continue;
+        }
+        if (blk.txsB64.length) {
+            let results;
+            try { results = await getBlockResults(N); }
+            catch (e) { throw Object.assign(e, { atBlock: N }); }
+            for (let i = 0; i < blk.txsB64.length; i++) {
+                const res = results[i]; if (!res) continue;
+                if (Number(res.code || 0) !== 0) continue;             // failed txs never classified
+                if (!touchesWatched(res.events)) continue;             // the gate
+                watched.push({ hash: txHashOf(blk.txsB64[i]), height: N, blockTime: blk.time });
+            }
+        }
+        if (Date.now() - lastLog > 15000) { console.log(`  walked to ${N} (${to - N} to go, ${watched.length} watched txs)`); lastLog = Date.now(); }
+        N++; launch(N + CONC - 1);
+    }
+    return { watched, processedTo: to, gaps, note: budgetNote };
+}
+
+// Decoded tx by hash (LCD GetTx). We only ask for txs PROVEN to exist by block
+// data, at most hours old — well inside index retention. Persistent failure is
+// a run-abort (cursor holds; the window re-walks) — a known-watched tx is
+// never skipped.
+async function fetchDecodedTx(hash, height, blockTime) {
+    const r = await lcdGet(`/cosmos/tx/v1beta1/txs/${hash}`, `tx ${hash.slice(0, 12)}`);
+    const tr = r && r.tx_response;
+    if (!tr) throw new Error(`tx ${hash.slice(0, 12)}: no tx_response in LCD reply`);
+    if (!tr.tx && r.tx) tr.tx = r.tx;
+    if (!tr.timestamp) tr.timestamp = blockTime;
+    if (String(tr.txhash).toUpperCase() !== hash) throw new Error(`tx ${hash.slice(0, 12)}: LCD hash mismatch (${tr.txhash})`);
+    if (Number(tr.height) !== height) throw new Error(`tx ${hash.slice(0, 12)}: LCD height ${tr.height} ≠ block ${height}`);
+    return tr;
+}
+
+// SHARED CLASSIFIER — <<CLASSIFIER v4>> (2.0.0, SPEC-tla-voting-capture-fix §4).
+// v4 = v3 verbatim + the lock token_id promotion (extractLockTokenId + its two
+// call hooks in classifyEscrowTxs) — nothing else. Since 2.0.0 this cron is the
+// classifier's SOLE live home: the seed and fcd-fill are layout-guarded off and
+// keep v3 for git-history reference. Any future monthly-aware fill must lift v4
+// FROM HERE and diff-verify the block (the standing rule).
 // =============================================================================
 
 // ----------------------------------------------------------------------------- msg decoding
@@ -341,12 +456,40 @@ function isCanonicalLock(type) {
     if (!type.startsWith('event:')) return true;
     return type.startsWith('event:ve/');
 }
+// v4 token_id promotion (SPEC-tla-voting-capture-fix D9). Chain-truth sources,
+// both on the ESCROW contract's own events:
+//   • create_lock → CW721 wasm {action:'mint', token_id, owner} (proven on the
+//     real FCD tx 09A186D9…: token_id 542) — owner must match the event wallet
+//     when both are present (multi-actor txs).
+//   • deposit_for / extends → metadata-update events carrying token_id
+//     (the ve/deposit_for ↔ wasm-metadata_changed pairing, Rev 4).
+// Ambiguity (0 or 2+ distinct candidates) stays null — honest, never guessed.
+function extractLockTokenId(tr, wallet) {
+    const cands = new Set();
+    for (const ev of tr?.events || []) {
+        const t = ev.type || '';
+        if (t !== 'wasm' && !/metadata_changed/i.test(t)) continue;
+        let contract = null, action = null, tokenId = null, owner = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === '_contract_address') contract = kv.value;
+            else if (kv.key === 'action') action = kv.value;
+            else if (kv.key === 'token_id') tokenId = kv.value;
+            else if (kv.key === 'owner') owner = kv.value;
+        }
+        if (contract !== TLA_VOTING_ESCROW || tokenId == null) continue;
+        if (t === 'wasm' && action !== 'mint' && !/metadata_changed/i.test(action || '')) continue;
+        if (owner && wallet && owner !== wallet) continue;
+        cands.add(String(tokenId));
+    }
+    return cands.size === 1 ? [...cands][0] : null;
+}
 function classifyEscrowTxs(txResponses, discovered) {
     const lockEvents = [], rewardEvents = [];
     for (const tr of txResponses) {
         const meta = { height: Number(tr.height), timestamp: tr.timestamp, tx_hash: tr.txhash };
         const acts = wasmActions(tr);
         let matchedThisTx = false;
+        const lockStart = lockEvents.length; // v4: token_id promotion bracket
         (tr?.tx?.body?.messages || []).forEach((m, mi) => {
             const msg = m?.msg; if (!msg || typeof msg !== 'object') return;
             const key = Object.keys(msg)[0]; if (!key) return;
@@ -391,6 +534,16 @@ function classifyEscrowTxs(txResponses, discovered) {
                     discovered[`escrow_event:${act}`] = (discovered[`escrow_event:${act}`] || 0) + 1;
                     lockEvents.push({ type: `event:${act}`, canonical: isCanonicalLock(`event:${act}`), wallet: tr?.tx?.body?.messages?.[0]?.sender || null, msg_index: 0, ...meta, via: 'wasm_event', args_unknown: true });
                 }
+            }
+        }
+        // v4: fill null token_ids for this tx's lock events from the tx's own
+        // wasm events (mint / metadata_changed). Fixes the 1,306-null-create
+        // defect forward from 2.0.0; source flagged for provenance.
+        for (let li = lockStart; li < lockEvents.length; li++) {
+            const le = lockEvents[li];
+            if (le.token_id == null) {
+                const tid = extractLockTokenId(tr, le.wallet);
+                if (tid != null) { le.token_id = tid; le.token_id_source = 'wasm_event'; }
             }
         }
     }
@@ -559,247 +712,236 @@ function buildRollups(voteEvents, lockEvents, bribeEvents, rewardEvents, epochOf
         protocol_pots_by_epoch: pots,
     };
 }
-// <<CLASSIFIER v3 END>>
+// <<CLASSIFIER v4 END>>
 
-// ----------------------------------------------------------------------------- github publish
-function githubApiRequest(method, apiPath, body) {
-    return new Promise((resolve, reject) => {
-        const opts = { hostname: 'api.github.com', path: apiPath, method, headers: { 'User-Agent': 'org-tla-voting', 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } };
-        if (body) opts.headers['Content-Type'] = 'application/json';
-        const req = https.request(opts, res => { let data = ''; res.on('data', c => data += c); res.on('end', () => { if (res.statusCode >= 200 && res.statusCode < 300) { try { resolve(JSON.parse(data)); } catch { resolve(data); } } else reject(new Error(`GitHub ${method} ${apiPath}: ${res.statusCode} ${data.slice(0, 200)}`)); }); });
-        req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end();
-    });
-}
-async function publishFile(filePath, contentObj, message) {
-    const content = typeof contentObj === 'string' ? contentObj : JSON.stringify(contentObj, null, 2);
-    const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
-    let sha = null;
-    try { sha = (await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch { /* new file */ }
-    const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
-    if (sha) body.sha = sha;
-    return githubApiRequest('PUT', apiPath, body);
-}
-const RAW = (file) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUT_DIR}/${file}?t=${Date.now()}`;
-
-// ----------------------------------------------------------------------------- heartbeat (tla-core standard)
+// ----------------------------------------------------------------------------- heartbeat (tla-core standard, schema 4)
 async function publishHeartbeat(h) {
     const hb = {
         schemaVersion: SCHEMA_VERSION, cron: 'tla-voting', product: 'events', version: VERSION,
         capturedAt: h.startedAt.toISOString(), runId: `tla-voting-${h.startedAt.getTime().toString(36)}`,
-        runMode: 'forward', status: h.status, note: h.note || undefined,
-        counts: h.counts || {}, last_heights: h.lastHeights || {}, horizons: h.horizons || {},
-        known_gaps: h.gaps && Object.keys(h.gaps).length ? h.gaps : undefined,
-        discovered_actions: h.discovered,
-        next_expected_run_at: new Date(h.startedAt.getTime() + FORWARD_CADENCE_HOURS * 3600 * 1000).toISOString(),
-        error_count: h.errors.length, recent_errors: h.errors,
+        runMode: h.runMode || 'forward', status: h.status, note: h.note || undefined,
+        counts: h.counts || {}, last_block: h.lastBlock ?? undefined, head: h.head ?? undefined,
+        horizons: h.horizons || undefined,
+        known_gaps_walker: h.walkerGaps && h.walkerGaps.length ? h.walkerGaps : undefined,
+        vote_state: h.voteState || undefined,
+        vote_capture: h.voteCapture || undefined,
+        next_expected_run_at: new Date(h.startedAt.getTime() + FORWARD_CADENCE_HOURS * 3600000).toISOString(),
+        error_count: h.errors.length, recent_errors: h.errors.slice(-5),
     };
     try { await publishFile(`${OUT_DIR}/heartbeat.json`, hb, `tla-voting heartbeat ${h.status}`); }
     catch (e) { console.warn(`  ⚠ heartbeat publish failed: ${e.message}`); }
 }
-async function tryGetJson(url, label) { try { return await httpGet(url); } catch (e) { console.warn(`  ⚠ ${label} fetch failed: ${e.message}`); return null; } }
+
+// ----------------------------------------------------------------------------- monthly stream files
+const STREAM_OF = { vote: 'votes', lock: 'locks', bribe: 'bribes', reward: 'rewards' };
+const monthKeyOf = (ts) => { const s = String(ts || ''); return { yyyy: s.slice(0, 4), mm: s.slice(5, 7) }; };
 
 // ----------------------------------------------------------------------------- main (forward run)
 async function run() {
-    const startedAt = new Date();
+    const startedAt = T.now();
     const errors = [];
-    const addErr = (step, e) => errors.push({ step, message: String(e && e.message || e) });
+    const addErr = (step, e) => { errors.push({ step, message: String(e && e.message || e) }); console.error(`  ✗ ${step}: ${e && e.message || e}`); };
     const discovered = {};
     console.log(`\n📜 org-tla-voting forward — ${startedAt.toISOString()} (${VERSION})\n`);
     if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN missing — refusing to run (no publish target).');
 
-    // committed priors + epoch dates. This cron NEVER seeds: all-priors-missing
-    // means either a transient raw-CDN failure or a wiped module — both are
-    // "abort and let the next run / the seed Action handle it".
-    const [priorVotes, priorLocks, priorBribes, priorRewards, epochDates] = await Promise.all([
-        tryGetJson(RAW('vote-events.json'), 'prior vote-events'),
-        tryGetJson(RAW('lock-events.json'), 'prior lock-events'),
-        tryGetJson(RAW('bribe-events.json'), 'prior bribe-events'),
-        tryGetJson(RAW('reward-events.json'), 'prior reward-events'),
-        tryGetJson(EPOCH_DATES_URL, 'epoch dates'),
-    ]);
-    if (!priorVotes && !priorLocks && !priorBribes && !priorRewards) {
-        addErr('priors', new Error('all committed streams unreachable'));
-        await publishHeartbeat({ startedAt, status: 'error', errors, discovered, note: 'priors unreachable — forward cron never seeds; recover via the tla-core seed Action if the module is actually empty' });
-        throw new Error('All priors unreachable — refusing to run in seed mode.');
+    // 1. committed priors (authenticated API; fetch-failure ≠ absence)
+    const ir = await apiGetJson(`${OUT_DIR}/index.json`);
+    const cr = await apiGetJson(`${OUT_DIR}/cursor.json`);
+    if (!ir.ok || !cr.ok) {
+        await publishHeartbeat({ startedAt, status: 'error', errors: [{ step: 'priors', message: 'state read failed (API) — refusing to run on unknown priors' }] });
+        throw new Error('state read failed — aborting rather than risk publishing over unknown state');
     }
+    const index = ir.data;
+    if (!index) {
+        await publishHeartbeat({ startedAt, status: 'error', errors: [{ step: 'priors', message: 'events index absent — this cron never seeds' }], note: 'recover via the tla-core seed/restructure history, not a fresh start' });
+        throw new Error('events index absent — forward cron never seeds.');
+    }
+    if (Number(index.schemaVersion) < 4 || !index.streams) {
+        await publishHeartbeat({ startedAt, status: 'error', errors: [{ step: 'layout', message: `index schemaVersion ${index.schemaVersion} — monolith layout` }], note: 'run the tla-voting-restructure Action before deploying 2.0.0 (SPEC-tla-voting-capture-fix §6)' });
+        throw new Error('events product is on the MONOLITH layout — dispatch tla-voting-restructure first.');
+    }
+    const epochDates = await tryGetJson(EPOCH_DATES_URL, 'epoch dates');
     const epochOf = makeEpochResolver(epochDates);
-    const prior = {
-        votes:   priorVotes?.events   || [],
-        locks:   priorLocks?.events   || [],
-        bribes:  priorBribes?.events  || [],
-        rewards: priorRewards?.events || [],
-    };
-    const priorHorizons = {
-        votes:  priorVotes?.horizonHeight  ?? null,
-        locks:  priorLocks?.horizonHeight  ?? null,
-        bribes: priorBribes?.horizonHeight ?? null,
-        rewards: priorRewards?.horizonHeight ?? null,
-    };
-    const priorLast = {
-        votes:  priorVotes?.lastScannedHeight  ?? null,
-        locks:  priorLocks?.lastScannedHeight  ?? null,
-        bribes: priorBribes?.lastScannedHeight ?? null,
-        rewards: priorRewards?.lastScannedHeight ?? null,
-    };
-    const priorGaps = {
-        votes:  priorVotes?.known_gaps  || [],
-        locks:  priorLocks?.known_gaps  || [],
-        bribes: priorBribes?.known_gaps || [],
-        rewards: priorRewards?.known_gaps || [],
-    };
-    console.log(`   prior: votes=${prior.votes.length} locks=${prior.locks.length} bribes=${prior.bribes.length} rewards=${prior.rewards.length}\n`);
 
-    // sweep the retained window (~1 week ≈ 2-3 pages/contract at current volumes)
-    console.log('🗳  scanning gauge (unfiltered: votes + rewards)…');
-    const gauge = await fetchAllTxs([`wasm._contract_address='${TLA_GAUGE_CONTROLLER}'`], 'gauge-all');
-    console.log('\n🔒 scanning escrow (locks + claim_rebase/compound)…');
-    const escrow = await fetchAllTxs([`wasm._contract_address='${TLA_VOTING_ESCROW}'`], 'escrow-all');
-    console.log('\n💰 scanning incentive manager (bribes)…');
-    const incentive = await fetchAllTxs([`wasm._contract_address='${TLA_INCENTIVE_MANAGER}'`], 'incentive-all');
-
-    const done = (r) => r.stop === 'complete' || r.stop === 'clean-end';
-    console.log(`\n   gauge: ${gauge.txs.length} (${gauge.stop}) | escrow: ${escrow.txs.length} (${escrow.stop}) | incentive: ${incentive.txs.length} (${incentive.stop})`);
-
-    // classify (shared block — byte-identical with the seed)
-    const g = classifyGaugeTxs(gauge.txs, discovered);
-    const e = classifyEscrowTxs(escrow.txs, discovered);
-    const i = classifyIncentiveTxs(incentive.txs, discovered);
-    const freshRewards = [...g.rewardEvents, ...e.rewardEvents, ...i.rewardEvents];
-
-    // merge + dedup per stream
-    const vm = mergeEvents(prior.votes, g.voteEvents);
-    const lm = mergeEvents(prior.locks, e.lockEvents);
-    const bm = mergeEvents(prior.bribes, i.bribeEvents);
-    const rm = mergeEvents(prior.rewards, freshRewards);
-    console.log(`   votes ${prior.votes.length}→${vm.merged.length} (+${vm.added}) | locks ${prior.locks.length}→${lm.merged.length} (+${lm.added}) | bribes ${prior.bribes.length}→${bm.merged.length} (+${bm.added}) | rewards ${prior.rewards.length}→${rm.merged.length} (+${rm.added})`);
-
-    // F3 never-shrink per stream
-    const shrunk = vm.merged.length < prior.votes.length || lm.merged.length < prior.locks.length || bm.merged.length < prior.bribes.length || rm.merged.length < prior.rewards.length;
-    if (shrunk) {
-        addErr('shrink-guard', new Error('merged event count < committed — aborting publish'));
-        await publishHeartbeat({ startedAt, status: 'error', errors, discovered, counts: { votes: prior.votes.length, locks: prior.locks.length, bribes: prior.bribes.length, rewards: prior.rewards.length }, note: 'F3 shrink guard tripped; nothing published' });
-        throw new Error('F3 shrink guard: refusing to overwrite history with fewer events.');
+    // 2. cursor (schema 4: { last_block }; migrates the 1.x per-contract shape)
+    let lastBlock = null, runMode = 'forward';
+    const cursor = cr.data;
+    if (cursor && cursor.last_block != null) lastBlock = Number(cursor.last_block);
+    else if (cursor && cursor.contracts) {
+        const hs = Object.values(cursor.contracts).map(c => Number(c.lastScannedHeight)).filter(Number.isFinite);
+        if (hs.length) { lastBlock = Math.min(...hs); runMode = 'migrate-cursor'; console.log(`  cursor migrated from 1.x per-contract shape: last_block ${lastBlock} (min of frontiers)`); }
     }
 
-    // horizons only ever move DOWN (F8)
-    const earliest = (txs) => txs.length ? Number(txs[0].height) : null;
-    const horizon = (p, txs) => { const eh = earliest(txs); if (eh == null) return p; if (p == null) return eh; return Math.min(p, eh); };
-    const horizons = {
-        votes: horizon(priorHorizons.votes, gauge.txs),
-        locks: horizon(priorHorizons.locks, escrow.txs),
-        bribes: horizon(priorHorizons.bribes, incentive.txs),
-        rewards: horizon(priorHorizons.rewards, gauge.txs.length || escrow.txs.length ? [ ...(gauge.txs.length ? [gauge.txs[0]] : []), ...(escrow.txs.length ? [escrow.txs[0]] : []) ].sort((a, b) => Number(a.height) - Number(b.height)) : []),
+    let head;
+    try { head = await getHead(); }
+    catch (e) { addErr('head', e); await publishHeartbeat({ startedAt, status: 'error', errors }); throw e; }
+    const walkHead = head - CONFIRM_LAG;          // stay behind head so the LCD tx index has the block
+
+    let fromB;
+    if (lastBlock != null) fromB = lastBlock + 1;
+    else { fromB = walkHead - DEFAULT_LOOKBACK; runMode = 'bootstrap'; console.log(`  no cursor: walking from ${fromB} (${DEFAULT_LOOKBACK} back) — events priors exist, so this is a cursor bootstrap, not a seed`); }
+    if (fromB > walkHead) {
+        console.log(`  no new blocks (cursor ${fromB - 1} >= walkable head ${walkHead})`);
+        await publishHeartbeat({ startedAt, status: 'ok', errors, runMode, counts: { added: 0 }, lastBlock: fromB - 1, head });
+        return;
+    }
+
+    // 3. budget (catch-up is safe partial progress in walker-world)
+    let toB = walkHead, note;
+    if (toB - fromB + 1 > BUDGET) { toB = fromB + BUDGET - 1; note = `catching-up (${walkHead - toB} blocks remain)`; runMode = 'catch-up'; console.log(`  budget: walking ${fromB}–${toB}, ${walkHead - toB} deferred to next run`); }
+
+    // 4. walk → gated tx descriptors
+    const priorWalkerGaps = Array.isArray(index.known_gaps_walker) ? [...index.known_gaps_walker] : [];
+    let walk;
+    try { walk = await walkBlocks(fromB, toB, note); }
+    catch (e) {
+        addErr(`walk@${e.atBlock || '?'}`, e);
+        await publishHeartbeat({ startedAt, status: 'partial', errors, runMode, counts: { added: 0 }, lastBlock: lastBlock, head, walkerGaps: priorWalkerGaps });
+        console.warn('  ⚠ walk failed — cursor NOT advanced (window will be re-walked)');
+        return;
+    }
+    const walkerGaps = [...priorWalkerGaps, ...walk.gaps];
+    const cursorTarget = walk.processedTo;
+    console.log(`  walked ${fromB}–${cursorTarget}: ${walk.watched.length} gated tx(s)`);
+
+    // 5. decode gated txs (targeted by-hash; failure aborts — never skip a known tx)
+    const decoded = [];
+    for (const w of walk.watched) {
+        try { decoded.push(await fetchDecodedTx(w.hash, w.height, w.blockTime)); }
+        catch (e) {
+            addErr(`decode@${w.height}`, e);
+            await publishHeartbeat({ startedAt, status: 'partial', errors, runMode, counts: { added: 0 }, lastBlock: lastBlock, head, walkerGaps: priorWalkerGaps, note: 'decoded-tx fetch failed — cursor held, window re-walks' });
+            console.warn('  ⚠ decode failed — cursor NOT advanced (window will be re-walked)');
+            return;
+        }
+    }
+    decoded.sort((a, b) => Number(a.height) - Number(b.height) || (a.txhash < b.txhash ? -1 : 1));
+
+    // 6. classify — per-contract feeds, exactly as the tx_search sweeps fed them
+    const feeds = { gauge: [], escrow: [], incentive: [] };
+    for (const tr of decoded) {
+        const touched = contractsTouched(tr.events);
+        if (touched.has(TLA_GAUGE_CONTROLLER))  feeds.gauge.push(tr);
+        if (touched.has(TLA_VOTING_ESCROW))     feeds.escrow.push(tr);
+        if (touched.has(TLA_INCENTIVE_MANAGER)) feeds.incentive.push(tr);
+    }
+    const g = classifyGaugeTxs(feeds.gauge, discovered);
+    const e = classifyEscrowTxs(feeds.escrow, discovered);
+    const i = classifyIncentiveTxs(feeds.incentive, discovered);
+    const fresh = {
+        votes:   g.voteEvents,
+        locks:   e.lockEvents,
+        bribes:  i.bribeEvents,
+        rewards: [...g.rewardEvents, ...e.rewardEvents, ...i.rewardEvents],
     };
+    console.log(`  classified: votes +${fresh.votes.length} locks +${fresh.locks.length} bribes +${fresh.bribes.length} rewards +${fresh.rewards.length}`);
 
-    // GAP HONESTY: outage longer than the node's retention window = a real,
-    // permanent hole. Record it (end = where coverage actually resumes).
-    const detectGap = (last, mergedEvts, txs) => {
-        if (last == null) return null;
-        let resume = null;
-        for (const ev of mergedEvts) { const h = Number(ev.height); if (h > last && (resume == null || h < resume)) resume = h; }
-        const floor = earliest(txs);
-        if (resume == null) resume = floor;
-        if (resume == null || resume <= last + 1) return null;
-        return { from_height: last + 1, to_height: resume - 1, detected_at: startedAt.toISOString(), reason: 'public-node tx-index prune: coverage resumes above prior frontier; events in this window unknowable without an archive node' };
-    };
-    const mergeGaps = (priorList, g2) => {
-        const all = [...priorList]; if (g2 && !all.find(x => x.from_height === g2.from_height && x.to_height === g2.to_height)) all.push(g2);
-        return all.sort((a, b) => a.from_height - b.from_height);
-    };
-    const knownGaps = {
-        votes:  mergeGaps(priorGaps.votes,  detectGap(priorLast.votes,  vm.merged, gauge.txs)),
-        locks:  mergeGaps(priorGaps.locks,  detectGap(priorLast.locks,  lm.merged, escrow.txs)),
-        bribes: mergeGaps(priorGaps.bribes, detectGap(priorLast.bribes, bm.merged, incentive.txs)),
-        rewards: mergeGaps(priorGaps.rewards, null),
-    };
-    for (const [k, gs] of Object.entries(knownGaps)) if (gs.length) console.warn(`   ⚠ ${k}: ${gs.length} known gap(s) — ${gs.map(x => `${x.from_height}→${x.to_height}`).join(', ')}`);
+    // 7. merge into touched month files (read → dedupe → never-shrink → publish)
+    let allComplete = true;
+    const addedByStream = { votes: 0, locks: 0, bribes: 0, rewards: 0 };
+    for (const stream of ['votes', 'locks', 'bribes', 'rewards']) {
+        const byMonth = {};
+        for (const ev of fresh[stream]) {
+            const { yyyy, mm } = monthKeyOf(ev.timestamp);
+            if (!yyyy || !mm) { addErr(`month-key:${stream}`, new Error(`event without timestamp (tx ${ev.tx_hash})`)); allComplete = false; continue; }
+            ((byMonth[yyyy] ||= {})[mm] ||= []).push(ev);
+        }
+        for (const yyyy of Object.keys(byMonth).sort()) {
+            for (const mm of Object.keys(byMonth[yyyy]).sort()) {
+                const repoPath = `${OUT_DIR}/${stream}/${yyyy}/${mm}.json`;
+                const mr = await apiGetJson(repoPath);
+                if (!mr.ok) { addErr(`month:${stream}/${yyyy}/${mm}`, new Error('month read failed — skipping publish this run')); allComplete = false; continue; }
+                const existing = mr.data || [];
+                if (!Array.isArray(existing)) { addErr(`month:${stream}/${yyyy}/${mm}`, new Error('existing month file is not an array — refusing to overwrite')); allComplete = false; continue; }
+                const m = mergeEvents(existing, byMonth[yyyy][mm]);
+                if (m.merged.length < existing.length) { addErr(`month:${stream}/${yyyy}/${mm}`, new Error(`never-shrink violation: merged ${m.merged.length} < committed ${existing.length}`)); allComplete = false; continue; }
+                if (m.added === 0) { console.log(`  ${stream}/${yyyy}/${mm}: no new events`); continue; }
+                try {
+                    await publishFile(repoPath, JSON.stringify(m.merged), `tla-voting ${stream} ${yyyy}/${mm}: +${m.added} (${m.merged.length} total)`);
+                    addedByStream[stream] += m.added;
+                    const s = index.streams[stream];
+                    if (s) {
+                        s.count = (s.count || 0) + m.added;
+                        ((s.months_present ||= {})[yyyy] ||= []).includes(mm) || s.months_present[yyyy].push(mm);
+                        s.months_present[yyyy].sort();
+                    }
+                } catch (pe) { addErr(`publish:${stream}/${yyyy}/${mm}`, pe); allComplete = false; }
+            }
+        }
+    }
+    const totalAdded = Object.values(addedByStream).reduce((a, b) => a + b, 0);
 
-    const streamFile = (contract, txsRes, complete, hz, merged, gaps) => ({
-        schemaVersion: SCHEMA_VERSION, builtAt: startedAt.toISOString(), contract,
-        lastScannedHeight: complete ? (txsRes.globalMax || 0) : undefined, horizonHeight: hz,
-        scan_complete: complete, scan_stop: txsRes.stop, count: merged.length,
-        known_gaps: gaps && gaps.length ? gaps : undefined, events: merged,
-    });
-    const gComplete = done(gauge), eComplete = done(escrow), iComplete = done(incentive);
-    // frontier honesty: on an INCOMPLETE scan, keep the prior frontier so the
-    // next run re-detects any hole instead of skipping past it
-    const frontier = (complete, txsRes, last) => complete ? (txsRes.globalMax || 0) : (last ?? 0);
-    const voteFile   = { ...streamFile(TLA_GAUGE_CONTROLLER,  gauge,     gComplete, horizons.votes,  vm.merged, knownGaps.votes),  lastScannedHeight: frontier(gComplete, gauge, priorLast.votes) };
-    const lockFile   = { ...streamFile(TLA_VOTING_ESCROW,     escrow,    eComplete, horizons.locks,  lm.merged, knownGaps.locks),  lastScannedHeight: frontier(eComplete, escrow, priorLast.locks) };
-    const bribeFile  = { ...streamFile(TLA_INCENTIVE_MANAGER, incentive, iComplete, horizons.bribes, bm.merged, knownGaps.bribes), lastScannedHeight: frontier(iComplete, incentive, priorLast.bribes) };
-    const rewardFile = { schemaVersion: SCHEMA_VERSION, builtAt: startedAt.toISOString(),
-        contracts: { gauge: TLA_GAUGE_CONTROLLER, escrow: TLA_VOTING_ESCROW, incentive: TLA_INCENTIVE_MANAGER },
-        lastScannedHeight: (gComplete && eComplete && iComplete) ? Math.max(gauge.globalMax || 0, escrow.globalMax || 0, incentive.globalMax || 0) : (priorLast.rewards ?? 0),
-        horizonHeight: horizons.rewards, scan_complete: gComplete && eComplete && iComplete,
-        scan_stop: `gauge:${gauge.stop};escrow:${escrow.stop};incentive:${incentive.stop}`,
-        known_gaps: knownGaps.rewards.length ? knownGaps.rewards : undefined,
-        count: rm.merged.length, events: rm.merged };
+    // 8. index (rollups.json stays FROZEN pending build #2 — noted, not touched)
+    if (totalAdded > 0 || walk.gaps.length) {
+        index.schemaVersion = SCHEMA_VERSION;
+        index.updatedAt = startedAt.toISOString();
+        index.known_gaps_walker = walkerGaps.length ? walkerGaps : undefined;
+        if (index.files && index.files['rollups.json']) index.files['rollups.json'].note = 'FROZEN at 2.0.0 — mis-attributed by contract-path voters; build #2 (rollup rebuilds) recomputes on events + vote-state';
+        try { await publishFile(`${OUT_DIR}/index.json`, index, `tla-voting index: +${totalAdded}`); }
+        catch (pe) { addErr('publish:index', pe); allComplete = false; }
+    }
 
-    const rollups = buildRollups(vm.merged, lm.merged, bm.merged, rm.merged, epochOf);
+    // 9. cursor LAST — advances only when every publish landed
+    if (allComplete) {
+        try {
+            await publishFile(`${OUT_DIR}/cursor.json`, {
+                schemaVersion: SCHEMA_VERSION, last_block: cursorTarget,
+                window_walked: { from: fromB, to: cursorTarget }, updatedAt: startedAt.toISOString(),
+            }, `tla-voting cursor @ ${cursorTarget}`);
+        } catch (pe) { addErr('publish:cursor', pe); allComplete = false; }
+    } else {
+        console.warn('  ⚠ publish failure — cursor NOT advanced (window will be re-walked)');
+    }
 
-    // cursor — advances ONLY on complete scans (F7)
-    const cursor = {
-        schemaVersion: SCHEMA_VERSION, updatedAt: startedAt.toISOString(),
-        contracts: {
-            [TLA_GAUGE_CONTROLLER]:  { lastScannedHeight: frontier(gComplete, gauge, priorLast.votes),      complete: gComplete },
-            [TLA_VOTING_ESCROW]:     { lastScannedHeight: frontier(eComplete, escrow, priorLast.locks),     complete: eComplete },
-            [TLA_INCENTIVE_MANAGER]: { lastScannedHeight: frontier(iComplete, incentive, priorLast.bribes), complete: iComplete },
-        },
-    };
-
-    const index = {
-        module: 'tla-voting', product: 'events', schemaVersion: SCHEMA_VERSION, updatedAt: startedAt.toISOString(),
-        spec: 'docs/pending-changes/SPEC-tla-voting.md',
-        files: {
-            'vote-events.json':   { contract: TLA_GAUGE_CONTROLLER,  count: vm.merged.length, horizonHeight: horizons.votes },
-            'lock-events.json':   { contract: TLA_VOTING_ESCROW,     count: lm.merged.length, horizonHeight: horizons.locks, note: 'sum canonical===true for VP/lock-delta math' },
-            'bribe-events.json':  { contract: TLA_INCENTIVE_MANAGER, count: bm.merged.length, horizonHeight: horizons.bribes },
-            'reward-events.json': { count: rm.merged.length, horizonHeight: horizons.rewards, note: 'wallet_claim + protocol_distribution; coins are raw {amount,denom}; distribution pots are tx-gross (coins_basis) — never sum across distribution types' },
-            'rollups.json':       { wallets: rollups.wallet_count },
-            'cursor.json':        { note: 'org-tla-voting (Render) forward-maintains from here' },
-            'heartbeat.json':     {},
-        },
-        known_gap_count: Object.values(knownGaps).reduce((n, x) => n + x.length, 0) || undefined,
-        note_gaps: Object.values(knownGaps).some(x => x.length) ? 'public-node prune gaps recorded in each stream file (known_gaps) — archive-node targets' : undefined,
-    };
-
-    // publish only streams whose count changed (or whose gaps changed) to keep
-    // commit noise down; cursor + heartbeat publish every run.
-    const changed = (added, gapsNow, gapsPrior) => added > 0 || gapsNow.length !== gapsPrior.length;
-    if (changed(vm.added, knownGaps.votes, priorGaps.votes))   await publishFile(`${OUT_DIR}/vote-events.json`,   voteFile,   `tla-voting forward: votes ${vm.merged.length} (+${vm.added})`);
-    if (changed(lm.added, knownGaps.locks, priorGaps.locks))   await publishFile(`${OUT_DIR}/lock-events.json`,   lockFile,   `tla-voting forward: locks ${lm.merged.length} (+${lm.added})`);
-    if (changed(bm.added, knownGaps.bribes, priorGaps.bribes)) await publishFile(`${OUT_DIR}/bribe-events.json`,  bribeFile,  `tla-voting forward: bribes ${bm.merged.length} (+${bm.added})`);
-    if (changed(rm.added, knownGaps.rewards, priorGaps.rewards)) await publishFile(`${OUT_DIR}/reward-events.json`, rewardFile, `tla-voting forward: rewards ${rm.merged.length} (+${rm.added})`);
-    if (vm.added + lm.added + bm.added + rm.added > 0) await publishFile(`${OUT_DIR}/rollups.json`, rollups, `tla-voting rollups: ${rollups.wallet_count} wallets`);
-    await publishFile(`${OUT_DIR}/cursor.json`, cursor, `tla-voting cursor`);
-    await publishFile(`${OUT_DIR}/index.json`,  index,  `tla-voting index`);
-
-    // ---- distributions forward capture (SPEC-distributions-capture §4) ----
-    // Self-healing: reads the committed distributions index, backfills every
-    // finalized period newer than it (retained contract state — lateness is
-    // free). Never seeds (2.1.0 doctrine): an empty module means the one-shot
-    // harvest hasn't run. Failures here NEVER block the event streams above.
+    // 10. distributions forward capture (unchanged — SPEC-distributions-capture §4)
     let dist = null;
     try {
         dist = await forwardDistributions({ publishFile, log: console });
         console.log(`  distributions: ${dist.skipped ? `skipped (${dist.reason})` : `+${dist.appended} → period ${dist.head}`}`);
-    } catch (e) {
-        addErr('distributions', e);
-        console.warn(`  ⚠ distributions forward step failed (event streams unaffected): ${e.message}`);
-    }
+    } catch (de) { addErr('distributions', de); console.warn(`  ⚠ distributions step failed (event streams unaffected): ${de.message}`); }
 
-    const allComplete = gComplete && eComplete && iComplete;
-    await publishHeartbeat({ startedAt, status: allComplete ? 'ok' : 'partial', errors, discovered,
-        counts: { votes: vm.merged.length, locks: lm.merged.length, bribes: bm.merged.length, rewards: rm.merged.length, wallets: rollups.wallet_count, added: vm.added + lm.added + bm.added + rm.added,
-                  distributions_head: dist && dist.head || undefined, distributions_appended: dist && dist.appended || undefined },
-        lastHeights: { gauge: gauge.globalMax || 0, escrow: escrow.globalMax || 0, incentive: incentive.globalMax || 0 },
-        horizons, gaps: Object.fromEntries(Object.entries(knownGaps).filter(([, v]) => v.length)) });
+    // 11. vote-state harvest (SPEC-tla-voting-capture-fix §3) — the completeness
+    // + attribution layer. Non-fatal to the event streams; failures surface in
+    // its own product heartbeat AND here.
+    let vs = null;
+    try {
+        const readVoteEvents = async () => {
+            const months = [];
+            const mp = index.streams?.votes?.months_present || {};
+            for (const yyyy of Object.keys(mp).sort()) for (const mm of mp[yyyy]) months.push(`${OUT_DIR}/votes/${yyyy}/${mm}.json`);
+            const all = [];
+            for (const p of months) {
+                const r = await apiGetJson(p);
+                if (!r.ok) throw new Error(`vote month read failed: ${p}`);
+                if (Array.isArray(r.data)) all.push(...r.data);
+            }
+            all.sort((a, b) => a.height - b.height || (a.tx_hash < b.tx_hash ? -1 : 1));
+            return all;
+        };
+        vs = await forwardVoteState({ publishFile, apiGetJson, readVoteEvents, log: console });
+        console.log(`  vote-state: ${vs.skipped ? `skipped (${vs.reason})` : `period ${vs.period} — ${vs.wallets} wallets, ${vs.voted} voted, ${vs.pending} pending`}`);
+    } catch (ve) { addErr('vote-state', ve); console.warn(`  ⚠ vote-state step failed (event streams unaffected): ${ve.message}`); }
 
-    console.log(`\n✅ done — votes ${vm.merged.length} (+${vm.added}), locks ${lm.merged.length} (+${lm.added}), bribes ${bm.merged.length} (+${bm.added}), rewards ${rm.merged.length} (+${rm.added}), status ${allComplete ? 'ok' : 'PARTIAL'}`);
+    // 12. heartbeat
+    const status = (allComplete && !errors.length) ? 'ok' : (allComplete ? 'partial' : 'partial');
+    const horizons = {};
+    for (const s of Object.keys(index.streams || {})) if (index.streams[s].horizonHeight != null) horizons[s] = index.streams[s].horizonHeight;
+    await publishHeartbeat({
+        startedAt, status, errors, runMode, note,
+        counts: { added: totalAdded, ...addedByStream, blocks_walked: cursorTarget - fromB + 1, gated_txs: walk.watched.length,
+                  distributions_head: dist && dist.head || undefined },
+        lastBlock: allComplete ? cursorTarget : lastBlock, head, horizons,
+        walkerGaps,
+        voteState: vs && !vs.skipped ? { period: vs.period, wallets: vs.wallets, voted: vs.voted, pending: vs.pending } : (vs && vs.reason ? { skipped: vs.reason } : undefined),
+        voteCapture: vs && vs.vote_capture || undefined,
+    });
+    console.log(`\n✅ done — +${totalAdded} events (${JSON.stringify(addedByStream)}), cursor ${allComplete ? `advanced to ${cursorTarget}` : 'HELD'}, status ${status}${note ? ' · ' + note : ''}\n`);
 }
 
+// ----------------------------------------------------------------------------- entry
 if (require.main === module) {
     run().catch(err => { console.error('FATAL:', err.message); process.exit(1); });
 }
 
-module.exports = { classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey };
+module.exports = { run, T, WATCH_SET, classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, extractLockTokenId, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey, txHashOf, touchesWatched, contractsTouched, walkBlocks, fetchDecodedTx, publishFile, apiGetJson };

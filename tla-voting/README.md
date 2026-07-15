@@ -1,114 +1,165 @@
-# tla-voting — org-tla-voting (TLA voting event capture, forward)
+# tla-voting — org-tla-voting 2.0.0 (TLA voting capture, forward)
 
-**Render job:** `org-tla-voting` · schedule `0 */6 * * *` · entry `index.js`
-**Spec:** `tla-core/docs/pending-changes/SPEC-tla-voting.md`
-**Data:** `tla-core/tla-voting/events/` (vote / lock / bribe / reward streams + rollups + cursor + heartbeat + index)
+**Render job:** `org-tla-voting` · schedule `0 * * * *` (hourly — D6) · entry `index.js`
+**Specs:** `tla-core/docs/pending-changes/SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
+**Data:** `tla-core/tla-voting/events/` (monthly per-stream partitions + cursor + heartbeat + index) and `tla-core/tla-voting/vote-state/` (per-period state harvest) and `tla-core/tla-voting/distributions/`
 
-Scope: ONLY the event log of the three voting contracts — the act of voting,
-the VP lifecycle, vote incentives, vote proceeds. Positions/valuations =
-adao-positions; LP flows = tla-flows; VP state = member-data.
+Scope: ONLY the voting layer of the three governance contracts — the act of
+voting, the VP lifecycle, vote incentives, vote proceeds. Positions/valuations
+= adao-positions; LP flows = tla-flows; VP state snapshots = member-data.
+
+## Two layers, one truth (2.0.0 — the capture fix)
+
+The 2026-07-14 reconciliation proved three loss classes in 1.x: tx_search drops
+events even inside claimed coverage, and the gauge's `gauge/vote` wasm event
+emits only `{action, vp}` — wrapped/contract-path votes (Votion vaults, DAO DAO
+executions, Polytone) **cannot** be attributed from events at all. Hence:
+
+- **Layer A — `vote-state/` (completeness + attribution).** Once per period
+  (`lib/vote-state.js`): enumerate every lock owner fresh (never a hardcoded
+  list) ∪ previously-seen wallets → gauge `user_info` per wallet → full
+  allocation with period stamps. Any entry stamped P = that actor voted in P.
+  Catches aggregators, DAOs, cross-chain proxies, and silent drops BY
+  CONSTRUCTION — it never watches transactions. ~700 paced queries per week.
+  Where events and state disagree, **state wins**.
+- **Layer B — `events/` (fine-grained tx detail for direct votes).** Heights,
+  hashes, msg detail — via the Rev C **block-walker** (lifted from tla-flows):
+  walk every block since the cursor, gate on the three contracts, fetch each
+  gated tx decoded by hash (hours old at most — deep inside index retention),
+  feed the unchanged classifier input shape. Forward capture done as forward
+  capture; block data cannot lie the way tx_search pagination did.
 
 ## What it owns (one-contract-one-owner)
 
 | Contract | Stream(s) |
 |---|---|
-| Gauge controller | vote-events + reward-events (distributions, claims) |
-| Voting escrow / vAMP minter | lock-events + reward-events (claim_rebase, compound) |
-| Incentive manager (BRIBE_MANAGER) | bribe-events + reward-events (claim_bribes, distributions) |
+| Gauge controller | events/votes + events/rewards + vote-state + distributions |
+| Voting escrow / vAMP minter | events/locks + events/rewards (claim_rebase, compound) |
+| Incentive manager (BRIBE_MANAGER) | events/bribes + events/rewards (claim_bribes, distributions) |
 
 No other cron may scan these contracts; this cron scans nothing else.
 Addresses come from `../config/contracts.js` — never hardcode.
 
-## How it relates to the seed
+## Storage layout (post-restructure — the cron REFUSES the monolith layout)
 
-The one-time seed Action lives in `tla-core/.github/scripts/tla-voting/`.
-It built the streams "as if this cron ran all along": legacy Aug-2024→Jun-2026
-votes/locks (bootstrapped from the frozen `defipatriot/tla-history-data_2026`
-capture — now the **irreplaceable** source of that era, see below) + everything
-public nodes retained at seed time (2026-07-07). This cron forward-maintains:
-sweep the retained window, classify, merge append-only, advance the cursor.
+```
+tla-voting/
+├── events/                    index schemaVersion ≥ 4 REQUIRED (self-enforcing
+│   ├── {votes,locks,bribes,rewards}/{YYYY}/{MM}.json    deploy sequencing)
+│   ├── index.json  cursor.json  heartbeat.json
+│   ├── rollups.json           FROZEN at 2.0.0 — build #2 recomputes on events+state
+│   └── reconciliation.json    detail artifact (2026-07-14 diagnostic)
+├── vote-state/
+│   ├── {YYYY}/{MM}.json       per-(period,wallet) records, dedup + never-shrink
+│   ├── index.json             last_harvested_period, pending_wallets, wallets_seen
+│   └── heartbeat.json
+└── distributions/             unchanged (single history.json, DECIDED deviation)
+```
 
-The classifier block (`<<CLASSIFIER v3>>` markers) is **byte-identical** with
-the seed script's. Never edit one without the other — verify with a plain diff
-(or md5 of the block) after any change.
+## <<CLASSIFIER v4>> — sole live home
 
-## ⚠ Retention stakes (read this)
+v4 = v3 verbatim + the lock **token_id promotion**: null token_ids are filled
+from the tx's own escrow wasm events (CW721 `mint` on creates — chain-proven on
+FCD tx `09A186D9…` → token_id 542; metadata-update events on deposit_for/
+extends), owner-matched, ambiguity stays null (`token_id_source: 'wasm_event'`
+flags provenance). Since 2.0.0 this cron is the classifier's ONLY live copy:
+the seed and fcd-fill are layout-guarded off (they keep v3 for git history).
+Any future monthly-aware fill lifts v4 FROM HERE and diff-verifies the block.
 
-On 2026-07-07 we discovered public Terra nodes pruned their **tx index to
-~1 week** (previously reached Aug 2024). Consequences:
+## vote-state semantics (read before consuming)
 
-- An outage of this cron longer than a few days **loses events permanently**
-  (recoverable only via a future archive-node run). The heartbeat monitor is
-  not optional.
-- Any hole that does occur is recorded in each stream's `known_gaps` (with the
-  precise resume height) — never silently papered over.
+- Record: `{period, wallet, vp:{fixed,boost,total}, gauge_votes:[{gauge,
+  period_stamp, votes, post_flip_change}], voted_this_period,
+  raw_gauge_votes, capturedAt}`. `vp.total = fixed + boost` (the VP law).
+- **Period-stamp field caveat:** the stamp is parsed tolerantly
+  (`period`/`vote_period`/`last_vote_period`) and `raw_gauge_votes` is retained
+  VERBATIM per record — pin the exact field name with one browser probe before
+  relying on stamp-derived fields (spec §3).
+- Timing honesty: `user_info` is CURRENT state; stamps carry only the LAST
+  vote period per gauge. Entries stamped > the harvested period are flagged
+  `post_flip_change` (overwritten before we read — recorded, never guessed).
+  Pre-harvest history beyond each actor's last-vote stamp is unrecoverable —
+  the chain never emitted it.
+- Completion mode: individual `user_info` failures land in
+  `index.pending_wallets` (+`pending_period`); `last_harvested_period`
+  advances only when pending is empty; the next run retries pending only.
+  A failed ENUMERATION aborts the whole harvest (incomplete universe = the
+  exact failure mode this layer closes).
+- `vote_capture` (heartbeat): events replay vs the same `user_info` results →
+  MATCH/MISMATCH/CHAIN_ONLY/EVENTS_ONLY + match_rate — the permanent
+  capture-integrity alarm (skipped in completion mode).
 
-**Coverage after the FCD archive fill (2026-07-08):** all four streams start at
-TRUE contract genesis (the three contracts deployed 2024-08-27). The FCD
-indexer (`phoenix-fcd.terra.dev` — frozen archive, genesis→~2025-01-07) filled
-everything below the old horizons via `fcd-fill.js`. Remaining holes, recorded
-in `known_gaps` (archive-node targets): votes/locks **2026-06-15→22**, and
-bribes/rewards **Jan-2025→Jun-2026** (FCD freeze → org capture start). The
-frozen `defipatriot/tla-history-data_2026` remains the sole source of
-votes/locks for Jan-2025→Jun-15-2026 — keep frozen, never deleted.
+## ⚠ Retention stakes (still true — walker edition)
+
+Public nodes prune the **tx index to ~1 week** and blocks on a longer-but-
+finite window. An outage beyond block retention loses tx detail permanently;
+pruned block ranges are recorded with EXACT bounds in
+`index.known_gaps_walker` (walker D10). The vote-state layer degrades far more
+gracefully — a missed harvest recovers everything not overwritten since, with
+true stamps. Historical per-stream `known_gaps` (tx_search era) remain in
+`index.streams[*].known_gaps`; archive-node targets unchanged: votes/locks
+2026-06-15→22, bribes/rewards Jan-2025→Jun-2026. The frozen
+`defipatriot/tla-history-data_2026` stays the sole source of votes/locks
+Jan-2025→Jun-15-2026 — never deleted.
 
 ## Reliability behavior
 
-- **F1** resilient ASC pager (publicnode ignores `pagination.offset`).
-- **F2** null ≠ [] on every page; incomplete scans mark status `partial`.
-- **F3** never-shrink per stream — fewer merged events than committed aborts
-  the publish with an error heartbeat.
-- **F7** cursor and per-stream `lastScannedHeight` advance **only on complete
-  scans** — an incomplete scan keeps the prior frontier so the next run
-  re-detects any hole instead of skipping past it.
-- **F8** horizons only ever move down (archive deepening appends below them).
-- **Never seeds**: if all committed priors are unreachable, it aborts with an
-  error heartbeat. Recovery path is the seed Action, which owns bootstrap.
-- Unrecognized actions land losslessly as `event:<ns>/<key>` with raw args and
-  are tallied in `discovered_actions` — promote later via classifier update +
-  rollup recompute, never a re-backfill.
+- **F1** no pagination left to truncate (walker); the escrow `all_tokens` walk
+  distinguishes end-of-list from failure.
+- **F2** null ≠ [] on every read; failed wallets → pending, failed months →
+  publish skipped + `partial`.
+- **F3** never-shrink per touched month file (both products); corrupt existing
+  files are refused, never overwritten.
+- **F7** cursor advances ONLY when every publish landed; a failed walk/decode
+  holds the cursor and the window re-walks (dedup absorbs the overlap).
+- **F8** horizons untouched (historical floors); pruned gaps exact-bounds.
+- **Never seeds events**: unreachable/absent priors → error heartbeat + abort.
+  vote-state MAY self-start (no history to clobber; first harvest = the heal).
+- Unrecognized actions still land losslessly as `event:<ns>/<key>` +
+  `discovered_actions`.
 
 ## Data notes for consumers
 
-- All amounts are raw integer strings with canonical denoms
-  (`native:` / `cw20:`); pricing joins `price-history` downstream.
-- Lock math: sum `canonical === true` only (wrapper-layer views are kept but
-  flagged).
-- `add_bribe` events carry their **native epoch range**
-  (`epoch_start`/`epoch_end`/`dist_func`) and separate `fee_funds` (the 10-LUNA
-  anti-spam fee) from the bribe `coins`.
-- Distribution pot events are **tx-gross** (`coins_basis:
-  'gross_coin_received'`): a tx batching take_rate+rebase+bribes msgs carries
-  the same tx-gross coins on each — **never sum across distribution types**.
-  Per-msg splitting is a known refinement candidate.
-- Briber/wrapper **attribution is not here** — raw addresses/namespaces only;
-  identity joins live in address-catalog (spec §2).
+- All amounts raw integer strings, canonical denoms; pricing joins
+  price-history downstream.
+- Lock math: sum `canonical === true` only. Creates carry `token_id` from
+  2.0.0 (`token_id_source: 'wasm_event'`); pre-2.0.0 creates in the retained
+  window stay null (FCD re-derive queued for genesis→Jan-2025).
+- `add_bribe`: native epoch range + `fee_funds` separated from bribe `coins`.
+- Distribution pots are tx-gross — never sum across distribution types.
+- Attribution is NOT here — raw addresses/namespaces only; identity joins
+  live in address-catalog (spec §2). rollups.json is FROZEN pending build #2.
 
 ## Env (Render)
 
-`GITHUB_TOKEN` (scoped to tla-core), `GITHUB_REPO` (default
-`thealliancedao/tla-core`), `GITHUB_BRANCH` (main), `LCD_PRIMARY` /
-`LCD_FALLBACK`, `MAX_PAGES` (60), `PAGER_RETRIES` / `PAGER_ERR_BACKOFF` /
-`PAGER_PROBE_DELAY`.
+`GITHUB_TOKEN` (scoped to tla-core), `GITHUB_REPO`/`GITHUB_BRANCH`,
+`RPC_PRIMARY`/`RPC_FALLBACK`, `LCD_PRIMARY`/`LCD_FALLBACK`,
+`WALK_CONCURRENCY` (4), `MAX_BLOCKS_PER_RUN` (2000), `CONFIRM_LAG` (3),
+`TLA_LOOKBACK` (700, cursor-migration fallback only), `VS_CONCURRENCY` (5),
+`VS_PACE_MS` (150). **Schedule change with this deploy: `0 */6 * * *` → `0 * * * *`.**
+
+## Mock gate
+
+`TLA_CORE_DIR=<tla-core checkout> node mock-run.js` — 44 assertions on REAL
+fixtures (FCD txs vs committed events): classifier v4 parity, token_id
+promotion (89/89 null creates filled on the FCD sample), walker
+gate/budget/crash/pruned/corrupt/migration/layout-guard, vote-state harvest/
+completion/vote_capture/enumeration-abort. Passed 2026-07-15 pre-delivery.
+Re-run after ANY main-loop change (binding).
 
 ## Recent changes
 
-- **1.1.0 (2026-07-14)** — distributions forward capture + tarpit fix. New
-  `lib/distributions.js` (`<<DISTRIBUTIONS CORE v1>>` marked block,
-  byte-identical with `tla-core/.github/scripts/tla-voting/harvest-distributions.js`
-  — diff-verify after ANY change): after each epoch boundary, queries the
-  just-finalized `distributions{time:{period}}` and appends to
-  `tla-voting/distributions/history.json` (single-file layout, DECIDED —
-  Deviation Register §7); self-heals via `last_captured_period ==
-  current_period − 1` (lateness is free, state is retained); heartbeat gains
-  `distributions_head`. Also ports the **40s hard-deadline `httpGet`**
-  (closes the idle-timeout-only tarpit hang shared with tla-flows Rev B).
-  Full story: `tla-core/docs/changelogs/cron-tla-voting-log.md` Rev 3.
-- **2026-07-08 (data, not code)** — FCD archive fill executed: streams extended
-  to contract genesis (votes 8,270 · locks 13,585 · bribes 172 · rewards
-  6,038). Cron code unchanged; it forward-maintains on top of the filled
-  streams. See `tla-core/docs/changelogs/cron-tla-voting-log.md` Rev 2.
-- **1.0.0 (2026-07-08)** — initial forward cron. Classifier v3 (byte-identical
-  with seed v3.3): chain-confirmed add_bribe shape, target-contract filter,
-  reward union across sweeps, gap honesty with precise resume boundaries,
-  change-only stream publishing to keep commit noise down.
+- **2.0.0 (2026-07-15) — the capture fix (SPEC-tla-voting-capture-fix).**
+  Walker transport replaces tx_search (Rev C lift; gated by-hash decode);
+  monthly per-stream writes (index schemaVersion ≥ 4 enforced); NEW
+  vote-state per-period harvest (`lib/vote-state.js`) — the completeness +
+  attribution layer, first harvest heals the Rev 4 misses; `<<CLASSIFIER v4>>`
+  token_id promotion; `vote_capture` invariant in the heartbeat; rollups
+  frozen pending build #2; schedule → hourly. Mock gate 44/44 on real
+  fixtures. Full story: `tla-core/docs/changelogs/cron-tla-voting-log.md` Rev 5.
+- **1.1.0 (2026-07-14)** — distributions forward capture
+  (`<<DISTRIBUTIONS CORE v1>>`, byte-identical with the harvester —
+  diff-verify after ANY change) + the 40s hard-deadline `httpGet` port.
+  Changelog Rev 3.
+- **2026-07-08 (data, not code)** — FCD archive fill: streams extended to
+  contract genesis. Changelog Rev 2.

@@ -1,8 +1,8 @@
 {
   "name": "org-tla-voting",
-  "version": "1.0.0",
-  "description": "TLA voting event capture (forward): votes, locks, bribes, rewards from gauge + escrow + incentive manager into tla-core tla-voting/events",
+  "version": "2.0.0",
+  "description": "TLA voting capture (forward): block-walker events (votes, locks, bribes, rewards) + per-period vote-state harvest + distributions, into tla-core tla-voting/",
   "main": "index.js",
-  "scripts": { "start": "node index.js" },
+  "scripts": { "start": "node index.js", "mock": "node mock-run.js" },
   "license": "MIT"
 }
