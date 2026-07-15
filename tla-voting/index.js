@@ -1,5 +1,5 @@
 // =============================================================================
-// tla-voting / index.js — org-tla-voting 2.0.0 (Render forward cron)
+// tla-voting / index.js — org-tla-voting 2.2.0 (Render forward cron)
 // TLA VOTING event capture: votes, locks, bribes, rewards — WALKER TRANSPORT
 // Spec: tla-core/docs/pending-changes/SPEC-tla-voting-capture-fix.md
 // (module contract: SPEC-tla-voting.md · transport doctrine: SPEC-tla-flows-walker.md §0)
@@ -73,13 +73,14 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.1.0';        // 2.1.0 (SPEC-tla-voting-rollups): rollups schema 4 (state∪events voters, three-number claims) + <<CLASSIFIER v5>> rebase-income promotion — on 2.0.0 (walker + monthly + vote-state + v4 token_id)
+const VERSION = 'org-tla-voting-2.2.0';        // 2.2.0 (SPEC-tla-voting-bribe-state): bribe-state harvest (walk-down + forward) + <<CLASSIFIER v6>> contract-bribe promotion + bribe_capture — on 2.1.0 (rollups 4 + v5) on 2.0.0 (walker + monthly + vote-state)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
 const { forwardDistributions } = require('./lib/distributions.js');
 const { forwardVoteState } = require('./lib/vote-state.js');
 const { buildRollups4 } = require('./lib/rollups.js');
+const { forwardBribeState } = require('./lib/bribe-state.js');
 
 // ----------------------------------------------------------------------------- action maps
 // CHAIN-CONFIRMED — gauge + escrow (probe 2026-06-15); incentive mgr:
@@ -309,9 +310,10 @@ async function fetchDecodedTx(hash, height, blockTime) {
     return tr;
 }
 
-// SHARED CLASSIFIER — <<CLASSIFIER v5>> (2.1.0, SPEC-tla-voting-rollups D6).
-// v5 = v4 + the rebase-income promotion (extractRebaseIncome + its call hook in
-// rewardEventFromMsg's escrow path) — nothing else. v4 = v3 + the lock token_id
+// SHARED CLASSIFIER — <<CLASSIFIER v6>> (2.2.0, SPEC-tla-voting-bribe-state D6).
+// v6 = v5 + the contract-initiated bribe promotion (extractContractBribes +
+// extractTrackBribeCallbacks + one hook in classifyIncentiveTxs) — nothing
+// else. v5 = v4 + the rebase-income promotion. v4 = v3 + the lock token_id
 // promotion. Since 2.0.0 this cron is the classifier's SOLE live home: the seed
 // and fcd-fill are layout-guarded off and keep v3 for git-history reference.
 // Any future monthly-aware fill must lift the CURRENT block FROM HERE and
@@ -643,10 +645,77 @@ function bribeEventFrom(type, sender, args, mi, meta, sendHook) {
         epoch_start: dist?.start ?? null, epoch_end: dist?.end ?? null, dist_func: dist?.func_type ?? null,
         args: (({ _funds, ...rest }) => rest)(args || {}) };
 }
+// v6 contract-bribe promotion (SPEC-tla-voting-bribe-state D6). The take-rate
+// tribute flow — four bucket contracts calling add_bribe internally — carries
+// NO top-level message addressed to the manager, so message-level
+// classification is blind to it BY CONSTRUCTION (FCD census: 2,793 add_bribe
+// events vs 173 captured; 751 FCD-era txs contract-initiated). The manager's
+// own wasm event declares the deposit:
+//   {action:'bribe/add_bribe', added:'<canonical-denom>:<amount>', start, end}
+// (chain-proven on FCD tx 69D072693314…: two events, ASTRO 226225967 +
+// 447102559, start=end=115). It carries NO pool and NO briber:
+//   • briber = the initiating contract, resolved via the event's own
+//     msg_index → that message's target (msg_index is a property on FCD-
+//     trimmed events, an attribute on live LCD events); first-msg-target
+//     fallback when absent. briber_source:'msg_target' either way.
+//   • pool pairing from same-tx `asset/track_bribes_callback {asset, bribe}`
+//     ONLY when a single unambiguous candidate matches denom+amount — the
+//     add_bribe is bucket-AGGREGATED, so ambiguity (0 or 2+) stays null
+//     (honest; state has the per-pool truth).
+function parseDenomAmount(s) {
+    // '<denom>:<amount>' where the denom itself contains colons — amount is
+    // everything after the LAST colon ('native:ibc/8D8A…:226225967').
+    const m = String(s || '').match(/^(.*):(\d+)$/);
+    return m ? { denom: m[1], amount: m[2] } : null;
+}
+function eventMsgIndex(ev) {
+    if (ev.msg_index != null && Number.isFinite(Number(ev.msg_index))) return Number(ev.msg_index);
+    for (const kv of ev.attributes || []) if (kv.key === 'msg_index' && Number.isFinite(Number(kv.value))) return Number(kv.value);
+    return null;
+}
+function extractContractBribes(tr) {
+    const out = [];
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        let contract = null, action = null, added = null, start = null, end = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === '_contract_address') contract = kv.value;
+            else if (kv.key === 'action') action = kv.value;
+            else if (kv.key === 'added') added = kv.value;
+            else if (kv.key === 'start') start = kv.value;
+            else if (kv.key === 'end') end = kv.value;
+        }
+        if (contract !== TLA_INCENTIVE_MANAGER || action !== 'bribe/add_bribe') continue;
+        out.push({
+            coin: parseDenomAmount(added), added_raw: added ?? null,
+            start: start != null && Number.isFinite(Number(start)) ? Number(start) : null,
+            end: end != null && Number.isFinite(Number(end)) ? Number(end) : null,
+            msg_index: eventMsgIndex(ev),
+        });
+    }
+    return out;
+}
+function extractTrackBribeCallbacks(tr) {
+    const out = [];
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        let action = null, asset = null, bribe = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === 'action') action = kv.value;
+            else if (kv.key === 'asset') asset = kv.value;
+            else if (kv.key === 'bribe') bribe = kv.value;
+        }
+        if (action !== 'asset/track_bribes_callback' || !asset || !bribe) continue;
+        const coin = parseDenomAmount(bribe);
+        if (coin) out.push({ asset, denom: coin.denom, amount: coin.amount });
+    }
+    return out;
+}
 function classifyIncentiveTxs(txResponses, discovered) {
     const bribeEvents = [], rewardEvents = [];
     for (const tr of txResponses) {
         const meta = { height: Number(tr.height), timestamp: tr.timestamp, tx_hash: tr.txhash };
+        const bribeStart = bribeEvents.length;   // v6: contract-bribe promotion bracket
         (tr?.tx?.body?.messages || []).forEach((m, mi) => {
             const msg = m?.msg; if (!msg || typeof msg !== 'object') return;
             const key = Object.keys(msg)[0]; if (!key) return;
@@ -678,6 +747,33 @@ function classifyIncentiveTxs(txResponses, discovered) {
             const type = BRIBE_ACTION_KEYS[key] || `event:incentive/${key}`;
             bribeEvents.push(bribeEventFrom(type, m.sender, a, mi, meta, null));
         });
+        // v6 hook: a manager-touching tx that produced NO bribe event from
+        // top-level msgs — promote the manager's own bribe/add_bribe events
+        // (the take-rate tribute flow). Direct bribes never reach here (their
+        // msg already classified above), so v3–v5 behavior is unchanged.
+        if (bribeEvents.length === bribeStart) {
+            const promoted = extractContractBribes(tr);
+            if (promoted.length) {
+                const msgs = tr?.tx?.body?.messages || [];
+                const callbacks = extractTrackBribeCallbacks(tr);
+                promoted.forEach((pb, pi) => {
+                    discovered['incentive_event:bribe/add_bribe'] = (discovered['incentive_event:bribe/add_bribe'] || 0) + 1;
+                    const initMsg = (pb.msg_index != null && msgs[pb.msg_index]) ? msgs[pb.msg_index] : msgs[0];
+                    const matches = pb.coin ? callbacks.filter(c => c.denom === pb.coin.denom && c.amount === pb.coin.amount) : [];
+                    bribeEvents.push({
+                        type: 'bribe_add', via: 'wasm_event',
+                        briber: initMsg?.contract || null, briber_source: 'msg_target',
+                        msg_index: pb.msg_index != null ? pb.msg_index : 1000 + pi,   // dedup-key uniqueness when the attr is absent
+                        ...meta,
+                        pool: matches.length === 1 ? matches[0].asset : null,        // aggregated add — ambiguity stays null
+                        gauge: null,
+                        coins: pb.coin ? [{ amount: pb.coin.amount, denom: pb.coin.denom }] : null,
+                        epoch_start: pb.start, epoch_end: pb.end, dist_func: null,
+                        args: { added: pb.added_raw, start: pb.start, end: pb.end },
+                    });
+                });
+            }
+        }
     }
     return { bribeEvents, rewardEvents };
 }
@@ -781,6 +877,8 @@ async function publishHeartbeat(h) {
         vote_state: h.voteState || undefined,
         vote_capture: h.voteCapture || undefined,
         rollups: h.rollups || undefined,
+        bribe_state: h.bribeState || undefined,
+        bribe_capture: h.bribeCapture || undefined,
         next_expected_run_at: new Date(h.startedAt.getTime() + FORWARD_CADENCE_HOURS * 3600000).toISOString(),
         error_count: h.errors.length, recent_errors: h.errors.slice(-5),
     };
@@ -992,6 +1090,25 @@ async function run() {
         } catch (re) { addErr('rollups', re); console.warn(`  ⚠ rollups step failed (streams/state unaffected): ${re.message}`); }
     }
 
+    // 11c. bribe-state harvest (SPEC-tla-voting-bribe-state §2 — build #3): the
+    // tribute completeness layer. Budgeted walk-down genesis capture + per-period
+    // forward harvest + bribe_capture coverage. Failures abort this step only.
+    let bs = null;
+    try {
+        const readBribeEvents = async () => {
+            const all = [];
+            const mp = index.streams?.bribes?.months_present || {};
+            for (const yyyy of Object.keys(mp).sort()) for (const mm of mp[yyyy]) {
+                const r = await apiGetJson(`${OUT_DIR}/bribes/${yyyy}/${mm}.json`);
+                if (!r.ok) throw new Error(`bribe month read failed: ${yyyy}/${mm}`);
+                if (Array.isArray(r.data)) all.push(...r.data);
+            }
+            return all;
+        };
+        bs = await forwardBribeState({ publishFile, apiGetJson, readBribeEvents, log: console });
+        console.log(`  bribe-state: ${bs.skipped ? `skipped (${bs.reason})` : `+${bs.added} (fwd ${bs.forward_appended} / walk ${bs.walk_appended}) — walked to ${bs.walked_down_to ?? '—'}${bs.floor_period != null ? `, FLOOR ${bs.floor_period}` : ''}`}`);
+    } catch (be) { addErr('bribe-state', be); console.warn(`  ⚠ bribe-state step failed (event streams unaffected): ${be.message}`); }
+
     // 12. heartbeat
     const status = (allComplete && !errors.length) ? 'ok' : (allComplete ? 'partial' : 'partial');
     const horizons = {};
@@ -1002,9 +1119,11 @@ async function run() {
                   distributions_head: dist && dist.head || undefined },
         lastBlock: allComplete ? cursorTarget : lastBlock, head, horizons,
         walkerGaps,
-        voteState: vs && !vs.skipped ? { period: vs.period, wallets: vs.wallets, voted: vs.voted, pending: vs.pending } : (vs && vs.reason ? { skipped: vs.reason } : undefined),
+        voteState: vs && !vs.skipped ? { period: vs.period, wallets: vs.wallets, voted: vs.voted, pending: vs.pending, lock_state: vs.lock_state } : (vs && vs.reason ? { skipped: vs.reason } : undefined),
         voteCapture: vs && vs.vote_capture || undefined,
         rollups: ru || undefined,
+        bribeState: bs && !bs.skipped ? { added: bs.added, forward_appended: bs.forward_appended, walk_appended: bs.walk_appended, walked_down_to: bs.walked_down_to, floor_period: bs.floor_period, status: bs.status } : (bs && bs.reason ? { skipped: bs.reason } : undefined),
+        bribeCapture: bs && bs.bribe_capture || undefined,
     });
     console.log(`\n✅ done — +${totalAdded} events (${JSON.stringify(addedByStream)}), cursor ${allComplete ? `advanced to ${cursorTarget}` : 'HELD'}, status ${status}${note ? ' · ' + note : ''}\n`);
 }
@@ -1014,4 +1133,4 @@ if (require.main === module) {
     run().catch(err => { console.error('FATAL:', err.message); process.exit(1); });
 }
 
-module.exports = { run, T, WATCH_SET, classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, extractLockTokenId, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey, txHashOf, touchesWatched, contractsTouched, walkBlocks, fetchDecodedTx, publishFile, apiGetJson };
+module.exports = { run, T, WATCH_SET, classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, extractLockTokenId, extractContractBribes, extractTrackBribeCallbacks, parseDenomAmount, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey, txHashOf, touchesWatched, contractsTouched, walkBlocks, fetchDecodedTx, publishFile, apiGetJson };

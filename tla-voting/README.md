@@ -1,8 +1,8 @@
-# tla-voting — org-tla-voting 2.1.0 (TLA voting capture, forward)
+# tla-voting — org-tla-voting 2.2.0 (TLA voting capture, forward)
 
 **Render job:** `org-tla-voting` · schedule `0 * * * *` (hourly — D6) · entry `index.js`
-**Specs:** `SPEC-tla-voting-rollups.md` (2.1.0 rollups + classifier v5) + `SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
-**Data:** `tla-core/tla-voting/events/` (monthly per-stream partitions + cursor + heartbeat + index) and `tla-core/tla-voting/vote-state/` (per-period state harvest) and `tla-core/tla-voting/distributions/`
+**Specs:** `SPEC-tla-voting-bribe-state.md` (2.2.0 bribe-state + classifier v6) + `SPEC-tla-voting-rollups.md` (2.1.0 rollups + classifier v5) + `SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
+**Data:** `tla-core/tla-voting/events/` (monthly per-stream partitions + cursor + heartbeat + index), `tla-core/tla-voting/vote-state/` (per-period state harvest + lock-state retention), `tla-core/tla-voting/bribe-state/` (per-period tribute ledger — build #3), and `tla-core/tla-voting/distributions/`
 
 Scope: ONLY the voting layer of the three governance contracts — the act of
 voting, the VP lifecycle, vote incentives, vote proceeds. Positions/valuations
@@ -51,10 +51,51 @@ tla-voting/
 │   └── reconciliation.json    detail artifact (2026-07-14 diagnostic)
 ├── vote-state/
 │   ├── {YYYY}/{MM}.json       per-(period,wallet) records, dedup + never-shrink
+│   ├── locks/{YYYY}/{MM}.json per-period lock-state snapshots (2.2.0 retention
+│   │                          rider — end/underlying/asset/VP per lock)
 │   ├── index.json             last_harvested_period, pending_wallets, wallets_seen
 │   └── heartbeat.json
+├── bribe-state/               build #3 (SPEC-tla-voting-bribe-state)
+│   ├── {YYYY}/{MM}.json       per-period VERBATIM tribute ledger records, keyed
+│   │                          by the PERIOD'S EPOCH END DATE (history lands in
+│   │                          its historical months — deliberate D4 deviation
+│   │                          from vote-state's capturedAt-month)
+│   ├── index.json             last_harvested_period, walked_down_to,
+│   │                          floor_period + floor_certificate
+│   └── heartbeat.json         + bribe_capture coverage
 └── distributions/             unchanged (single history.json, DECIDED deviation)
 ```
+
+## bribe-state (build #3 — the tribute completeness layer)
+
+The committed bribe stream held 173 events; the manager's books hold thousands
+— the take-rate flow (four bucket contracts calling `add_bribe` internally)
+is invisible to message-level classification BY CONSTRUCTION, and the
+2025-01→2026-06 capture hole swallowed the rest. The manager retains its
+complete per-period, per-pool, per-denom ledger (retention PROVEN to period
+100), so the harvest recovers the entire tribute history of TLA from state:
+
+- **Query (CHAIN-PINNED, queries.md Q-IncentiveManager-Bribes):**
+  `{bribes:{period:{period:N}}}` — the `period` field is the ve3 **Time
+  enum**, NEVER a bare number (serde-json-wasm fallback error; cost four
+  probes). `{bribes:{}}` = current.
+- **Walk-down (D2):** budgeted genesis capture — `BRIBE_WALK_BUDGET`
+  (default 30) periods per hourly run, down from the current period until
+  the floor certifies (FLOOR_CONFIRM consecutive floor-shaped responses —
+  the distributions register rule; transient failures never masquerade as
+  the floor). `floor_period` records what the chain says (expect ≈96).
+- **Forward (D3):** one harvest per period, distributions-head trigger,
+  self-healing — a missed flip recovers on the next run (retained state).
+- **Record (D5):** `{schemaVersion, period, harvested_at, source, buckets:
+  <chain VERBATIM>}` — zero derived fields; totals/USD live in rollups.
+- **bribe_capture (D7, heartbeat):** event-derived per-period sums vs the
+  state buckets → coverage % per denom. A COVERAGE metric, not an alarm —
+  events are structurally partial (that's why state exists); the alarm is
+  coverage DROPPING for direct-bribe denominators.
+
+Rollups' `bribers` section still reads events only — build #3.5 upgrades it
+to consume bribe-state, at which point the `bribers_coverage_note` blind-spot
+label retires.
 
 ## rollups.json schema 4 (build #2 — the honest merge)
 
@@ -73,7 +114,23 @@ the ~97% tribute blind spot (build #3); zero-claims split as `claim_tx_count`
 vs `paid_claim_count`; unjoinable denoms land in `unpriced[]`, never dropped.
 Pots retired to `distributions/history.json` (one truth per fact).
 
-## <<CLASSIFIER v5>> — sole live home
+## <<CLASSIFIER v6>> — sole live home
+
+v6 = v5 + the **contract-bribe promotion** (SPEC-tla-voting-bribe-state D6):
+when a manager-touching tx produced NO bribe event from top-level msgs (the
+take-rate tribute flow — FCD census: 2,793 `bribe/add_bribe` events vs 173
+captured, 751 FCD-era txs contract-initiated), the manager's own
+`wasm {action:'bribe/add_bribe', added:'<denom>:<amt>', start, end}` events
+are promoted: type `bribe_add`, `via:'wasm_event'`, coins from `added`,
+epoch range from start/end (chain-proven on FCD tx `69D072693314…` — two
+events, ASTRO 226225967 + 447102559). `briber` = the initiating contract via
+the event's own `msg_index` → that message's target (msg_index is a property
+on FCD-trimmed events, an attribute on live LCD events; first-msg-target
+fallback), `briber_source:'msg_target'`. Pool pairing from same-tx
+`asset/track_bribes_callback {asset, bribe}` ONLY on a single unambiguous
+denom+amount match — the add is bucket-AGGREGATED, so ambiguity stays
+`pool:null` (honest; state has the per-pool truth). Direct bribes never
+reach the hook (their msg already classified) — v3–v5 behavior unchanged.
 
 v5 = v4 + the **rebase-income promotion**: the gauge's own
 `wasm {action:'gauge/claim_rebase', rebase_amount, user}` event declares the
@@ -107,6 +164,14 @@ Any future monthly-aware fill lifts v4 FROM HERE and diff-verifies the block.
   `post_flip_change` (overwritten before we read — recorded, never guessed).
   Pre-harvest history beyond each actor's last-vote stamp is unrecoverable —
   the chain never emitted it.
+- **Lock-state retention rider (2.2.0):** the enumeration's `lock_info`
+  answers are retained as ONE record per period in
+  `vote-state/locks/{YYYY}/{MM}.json` — per lock: `end` (verbatim:
+  `{period:N}` | `'permanent'`), `underlying_amount`, `asset`, `amount`,
+  `start`, `coefficient`, `slope`, `voting_power`, `fixed_amount`. Derivables
+  downstream: avg lock duration, permanent-vs-timed split, per-lock sizes,
+  LST composition of total VP. Soft-fail (surfaces in heartbeat as
+  `partial`, never blocks the harvest); full harvests only.
 - Completion mode: individual `user_info` failures land in
   `index.pending_wallets` (+`pending_period`); `last_harvested_period`
   advances only when pending is empty; the next run retries pending only.
@@ -163,18 +228,33 @@ Jan-2025→Jun-15-2026 — never deleted.
 `RPC_PRIMARY`/`RPC_FALLBACK`, `LCD_PRIMARY`/`LCD_FALLBACK`,
 `WALK_CONCURRENCY` (4), `MAX_BLOCKS_PER_RUN` (2000), `CONFIRM_LAG` (3),
 `TLA_LOOKBACK` (700, cursor-migration fallback only), `VS_CONCURRENCY` (5),
-`VS_PACE_MS` (150). **Schedule change with this deploy: `0 */6 * * *` → `0 * * * *`.**
+`VS_PACE_MS` (150), `BRIBE_WALK_BUDGET` (30 — walk-down periods per run),
+`BS_PACE_MS` (150). Schedule unchanged: `0 * * * *` (hourly).
 
 ## Mock gate
 
-`TLA_CORE_DIR=<tla-core checkout> node mock-run.js` — 44 assertions on REAL
-fixtures (FCD txs vs committed events): classifier v4 parity, token_id
-promotion (89/89 null creates filled on the FCD sample), walker
-gate/budget/crash/pruned/corrupt/migration/layout-guard, vote-state harvest/
-completion/vote_capture/enumeration-abort. Passed 2026-07-15 pre-delivery.
-Re-run after ANY main-loop change (binding).
+`TLA_CORE_DIR=<tla-core checkout> node mock-run.js` — 96 assertions on REAL
+fixtures (FCD txs vs committed events): classifier v4/v5/v6 parity, token_id
+promotion, walker gate/budget/crash/pruned/corrupt/migration/layout-guard,
+vote-state harvest/completion/vote_capture/enumeration-abort + lock-state
+rider, rollups schema 4, bribe-state walk-down/floor-confirm/forward/
+epoch-month-routing/verbatim (R8–R12 incl. the real take-rate tx
+69D072693314). Passed 2026-07-15 pre-delivery. Re-run after ANY main-loop
+change (binding). Note: the harness reads the committed streams' MONTHLY
+layout (post-restructure) since 2.2.0.
 
 ## Recent changes
+
+- **2.2.0 (2026-07-15) — build #3 (SPEC-tla-voting-bribe-state).** NEW
+  `bribe-state/` product (`lib/bribe-state.js`): budgeted in-cron genesis
+  walk of the incentive manager's per-period tribute ledger (Time enum
+  query, retention proven to period 100) + per-period forward harvest,
+  verbatim D5 records routed to the PERIOD'S epoch-end month, floor
+  certified never presumed. `<<CLASSIFIER v6>>` contract-bribe promotion
+  (the 97% blind spot's attribution layer). `bribe_capture` coverage
+  invariant. Lock-state retention rider on vote-state
+  (`vote-state/locks/{YYYY}/{MM}.json`). Mock gate 96/96 on real fixtures
+  (incl. real take-rate tx 69D072693314). Changelog Rev 7.
 
 - **2.1.0 (2026-07-15) — build #2 (SPEC-tla-voting-rollups).** rollups.json
   schema 4 (`lib/rollups.js`): voters from vote-state ∪ events with

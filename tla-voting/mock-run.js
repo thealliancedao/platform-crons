@@ -1,5 +1,5 @@
 // =============================================================================
-// tla-voting / mock-run.js — the BINDING mock gate for org-tla-voting 2.0.0
+// tla-voting / mock-run.js — the BINDING mock gate for org-tla-voting 2.2.0
 // (SPEC-tla-voting-capture-fix §8: file-based mock runs, stubbed network +
 // publish, before any commit/deploy. Main-loop-change law.)
 //
@@ -32,6 +32,9 @@ dist.forwardDistributions = async () => ({ skipped: true, reason: 'mocked', head
 const vsLib = require('./lib/vote-state.js');
 const realForwardVoteState = vsLib.forwardVoteState;
 vsLib.forwardVoteState = async () => ({ skipped: true, reason: 'mocked' });
+const bsLib = require('./lib/bribe-state.js');
+const realForwardBribeState = bsLib.forwardBribeState;
+bsLib.forwardBribeState = async () => ({ skipped: true, reason: 'mocked' });
 
 const M = require('./index.js');
 
@@ -103,17 +106,27 @@ function loadFcd(label) {
 }
 // FCD trimmed tx -> the classifier's tx_response shape (the fcd-fill adapter)
 const adapt = (tx) => ({ txhash: tx.txhash, height: tx.height, timestamp: tx.timestamp, events: tx.events, tx: { body: { messages: tx.messages } } });
-function committedEvents(file) {
-    return JSON.parse(fs.readFileSync(path.join(TLA_CORE, 'tla-voting', 'events', file), 'utf8')).events;
+// Committed streams are MONTHLY since the 2.0.0 restructure — concatenate
+// every {YYYY}/{MM}.json under the stream dir (2.2.0 harness fix; the old
+// monolith vote-events.json reader predates the restructure).
+function committedEvents(stream) {
+    const base = path.join(TLA_CORE, 'tla-voting', 'events', stream);
+    const out = [];
+    for (const yyyy of fs.readdirSync(base).filter(d => /^\d{4}$/.test(d)).sort()) {
+        for (const f of fs.readdirSync(path.join(base, yyyy)).filter(f => /^\d{2}\.json$/.test(f)).sort()) {
+            out.push(...JSON.parse(fs.readFileSync(path.join(base, yyyy, f), 'utf8')));
+        }
+    }
+    return out;
 }
 const msgKeyOf = (tx, key) => (tx.messages || []).some(mm => mm.msg && typeof mm.msg === 'object' && key in mm.msg);
 
 const gaugeTxs = loadFcd('tla-gauge').filter(t => Number(t.code || 0) === 0);
 const escrowTxs = loadFcd('tla-escrow').filter(t => Number(t.code || 0) === 0);
 const incentiveTxs = loadFcd('tla-incentive').filter(t => Number(t.code || 0) === 0);
-const committedVotes = committedEvents('vote-events.json');
-const committedLocks = committedEvents('lock-events.json');
-const committedBribes = committedEvents('bribe-events.json');
+const committedVotes = committedEvents('votes');
+const committedLocks = committedEvents('locks');
+const committedBribes = committedEvents('bribes');
 
 // =============================================================================
 async function main() {
@@ -235,7 +248,7 @@ console.log('\nT3 — walker end-to-end: gate, decode, classify, monthly merge, 
     assert(idx.streams.votes.count === 1 && idx.streams.votes.months_present['2026'].includes('07'), 'index counts + months updated');
     assert(cur.last_block === 104, `cursor advanced to 104 (${cur.last_block})`);
     assert(hb.status === 'ok' && hb.counts.gated_txs === 2, `heartbeat ok, gated_txs 2 (foreign gated out) — got ${hb.status}/${hb.counts.gated_txs}`);
-    assert(hb.version === 'org-tla-voting-2.1.0' && hb.schemaVersion === 4, 'heartbeat carries 2.1.0 / schema 4');
+    assert(hb.version === 'org-tla-voting-2.2.0' && hb.schemaVersion === 4, 'heartbeat carries 2.2.0 / schema 4');
     // idempotence: re-walk the same window (cursor rolled back) → dedup absorbs
     REPO.set('tla-voting/events/cursor.json', JSON.stringify({ schemaVersion: 4, last_block: 100 }));
     await M.run();
@@ -360,7 +373,12 @@ console.log('\nT10 — vote-state full harvest: records, stamps, flags, index');
     VS.CH.queryContract = async (addr, q) => {
         if (q.num_tokens) return { count: 4 };
         if (q.all_tokens) return q.all_tokens.start_after ? { tokens: [] } : { tokens: ['1', '2', '3', '4'] };
-        if (q.lock_info) return { owner: { '1': 'walletA', '2': 'walletB', '3': 'walletC', '4': 'walletD' }[q.lock_info.token_id] };
+        if (q.lock_info) {
+            const owner = { '1': 'walletA', '2': 'walletB', '3': 'walletC', '4': 'walletD' }[q.lock_info.token_id];
+            return { owner, asset: { info: { cw20: 'terra1ecgazlst' }, amount: '5000000' }, underlying_amount: '5500000',
+                     start: 100, end: q.lock_info.token_id === '1' ? 'permanent' : { period: 250 },
+                     coefficient: '1.5', slope: q.lock_info.token_id === '1' ? '0' : '100', voting_power: '900', fixed_amount: '100' };
+        }
         if (q.user_info) {
             const w = q.user_info.user;
             if (w === 'walletA') return UI(100, 900, [{ gauge: 'project', period: 194, votes: [[K('poolX'), 7000], [K('poolY'), 3000]] }]);
@@ -380,9 +398,18 @@ console.log('\nT10 — vote-state full harvest: records, stamps, flags, index');
     assert(rec.walletA.vp.total === '1000' && rec.walletB.vp.total === '500', 'vp.total = fixed + boost (VP law)');
     assert(rec.walletA.raw_gauge_votes.length === 1 && rec.walletD.gauge_votes.length === 0, 'raw retained verbatim; zero-alloc wallet recorded honestly');
     assert(idx.last_harvested_period === 194 && idx.wallets_seen.length === 4, 'index advanced to 194, wallets_seen cumulative');
+    // lock-state retention rider (2.2.0): the enumeration's lock_info answers retained
+    const locksM = repoJson('tla-voting/vote-state/locks/2026/07.json');
+    assert(locksM && locksM.length === 1 && locksM[0].period === 194 && locksM[0].lock_count === 4, `rider: one period-194 lock record, 4 locks (${locksM && locksM.length})`);
+    const l1 = locksM[0].locks.find(l => l.token_id === '1'), l2 = locksM[0].locks.find(l => l.token_id === '2');
+    assert(l1.end === 'permanent' && l1.slope === '0' && l2.end && l2.end.period === 250, 'rider: end kept verbatim (permanent | {period})');
+    assert(l1.underlying_amount === '5500000' && l1.asset === 'cw20:terra1ecgazlst' && l1.voting_power === '900' && l1.fixed_amount === '100', 'rider: analytic fields retained');
+    assert(res.lock_state && res.lock_state.lock_count === 4, 'rider: lock_state surfaced in the harvest result');
+    assert(idx.lock_state && idx.lock_state.last_period === 194, 'rider: index carries lock_state.last_period');
     // idempotence / up-to-date skip
     const res2 = await realForwardVoteState({ publishFile: memPublish, apiGetJson: memRead, readVoteEvents: async () => [], log: console });
     assert(res2.skipped && res2.reason === 'up to date', 'second run skips (up to date)');
+    assert(repoJson('tla-voting/vote-state/locks/2026/07.json').length === 1, 'rider: dedup — no duplicate period record');
 }
 
 console.log('\nT11 — vote-state pending completion across two runs');
@@ -552,6 +579,151 @@ console.log('\nR1–R4, R6, R7 — rollups schema 4 on real vote-state + crafted
     assert(roll.pots && /distributions\/history/.test(roll.pots.moved_to) && !roll.protocol_pots_by_epoch, 'pots retired to distributions pointer');
     assert(/blind/.test(roll.bribers_coverage_note) && roll.bribers[0].briber === 'terra1mockbriber' &&
            roll.bribers[0].by_epoch['194'].coins['native:uluna'] === '180000000', 'bribers aggregated + coverage note present');
+}
+
+// =============================================================================
+// build #3 additions (SPEC-tla-voting-bribe-state D9): R8–R12
+// =============================================================================
+const BS = bsLib;
+const refusal = () => { const e = new Error('contract refusal'); e.statusCode = 400; e.body = 'Generic error: ve3_shared pre-genesis'; e.contractError = true; throw e; };
+const mkBuckets = (p) => [{ gauge: 'stable', asset: { cw20: `terra1pool${p}` }, assets: [{ info: { native: 'uluna' }, amount: String(p * 1000) }, { info: { cw20: 'terra1astro' }, amount: String(p * 7) }] }];
+
+console.log('\nR8 — bribe-state walk-down: budget, floor confirm, cursor across runs');
+{
+    REPO.clear();
+    process.env.BRIBE_WALK_BUDGET = '2';
+    REPO.set('docs/epoch_1-300_date.json', JSON.stringify(epochDates));
+    BS.CH.fetchDistributions = async () => ({ ok: true, period: 194 });
+    BS.CH.queryContract = async (addr, q) => {
+        const t = q.bribes && q.bribes.period;
+        const p = t == null ? 194 : t.period;
+        if (t != null && typeof t.period !== 'number') throw new Error('mock: Time enum violated (bare/malformed period)');
+        if (p >= 190) return { buckets: mkBuckets(p) };
+        refusal();   // ≤189 = pre-genesis
+    };
+    const bsArgs = { publishFile: memPublish, apiGetJson: memRead, readBribeEvents: async () => [], log: console };
+    const r1 = await realForwardBribeState(bsArgs);
+    let idx = repoJson('tla-voting/bribe-state/index.json');
+    assert(r1.forward_appended === 1 && r1.walk_appended === 2 && idx.last_harvested_period === 194 && idx.walked_down_to === 192,
+        `run1: forward 194 + walk 193,192 under budget 2 (fwd ${r1.forward_appended}/walk ${r1.walk_appended}, down_to ${idx.walked_down_to})`);
+    assert(idx.floor_period == null && /walk-down in progress/.test(idx.note || ''), 'run1: floor not yet certified, progress note present');
+    const r2 = await realForwardBribeState(bsArgs);
+    idx = repoJson('tla-voting/bribe-state/index.json');
+    assert(r2.walk_appended === 2 && idx.walked_down_to === 190, `run2: walked to 190 (${idx.walked_down_to})`);
+    const r3 = await realForwardBribeState(bsArgs);
+    idx = repoJson('tla-voting/bribe-state/index.json');
+    assert(idx.floor_period === 190 && idx.floor_certificate && idx.floor_certificate.probes.length === 3,
+        `run3: FLOOR CERTIFIED at 190 with 3 consecutive probes (${idx.floor_period}, ${idx.floor_certificate && idx.floor_certificate.probes.length})`);
+    const r4 = await realForwardBribeState(bsArgs);
+    assert(r4.skipped && /up to date/.test(r4.reason), 'run4: skipped — up to date, floor certified');
+    const hb = repoJson('tla-voting/bribe-state/heartbeat.json');
+    assert(hb.floor_period === 190 && hb.status === 'ok', 'heartbeat carries floor + ok');
+}
+
+console.log('\nR9 — forward harvest: self-heal, dedup, epoch-month routing, corrupt-month refusal');
+{
+    // continue from R8 state; move the head to 197 (epoch ends: 195→2026-07, 196/197→2026-08)
+    BS.CH.fetchDistributions = async () => ({ ok: true, period: 197 });
+    BS.CH.queryContract = async (addr, q) => {
+        const t = q.bribes && q.bribes.period;
+        const p = t == null ? 197 : t.period;
+        if (p >= 190) return { buckets: mkBuckets(p) };
+        refusal();
+    };
+    const bsArgs = { publishFile: memPublish, apiGetJson: memRead, readBribeEvents: async () => [], log: console };
+    const r = await realForwardBribeState(bsArgs);
+    const idx = repoJson('tla-voting/bribe-state/index.json');
+    const jul = repoJson('tla-voting/bribe-state/2026/07.json');
+    const aug = repoJson('tla-voting/bribe-state/2026/08.json');
+    assert(r.forward_appended === 3 && idx.last_harvested_period === 197, `self-heal: 195,196,197 appended (${r.forward_appended})`);
+    assert(jul.some(x => x.period === 195) && aug && aug.map(x => x.period).join(',') === '196,197',
+        `epoch-END-date month routing: 195→2026/07, 196+197→2026/08 (aug: ${aug && aug.map(x => x.period)})`);
+    // period == epoch, month = the epoch's END month — spot-check deep history against the real table
+    const m100 = BS.makePeriodMonth(epochDates)(100);
+    const row100 = epochDates.find(e => e.epoch === 100);
+    assert(`${m100.yyyy}-${m100.mm}` === row100.end_time.slice(0, 7), `period-100 routing matches the real table's end month (${m100.yyyy}/${m100.mm})`);
+    // dedup: same head again → nothing new
+    const r2 = await realForwardBribeState(bsArgs);
+    assert(r2.skipped && r2.reason === 'nothing new' || r2.skipped, `re-run skips (${r2.reason})`);
+    // never-shrink / corrupt refusal: cursor fields must HOLD
+    BS.CH.fetchDistributions = async () => ({ ok: true, period: 198 });
+    const monthOf198 = BS.makePeriodMonth(epochDates)(198);
+    REPO.set(`tla-voting/bribe-state/${monthOf198.yyyy}/${monthOf198.mm}.json`, JSON.stringify({ corrupt: true }));
+    const r3 = await realForwardBribeState(bsArgs);
+    const idx3 = repoJson('tla-voting/bribe-state/index.json');
+    assert(r3.status === 'partial' && idx3.last_harvested_period === 197, `corrupt month refused: status partial, cursor HELD at 197 (${idx3.last_harvested_period})`);
+    assert(JSON.parse(REPO.get(`tla-voting/bribe-state/${monthOf198.yyyy}/${monthOf198.mm}.json`)).corrupt === true, 'corrupt file NOT overwritten');
+}
+
+console.log('\nR10 — classifier v6: contract-bribe promotion on REAL FCD tx 69D072693314');
+{
+    const takeTx = incentiveTxs.find(t => t.txhash.startsWith('69D072693314'));
+    assert(!!takeTx, 'real take-rate tx present in the FCD archive');
+    const i = M.classifyIncentiveTxs([adapt(takeTx)], {});
+    const promoted = i.bribeEvents.filter(e => e.via === 'wasm_event');
+    assert(i.bribeEvents.length === 2 && promoted.length === 2, `two add_bribe events → two promoted bribe events (${i.bribeEvents.length})`);
+    const amts = promoted.map(e => e.coins[0].amount).sort();
+    assert(amts.join(',') === '226225967,447102559', `ASTRO amounts 226225967 + 447102559 (${amts})`);
+    assert(promoted.every(e => e.type === 'bribe_add' && e.briber_source === 'msg_target' &&
+           e.coins[0].denom === 'native:ibc/8D8A7F7253615E5F76CB6252A1E1BD921D5EDB7BBAAF8913FB1C77FF125D9995' &&
+           e.epoch_start === 115 && e.epoch_end === 115), 'denom + epoch range 115 carried from the event');
+    const bribers = promoted.map(e => e.briber);
+    assert(bribers[0] === 'terra1v399cx9drllm70wxfsgvfe694tdsd9x96p9ha36w7muffe4znlusqswspq' &&
+           bribers[1] === 'terra1awq6t7jfakg9wfjn40fk3wzwmd57mvrqtt3a39z9rmet7wdjj3ysgw3lpa',
+        `briber = each event's OWN initiating tribute contract via msg_index (${bribers.map(b => b.slice(0, 12))})`);
+    assert(promoted.every(e => e.pool === null), 'aggregated add — no single callback matches → pool stays null (honest)');
+    // pairing positive + ambiguity cases (crafted around the real event anatomy)
+    const mgrEv = (added) => ({ type: 'wasm', attributes: [
+        { key: '_contract_address', value: 'terra1tuuwm8yrj54qeg0c8xu00aha9ryatyhtczq8qq2q8tntuw0auzas9037wh' },
+        { key: 'action', value: 'bribe/add_bribe' }, { key: 'added', value: added },
+        { key: 'start', value: '200' }, { key: 'end', value: '200' }, { key: 'msg_index', value: '0' }] });
+    const cbEv = (asset, bribe) => ({ type: 'wasm', attributes: [
+        { key: '_contract_address', value: 'terra1bucket' }, { key: 'action', value: 'asset/track_bribes_callback' },
+        { key: 'asset', value: asset }, { key: 'bribe', value: bribe }, { key: 'msg_index', value: '0' }] });
+    const mkTx = (events) => ({ txhash: 'CRAFTED1', height: 1, timestamp: '2026-07-15T00:00:00Z',
+        events, tx: { body: { messages: [{ sender: 'terra1bot', contract: 'terra1bucket', msg: { distribute_take_rate: {} } }] } } });
+    const paired = M.classifyIncentiveTxs([mkTx([mgrEv('native:uluna:5000'), cbEv('cw20:terra1poolq', 'native:uluna:5000')])], {}).bribeEvents;
+    assert(paired.length === 1 && paired[0].pool === 'cw20:terra1poolq' && paired[0].briber === 'terra1bucket',
+        `single unambiguous callback match → pool paired (${paired[0] && paired[0].pool})`);
+    const ambig = M.classifyIncentiveTxs([mkTx([mgrEv('native:uluna:5000'), cbEv('cw20:terra1poolq', 'native:uluna:5000'), cbEv('cw20:terra1poolr', 'native:uluna:5000')])], {}).bribeEvents;
+    assert(ambig.length === 1 && ambig[0].pool === null, 'two same denom+amount candidates → ambiguity stays null');
+    // regression: direct bribes untouched — the hook never fires when a msg classified
+    const directSample = incentiveTxs.filter(t => msgKeyOf(t, 'add_bribe')).slice(0, 10);
+    const d = M.classifyIncentiveTxs(directSample.map(adapt), {});
+    assert(d.bribeEvents.length > 0 && d.bribeEvents.every(e => e.via === undefined),
+        `direct-bribe regression: ${d.bribeEvents.length} events, zero promoted (T1 parity already asserted field-level)`);
+}
+
+console.log('\nR11 — bribe_capture coverage math on a crafted period');
+{
+    const record = { period: 200, buckets: [
+        { gauge: 'stable', asset: { cw20: 'terra1poolA' }, assets: [{ info: { native: 'uluna' }, amount: '600' }] },
+        { gauge: 'project', asset: { cw20: 'terra1poolB' }, assets: [{ info: { native: 'uluna' }, amount: '400' }, { info: { cw20: 'terra1solid' }, amount: '100' }] },
+    ] };
+    const events = [
+        { type: 'bribe_add', coins: [{ amount: '600', denom: 'native:uluna' }], epoch_start: 200, epoch_end: 200, timestamp: '2026-08-01T00:00:00Z' },
+        { type: 'bribe_add', coins: [{ amount: '800', denom: 'native:uluna' }], epoch_start: 199, epoch_end: 202, timestamp: '2026-08-01T00:00:00Z' },  // 4-way linear → 200/period
+        { type: 'bribe_add', coins: [{ amount: '50', denom: 'cw20:terra1ghost' }], epoch_start: 200, epoch_end: 200, timestamp: '2026-08-01T00:00:00Z' },
+        { type: 'bribe_add', coins: [{ amount: '999', denom: 'native:uluna' }], epoch_start: 150, epoch_end: 150, timestamp: '2024-01-01T00:00:00Z' },   // out of period
+    ];
+    const bc = BS.computeBribeCapture(events, record, () => null);
+    assert(bc.denoms['native:uluna'].state === '1000' && bc.denoms['native:uluna'].events === '800' && bc.denoms['native:uluna'].coverage_pct === 80,
+        `uluna: state 1000, events 600+200(linear share) = 800 → 80% (${JSON.stringify(bc.denoms['native:uluna'])})`);
+    assert(bc.denoms['cw20:terra1solid'].coverage_pct === 0, 'state-only denom: 0% coverage (the structural blind spot, measured)');
+    assert(bc.denoms['cw20:terra1ghost'] && bc.denoms['cw20:terra1ghost'].events_only === true, 'events-only denom listed, never dropped');
+    assert(bc.mean_coverage_pct === 40, `mean over state denoms = (80+0)/2 = 40 (${bc.mean_coverage_pct})`);
+}
+
+console.log('\nR12 — verbatim retention: record.buckets deep-equals the chain response');
+{
+    const chainBuckets = mkBuckets(191);
+    // pull the committed record for period 191 from whichever month it landed in
+    const m191 = BS.makePeriodMonth(epochDates)(191);
+    const month = repoJson(`tla-voting/bribe-state/${m191.yyyy}/${m191.mm}.json`);
+    const r191 = month && month.find(x => x.period === 191);
+    assert(r191 && JSON.stringify(r191.buckets) === JSON.stringify(chainBuckets), 'committed period-191 buckets byte-equal the stubbed chain response');
+    assert(Object.keys(r191).sort().join(',') === 'buckets,harvested_at,period,schemaVersion,source',
+        `record carries EXACTLY the D5 fields — zero derived (${Object.keys(r191).sort()})`);
 }
 
 // =============================================================================
