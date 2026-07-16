@@ -1,0 +1,11 @@
+{
+  "name": "org-system-health",
+  "version": "1.0.0",
+  "description": "Invariant monitors for tla-core (SPEC-system-health, defect #10): 7 chain-free cross-checks on committed data, violations declared in system-health/current.json",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "mock": "node mock-run.js"
+  },
+  "license": "MIT"
+}
