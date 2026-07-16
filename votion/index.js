@@ -163,7 +163,7 @@ async function loadVaultState(v, errors) {
             const fixed = Number(li.fixed_amount || 0), boost = Number(li.voting_power || 0);
             state.lock_vp_human = (fixed + boost) / 1e6;
             state.lock_vp_components = { fixed_human: fixed / 1e6, voting_power_human: boost / 1e6 };
-        } else errors.push({ where: `lock_info ${v.lock_id}`, error: 'lock_info failed' });
+        } else errors.push({ where: `lock_info lock_id=${v.lock_id} (${v.address.slice(0, 16)})`, error: 'lock_info failed' });
     }
 
     state.vdenom_supply_raw = null; state.vdenom_supply_human = null;
@@ -314,6 +314,12 @@ async function runBranchB(now, vaults, errors) {
     const regR = await apiGetJson('votion/holders-registry.json');
     if (!regR.ok) throw new Error('holders-registry read failed — refusing to run blind');
     const registry = regR.data || { meta: { module: 'votion' }, vaults: {} };
+    // Curated candidates: addresses to ALWAYS balance-check (chain history is
+    // pruned, so pre-retention depositors are undiscoverable by tx_search —
+    // known candidates like the aDAO multisig are added here by hand and
+    // verified by live balance, never assumed). File is human-maintained.
+    const curated = (await apiGetJson('votion/curated-holders.json')).data || { addresses: [] };
+    const curatedAddrs = Array.isArray(curated.addresses) ? curated.addresses : [];
     const catalog = (await apiGetJson('token-catalog/snapshots/current.json')).data;
     if (!catalog) errors.push({ where: 'pricing', error: 'token-catalog unreadable — USD will be null' });
 
@@ -321,8 +327,9 @@ async function runBranchB(now, vaults, errors) {
     let anyIncomplete = false;
     for (const v of vaults) {
         if (!v.vdenom) { errors.push({ where: `vault ${v.address.slice(0, 16)}`, error: 'no vdenom — cannot enumerate holders' }); anyIncomplete = true; vaultBlocks.push({ address: v.address, holders: null, holder_discovery_complete: false }); continue; }
-        const { holders, complete, next } = await discoverHoldersIncremental(v, registry.vaults, errors);
+        const { holders: discovered, complete, next } = await discoverHoldersIncremental(v, registry.vaults, errors);
         registry.vaults[v.address] = next;
+        const holders = [...new Set([...discovered, ...curatedAddrs])];   // curated candidates always checked
         if (!complete) anyIncomplete = true;
 
         const { usd: lstUsd, source: priceSource } = priceFromCatalog(catalog, v.lst_contract);
@@ -350,8 +357,9 @@ async function runBranchB(now, vaults, errors) {
         vaultBlocks.push({
             address: v.address, lst_contract: v.lst_contract, vdenom: v.vdenom,
             exchange_rate: v.state.exchange_rate, lock_vp_human: v.state.lock_vp_human,
-            holder_count: valid.length, historical_depositor_count: holders.length,
-            holder_discovery_complete: complete, balance_failures: failed.length,
+            holder_count: valid.length, candidates_checked: holders.length,
+            holder_discovery_complete: complete,   // paging completed — NOT full-history coverage (see meta.discovery_basis)
+            balance_failures: failed.length,
             total_underlying_usd: Math.round(valid.reduce((s, h) => s + (h.underlying_usd || 0), 0) * 100) / 100,
             holders: valid,
         });
@@ -360,7 +368,10 @@ async function runBranchB(now, vaults, errors) {
     const status = vaults.length === 0 ? 'error' : (anyIncomplete ? 'partial' : 'ok');
     const uniqueHolders = new Set(vaultBlocks.flatMap(b => (b.holders || []).map(h => h.address))).size;
     const doc = {
-        meta: { version: VERSION, generated_at: now.toISOString(), status },
+        meta: {
+            version: VERSION, generated_at: now.toISOString(), status,
+            discovery_basis: 'tx_search deposit events (public LCDs prune; pre-retention depositors are NOT discoverable — the vault exposes no holder query and denom_owners is unimplemented on available LCDs, probed 2026-07-16) + curated-holders.json candidates, all verified by live balance. Holder set = retention-window discoveries + registry (grow-only) + curated; it may undercount pre-retention holders.',
+        },
         totals: { vault_count: vaults.length, unique_holders: uniqueHolders, total_tvl_usd: Math.round(vaultBlocks.reduce((s, b) => s + (b.total_underlying_usd || 0), 0) * 100) / 100 },
         vaults: vaultBlocks,
     };

@@ -87,7 +87,9 @@ const CATALOG = { tokens: [
 
 (async () => {
     console.log('— R1: first full run (A + B) —');
-    CHAIN = healthyChain(); REPO = { 'token-catalog/snapshots/current.json': CATALOG }; WRITES = {};
+    CHAIN = healthyChain(); REPO = { 'token-catalog/snapshots/current.json': CATALOG,
+             'votion/curated-holders.json': { addresses: ['terra1multisig'] } }; WRITES = {};
+    CHAIN.balances['terra1multisig|factory/' + V2 + '/max/varbluna'] = '80000000000';   // 80k vtoken — the pre-retention whale
     let r = await M.run();
     check('R1 status ok', r.status === 'ok', r.errors);
     const vd = REPO['votion/snapshots/vaults.json'];
@@ -98,11 +100,14 @@ const CATALOG = { tokens: [
     const roll = vd.votion_vp_now_per_pool;
     check('R1 NOW rollup: poolA = 50k*0.6 + 150k*1.0 = 180k; poolB = 20k', roll['cw20:terra1poolA'] === 180000 && roll['cw20:terra1poolB'] === 20000, roll);
     const cur = REPO['votion/snapshots/current.json'];
-    check('R1 positions ok, 2 unique holders (bob exited)', cur.meta.status === 'ok' && cur.totals.unique_holders === 2);
+    check('R1 positions ok, 3 unique holders (bob exited; curated multisig found)', cur.meta.status === 'ok' && cur.totals.unique_holders === 3, cur.totals);
+    check('R1 curated candidate valued in V2 (80k vtoken × 1.25 = 100k arbLUNA)', cur.vaults[1].holders.some(h => h.address === 'terra1multisig' && h.underlying_lst === 100000));
+    check('R1 discovery_basis declared', /pre-retention/.test(cur.meta.discovery_basis));
+    check('R1 curated zero-balance in V1 dropped silently', !cur.vaults[0].holders.some(h => h.address === 'terra1multisig'));
     const alice = cur.vaults[0].holders.find(h => h.address === 'terra1alice');
     check('R1 alice: 8k vtoken × 1.25 = 10k ampLUNA, $1050, tagged tla', alice.underlying_lst === 10000 && alice.underlying_usd === 1050 && alice.underlying_usd_price_source === 'token-catalog/tla');
     check('R1 alice implied VP = 20% share × 50k = 10k', alice.implied_vp === 10000, alice);
-    const carol = cur.vaults[1].holders[0];
+    const carol = cur.vaults[1].holders.find(h => h.address === 'terra1carol');
     check('R1 arbLUNA priced via coingecko fallback + tagged', carol.underlying_usd_price_source === 'token-catalog/coingecko' && carol.underlying_usd === Math.round(20000 * 0.133 * 100) / 100);
     check('R1 daily archive written', 'votion/snapshots/daily/2026-07-17.json' in REPO);
     const reg = REPO['votion/holders-registry.json'];
