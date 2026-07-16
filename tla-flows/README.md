@@ -66,7 +66,7 @@ unique. All scenarios pass (2026-07-08):
   **32,615 flows** = 15,727 deposits · 4,499 withdrawals · 12,389 claims;
   16,129 via zap; 20,017 with cost receipts; 118 non-flow; 44 failed skipped.
 
-## Deploy checklist (Camron)
+## Deploy checklist (DeFi Patriot)
 
 1. Commit this folder + the updated `config/contracts.js` (adds `ZAPPER`).
 2. Render → new cron job `org-tla-flows`: repo `thealliancedao/platform-crons`,
