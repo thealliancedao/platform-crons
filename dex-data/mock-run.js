@@ -57,10 +57,10 @@ const wl = (cw20, whitelisted, config = {}) => ({ info: { cw20 }, whitelisted, c
 // details per bucket contract — the REAL shape token-catalog's stage 1b parses
 const DETAILS = {
     [A.stable]:   [wl(LP.lunaSolidSS, true)],
-    [A.project]:  [wl(LP.lunaSolidAstro, true), wl(LP.lunaWhale, true)],
+    [A.project]:  [wl(LP.lunaSolidAstro, true), wl(LP.lunaWhale, true), { info: { native: 'factory/terra1hub/32/project/amplp' }, whitelisted: true }],
     [A.bluechip]: [wl(LP.usdcUsdtAstro, false), wl(LP.wstethGhost, false),
                    { info: { native: `factory/${PAIR.factoryPool}/astroport/share/uLP` }, whitelisted: true }],
-    [A.single]:   [wl(LP.usdcUsdtAstro, true), wl(LP.atomLunaSS, true), wl('terra1lp_minterfails', true)],
+    [A.single]:   [wl(LP.usdcUsdtAstro, true), wl(LP.atomLunaSS, true), wl('terra1lp_minterfails', true), wl('terra1vca_wbtc_receipt', true)],
 };
 
 function stubChain({ failAllDetails = false } = {}) {
@@ -76,6 +76,7 @@ function stubChain({ failAllDetails = false } = {}) {
             return { minter: m };
         }
         if (q.pool) return { assets: [{ amount: '1000' }, { amount: '2000' }], total_share: '1500' };
+        if (q.metrics) return CREDIA_METRICS();
         throw new Error(`mock: unexpected query ${JSON.stringify(q)}`);
     };
 }
@@ -88,6 +89,23 @@ NET.pools_getAll = () => ({ result: { data: { json: [
     { poolAddress: PAIR.factoryPool, lpAddress: null, name: 'FACT - LUNA', poolType: 'pcl' },
     { poolAddress: 'terra1pair_not_tla', lpAddress: 'terra1lp_not_tla', name: 'MEME - LUNA', poolType: 'xyk' },
 ] } } });
+const CREDIA_METRICS = () => ({
+    total_supplied_usd: '650926.35', total_borrowed_usd: '178551.28', total_collateral_usd: '523350.05', total_reserves_usd: '149.51',
+    assets: [
+        { info: { native: 'ibc/8838wbtc' }, price: '64624.7', total_supplied: '288150930', total_supplied_usd: '186216.69',
+          total_borrowed_usd: '10243.97', total_collateral_usd: '186216.69', utilization: '0.055', supply_apy: '0.0007', borrow_apy: '0.0138',
+          proxy_addr: 'terra1proxy_wbtc', vproxy_addr: 'terra1vca_wbtc_receipt', user_wallet_balance: '123',
+          state: { ltv: '0.7', liquidation_threshold: '0.72', liquidation_penalty: '0.1', take_rate: null, isolation: null } },
+        { info: { native: 'factory/terra1hub/32/project/amplp' }, price: '0.287', total_supplied: '194000000', total_supplied_usd: '55820.25',
+          total_borrowed_usd: '0', total_collateral_usd: '55820.25', utilization: '0', supply_apy: '0', borrow_apy: '0',
+          proxy_addr: 'terra1proxy_amplp', vproxy_addr: 'terra1vca_amplp_receipt',
+          state: { ltv: '0.45', take_rate: { fixed: '0.02' }, isolation: null } },
+        { info: { cw20: 'terra1arbluna' }, price: '0.1395', total_supplied: '147000000', total_supplied_usd: '20535.40',
+          total_borrowed_usd: '737.96', total_collateral_usd: '20535.40', utilization: '0.036', supply_apy: '0.0001', borrow_apy: '0.0045',
+          proxy_addr: 'terra1proxy_other', vproxy_addr: 'terra1vca_other_receipt',
+          state: { ltv: '0.7', take_rate: null, isolation: null } },
+    ],
+});
 NET.pools_list = () => ([
     { pool_id: 'LUNA-SOLID', swap_address: PAIR.lunaSolidSS, pool_assets: [{ symbol: 'LUNA', denom: 'uluna', decimals: 6 }, { symbol: 'SOLID', denom: 'terra1solid', decimals: 6 }] },
     { pool_id: 'ATOM-LUNA', swap_address: PAIR.atomLunaSS, pool_assets: [{ symbol: 'ATOM', denom: 'ibc/atom', decimals: 6 }, { symbol: 'LUNA', denom: 'uluna', decimals: 6 }] },
@@ -168,6 +186,29 @@ NET.pools_list = () => ([
         assert(cap.meta.bucket_errors && Object.keys(cap.meta.bucket_errors).length === 4, 'all four bucket-contract failures recorded');
         const capSS = await skeletonswap.capture();
         assert(capSS.pools.every(p => p.bucket === null) && capSS.meta.bucket_errors, 'SS inherits the same honest failure (memoized truth)');
+    }
+
+    console.log('\nM6 — Credia lending-market adapter (1.2.0): metrics mapping + receipt-token gauge join');
+    {
+        stubChain();
+        BT._resetForTests();
+        const credia = require('./dexes/credia');
+        assert(credia.enabled === true && credia.trust_start === '2026-07-16', 'credia enabled with trust_start');
+        const cap = await credia.capture();
+        assert(cap.pools.length === 3 && cap.meta.pools_total === 3, 'all markets captured');
+        const by = Object.fromEntries(cap.pools.map(p => [p.pool_address, p]));
+        const w = by['terra1vca_wbtc_receipt'];
+        assert(w && w.pool_type === 'lending_market' && w.bucket === 'single' && w.tla_relevant === true
+            && w.raw.bucket_joined_on === 'cw20:terra1vca_wbtc_receipt', 'wBTC market joins gauge via RECEIPT token byAsset (vcawbtc pattern)');
+        assert(w.tvl_usd === 186216.69 && w.volume_24h_usd === null && w.assets[0].price_usd === null
+            && w.raw.credia_price_usd === 64624.7, 'tvl=supplied USD; volume + asset price honest-null; oracle price labeled in raw');
+        assert(!('user_wallet_balance' in w.raw) && !('price' in w.raw), 'session artifacts stripped from raw');
+        const lp = by['terra1vca_amplp_receipt'];
+        assert(lp.raw.state.take_rate && lp.raw.state.take_rate.fixed === '0.02' && lp.bucket === 'project',
+            'ampLP market keeps take_rate in raw + joins its gauge bucket');
+        const x = by['terra1vca_other_receipt'];
+        assert(x.bucket === null && x.tla_relevant === false, 'non-gauge market stays honestly unlabeled');
+        assert(cap.meta.platform.total_supplied_usd === 650926.35 && /lending markets/.test(cap.meta.source), 'platform totals + honest source label');
     }
 
     console.log('\n' + '='.repeat(60));
