@@ -157,7 +157,14 @@ async function loadVaultState(v, errors) {
 
     // Vault VP = fixed + voting_power (TOTAL — SPEC-vp-definition-fix).
     state.lock_vp_human = null; state.lock_vp_components = null;
-    if (v.lock_id != null) {
+    const hasLock = v.lock_id != null && String(v.lock_id).trim() !== '';
+    if (!hasLock) {
+        // Vault has never minted its lock (no deposits yet) — VP 0 is the
+        // CORRECT state, not an error. user_info fallback below confirms.
+        state.lock_vp_human = 0;
+        state.lock_vp_components = { fixed_human: 0, voting_power_human: 0, source: 'no_lock_yet' };
+    }
+    if (hasLock) {
         const li = await T.queryContract(ESCROW, { lock_info: { token_id: String(v.lock_id), time: 'next' } });
         if (li && (li.voting_power != null || li.fixed_amount != null)) {
             const fixed = Number(li.fixed_amount || 0), boost = Number(li.voting_power || 0);

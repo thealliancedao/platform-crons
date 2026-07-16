@@ -123,12 +123,20 @@ const CATALOG = { tokens: [
     check('R1b VP from user_info fallback = 50k, source tagged', vf.lock_vp_human === 50000 && vf.lock_vp_components.source === 'gauge_user_info_fallback');
     CHAIN.lock['101'] = { fixed_amount: '10000000000', voting_power: '40000000000' };
 
+    console.log('— R1c: vault with empty lock_id (never deposited) → VP 0, NO error —');
+    CHAIN.config[V2].lock_id = '';
+    NOW = new Date('2026-07-17T02:50:00Z');
+    r = await M.run();
+    const ve = REPO['votion/snapshots/vaults.json'].vaults[1];
+    check('R1c empty-lock vault: VP 0, no_lock_yet, run not partial for it', ve.lock_vp_human === 0 && ve.lock_vp_components.source === 'no_lock_yet' && !r.errors.some(e => /lock_info/.test(e.where)), r.errors);
+    CHAIN.config[V2].lock_id = '102';
+
     console.log('— R2: hourly run — B skipped as fresh, A appends —');
     NOW = new Date('2026-07-17T03:10:00Z'); WRITES = {};
     r = await M.run();
     check('R2 positions skipped', REPO['votion/heartbeat.json'].positions_status === 'skipped' && REPO['votion/heartbeat.json'].positions_at === '2026-07-17T02:10:00.000Z');
     check('R2 no current.json rewrite', !WRITES['votion/snapshots/current.json']);
-    check('R2 history now 3 points (never-shrink; R1b added one)', REPO['votion/history/2026/07.json'].points.length === 3);
+    check('R2 history now 4 points (never-shrink; R1b+R1c added)', REPO['votion/history/2026/07.json'].points.length === 4);
 
     console.log('— R3: incremental discovery — new depositor, only delta fetched —');
     NOW = new Date('2026-07-18T02:10:00Z');
