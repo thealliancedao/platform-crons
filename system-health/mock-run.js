@@ -68,7 +68,9 @@ function healthyRepo() {
         'nfts/adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),
         'nfts/adao/flows/heartbeat.json': H('2026-07-16T11:00:00Z'),
         'nfts/adao/provenance/heartbeat.json': { ran_at: '2026-07-08T00:00:00Z' },   // ancient — must be EXEMPT
-        'price-history/2026/07.json': { meta: {}, days: { '2026-07-14': {}, '2026-07-15': {} } },   // latest day 26h < 50h → fresh
+        'price-history/2026/07.json': { meta: {}, days: { '2026-07-14': {}, '2026-07-15': {} } },
+        'dex-data/credia/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
+        'votion/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', vaults_at: '2026-07-16T11:00:00Z', positions_at: '2026-07-16T02:00:00Z' },   // latest day 26h < 50h → fresh
     };
 }
 // fix the healthy fixture note above: NOT-TLA pool must satisfy INV2

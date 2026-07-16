@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.0';
+const VERSION       = 'org-system-health-1.0.1';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -196,6 +196,9 @@ const FRESHNESS_MAP = [
     { product: 'nfts-snapshots',     kind: 'cron',    path: 'nfts/adao/snapshots/heartbeat.json',          ts: ['capturedAt'],                max_age_h: 6 },
     { product: 'nfts-flows',         kind: 'cron',    path: 'nfts/adao/flows/heartbeat.json',              ts: ['capturedAt'],                max_age_h: 6 },
     { product: 'nfts-provenance',    kind: 'one-off', path: 'nfts/adao/provenance/heartbeat.json',         ts: ['ran_at'] },
+    { product: 'dex-credia',         kind: 'cron',    path: 'dex-data/credia/snapshots/heartbeat.json',   ts: ['generated_at', 'capturedAt'], max_age_h: 6 },
+    { product: 'votion-vaults',      kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['vaults_at', 'capturedAt'],   max_age_h: 6 },
+    { product: 'votion-positions',   kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['positions_at'],              max_age_h: 30 },
     { product: 'price-history',      kind: 'day-key', pathFn: (now) => `price-history/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}.json`, max_age_h: 50 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
