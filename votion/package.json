@@ -1,0 +1,8 @@
+{
+  "name": "org-votion",
+  "version": "1.0.0",
+  "description": "Votion vault + holder capture (SPEC-votion-capture, G2): hourly vault state + chain-pure per-pool NOW, daily holder positions archive",
+  "main": "index.js",
+  "scripts": { "start": "node index.js", "mock": "node mock-run.js" },
+  "license": "MIT"
+}
