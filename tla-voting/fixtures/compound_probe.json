@@ -1,5 +1,5 @@
 {
-  "_note": "TRIMMED from the live LCD probe 2026-07-15 (Camron browser paste). Real tx 9B2DD008… — Votion arbLUNA-MAX vault compound. Kept: the compound msg + every event relevant to classifier v5 (gauge/claim_rebase rebase_amount, ampLUNA transfer, deposit_for, metadata_changed) with EXACT chain values. Full tx_response is in the 2026-07-15 session transcript.",
+  "_note": "TRIMMED from the live LCD probe 2026-07-15 (DeFi Patriot browser paste). Real tx 9B2DD008… — Votion arbLUNA-MAX vault compound. Kept: the compound msg + every event relevant to classifier v5 (gauge/claim_rebase rebase_amount, ampLUNA transfer, deposit_for, metadata_changed) with EXACT chain values. Full tx_response is in the 2026-07-15 session transcript.",
   "tx_response": {
     "height": "21711878",
     "txhash": "9B2DD0085116BFBE0E8E24CAFBC044266DD96AA012E65DB53E05333CCD41BF16",
