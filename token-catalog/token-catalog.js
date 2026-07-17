@@ -478,6 +478,48 @@ function enrichIdentity(tokens, indexed) {
 }
 
 // -----------------------------------------------------------------------------
+// STAGE 2b — CURATED OVERRIDE MERGE (Rev 1.5.0)
+// Reads docs/curated/token_overrides.json and applies it per the stage-2
+// per-field model: `discovered` is never touched (chain-honest); the raw
+// curated entry lands in `override`; `effective` is the merged view
+// (override value wins, discovered falls through) — the ONE field downstream
+// consumers read. A read failure is loud but non-fatal: the snapshot ships
+// without the merge and says so, matching prior behavior exactly.
+async function applyOverrideLayer(tokens) {
+  const stats = { readOk: false, applied: 0, newlyNamed: 0 };
+  let entries = {};
+  try {
+    const ov = await fetchJson(
+      `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/docs/curated/token_overrides.json?t=${Date.now()}`,
+      'token-overrides'
+    );
+    entries = (ov && ov.tokens) || {};
+    stats.readOk = true;
+  } catch (e) {
+    console.log(`   token_overrides.json read failed: ${e.message}`);
+    return stats;
+  }
+  for (const t of tokens) {
+    const e = entries[t.denom];
+    if (!e) continue;
+    const d = t.discovered || {};
+    t.override = { ...e, source: 'docs/curated/token_overrides.json' };
+    t.effective = {
+      symbol: e.display_name != null ? e.display_name : d.symbol,
+      display_name: e.display_name != null ? e.display_name : (d.display_name != null ? d.display_name : d.symbol),
+      decimals: e.decimals != null ? e.decimals : d.decimals,
+      logo_url: e.logo_url != null ? e.logo_url : d.logo_url,
+      subtype: e.subtype != null ? e.subtype : t.subtype,
+      coingecko_id: e.coingecko_id != null ? e.coingecko_id : d.coingecko_id,
+    };
+    if (!Array.isArray(t.identity_flags)) t.identity_flags = [];
+    t.identity_flags.push('override_applied');
+    stats.applied++;
+    if (!d.symbol && t.effective.symbol) stats.newlyNamed++;
+  }
+  return stats;
+}
+
 // STAGE 2.1 — VERIFICATION + IDENTITY SCORE
 //
 // Verifies each token's DISCOVERED coingecko_id against CoinGecko's own terra-2
@@ -972,6 +1014,14 @@ async function run() {
   const idStats = enrichIdentity(tokens, indexed);
   console.log(`   identity: ${idStats.symbolsResolved}/${idStats.total} symbols, ${idStats.logosResolved}/${idStats.total} logos (chain-registry ${idSrc.ok.chain_registry ? 'ok' : 'FAILED'}, skeletonswap ${idSrc.ok.skeletonswap ? 'ok' : 'best-effort-miss'})`);
 
+  console.log('🧷 Stage 2b: applying curated override layer (token_overrides.json)...');
+  // Rev 1.5.0 — the override layer was write-only until now: humans curated it,
+  // nothing consumed it. `discovered` stays untouched (honest); overrides land
+  // in `override` (raw curated entry) + `effective` (override-over-discovered,
+  // the field consumers like tla-voting's buildTokenMap should read).
+  const ovStats = await applyOverrideLayer(tokens);
+  console.log(`   overrides: ${ovStats.applied} applied (${ovStats.newlyNamed} previously unnamed now identified)${ovStats.readOk ? '' : ' — CURATED FILE READ FAILED, snapshot ships without merge'}`);
+
   console.log('🔐 Stage 2.1: verifying coingecko ids + scoring identity...');
   const weights = { price: 0.75, identity: 0.25 };  // default; editable via curated/scoring_weights.json (read by tools)
   const cgIndex = await fetchCgIndex();
@@ -997,7 +1047,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'token-catalog-1.4.2-stage3.1',
+      version: 'token-catalog-1.5.0-stage3.1',
       schemaVersion: 3,
       stage: 'discovery+identity+verification+pricing+dex',
       generated_at: startedAt.toISOString(),
