@@ -39,6 +39,7 @@ function healthyChain() {
             ['terra1alice|factory/' + V1 + '/max/vampluna']: '8000000000',   // 8k vtoken
             ['terra1bob|factory/' + V1 + '/max/vampluna']: '0',              // fully exited
             ['terra1carol|factory/' + V2 + '/max/varbluna']: '16000000000',  // 16k vtoken
+            ['terra1erin|factory/' + V1 + '/max/vampluna']: '2000000000',    // 2k vtoken — member NEVER tx-discovered (pre-retention)
         },
     };
 }
@@ -66,6 +67,16 @@ M.T.lcdGet = async (path) => {
         if (p === null) return null;                            // this page fails
         return { total: p.total, tx_responses: p.txs };
     }
+    if (path.match(/\/balances\/[^/]+\?pagination/)) {   // full-balances sweep
+        const addr = path.match(/balances\/([^?]+)\?/)[1];
+        const bals = [];
+        for (const [k, a] of Object.entries(CHAIN.balances)) {
+            const [w, denom] = k.split('|');
+            if (w === addr && a !== null && Number(a) > 0) bals.push({ denom, amount: a });
+        }
+        if (CHAIN.sweepFail && CHAIN.sweepFail.includes(addr)) return null;
+        return { balances: bals };
+    }
     if (path.includes('/balances/')) { const mm = path.match(/balances\/([^/]+)\/by_denom\?denom=(.+)$/); const key = mm[1] + '|' + decodeURIComponent(mm[2]); const a = CHAIN.balances[key]; if (a === null) return null; return { balance: { amount: a != null ? a : '0' } }; }
     if (path.includes('/smart/')) {
         const mm = path.match(/contract\/([^/]+)\/smart\/(.+)$/); const addr = mm[1];
@@ -88,6 +99,7 @@ const CATALOG = { tokens: [
 (async () => {
     console.log('— R1: first full run (A + B) —');
     CHAIN = healthyChain(); REPO = { 'token-catalog/snapshots/current.json': CATALOG,
+             'member-data/snapshots/current.json': { wallets: [ { address: 'terra1erin' }, { address: 'terra1alice' }, { address: 'terra1quiet' } ] },
              'votion/curated-holders.json': { addresses: ['terra1multisig'] } }; WRITES = {};
     CHAIN.balances['terra1multisig|factory/' + V2 + '/max/varbluna'] = '80000000000';   // 80k vtoken — the pre-retention whale
     let r = await M.run();
@@ -100,7 +112,7 @@ const CATALOG = { tokens: [
     const roll = vd.votion_vp_now_per_pool;
     check('R1 NOW rollup: poolA = 50k*0.6 + 150k*1.0 = 180k; poolB = 20k', roll['cw20:terra1poolA'] === 180000 && roll['cw20:terra1poolB'] === 20000, roll);
     const cur = REPO['votion/snapshots/current.json'];
-    check('R1 positions ok, 3 unique holders (bob exited; curated multisig found)', cur.meta.status === 'ok' && cur.totals.unique_holders === 3, cur.totals);
+    check('R1 positions ok, 4 unique holders (bob exited; curated multisig + swept erin found)', cur.meta.status === 'ok' && cur.totals.unique_holders === 4, cur.totals);
     check('R1 curated candidate valued in V2 (80k vtoken × 1.25 = 100k arbLUNA)', cur.vaults[1].holders.some(h => h.address === 'terra1multisig' && h.underlying_lst === 100000));
     check('R1 discovery_basis declared', /pre-retention/.test(cur.meta.discovery_basis));
     check('R1 curated zero-balance in V1 dropped silently', !cur.vaults[0].holders.some(h => h.address === 'terra1multisig'));
@@ -111,6 +123,9 @@ const CATALOG = { tokens: [
     check('R1 arbLUNA priced via coingecko fallback + tagged', carol.underlying_usd_price_source === 'token-catalog/coingecko' && carol.underlying_usd === Math.round(20000 * 0.133 * 100) / 100);
     check('R1 daily archive written', 'votion/snapshots/daily/2026-07-17.json' in REPO);
     const reg = REPO['votion/holders-registry.json'];
+    check('R1 MEMBER SWEEP: erin found via sweep (pre-retention member), valued', cur.vaults[0].holders.some(h => h.address === 'terra1erin' && h.found_via === 'member_sweep' && h.underlying_lst === 2500), cur.vaults[0].holders.map(h=>h.address));
+    check('R1 sweep coverage surfaced + complete', cur.member_sweep && cur.member_sweep.wallets_swept === 3 && cur.member_sweep.complete === true, cur.member_sweep);
+    check('R1 erin persisted to registry (grow-only)', REPO['votion/holders-registry.json'].vaults[V1].holders.includes('terra1erin'));
     check('R1 registry: bob retained though exited, totals stored', reg.vaults[V1].holders.includes('terra1bob') && reg.vaults[V1].tx_total === 2 && reg.vaults[V1].discovery_complete === true);
     check('R1 history point appended', REPO['votion/history/2026/07.json'].points.length === 1);
     check('R1 heartbeat carries branch stamps', REPO['votion/heartbeat.json'].positions_status === 'ok' && REPO['votion/heartbeat.json'].vaults_at);
@@ -147,7 +162,7 @@ const CATALOG = { tokens: [
     r = await M.run();
     M.T.lcdGet = origLcd;
     check('R3 dave discovered + valued', REPO['votion/snapshots/current.json'].vaults[0].holders.some(h => h.address === 'terra1dave'));
-    check('R3 registry grew to 3, total advanced', REPO['votion/holders-registry.json'].vaults[V1].holders.length === 3 && REPO['votion/holders-registry.json'].vaults[V1].tx_total === 3);
+    check('R3 registry grew to 4 (dave + swept erin), total advanced', REPO['votion/holders-registry.json'].vaults[V1].holders.length === 4 && REPO['votion/holders-registry.json'].vaults[V1].tx_total === 3);
     check('R3 delta walk: 1 tx page per vault (2 total)', pagesRequested === 2, pagesRequested);
 
     console.log('— R4: one vault paging fails → partial, cursor NOT advanced, other vault intact —');
@@ -156,10 +171,18 @@ const CATALOG = { tokens: [
     r = await M.run();
     const hb4 = REPO['votion/heartbeat.json'];
     check('R4 partial + error recorded', hb4.positions_status === 'partial' && hb4._errors.some(e => /tx page/.test(e.error)));
-    check('R4 V1 cursor unchanged (3), holders retained', REPO['votion/holders-registry.json'].vaults[V1].tx_total === 3 && REPO['votion/holders-registry.json'].vaults[V1].holders.length === 3);
+    check('R4 V1 cursor unchanged (3), holders retained (4)', REPO['votion/holders-registry.json'].vaults[V1].tx_total === 3 && REPO['votion/holders-registry.json'].vaults[V1].holders.length === 4);
     check('R4 V1 still valued from known holders', REPO['votion/snapshots/current.json'].vaults[0].holder_count >= 2);
     check('R4 V2 intact + complete', REPO['votion/snapshots/current.json'].vaults[1].holder_discovery_complete === true);
     CHAIN.txPages[V1] = [{ total: '3', txs: [depTx('terra1dave'), depTx('terra1alice'), depTx('terra1bob')] }];
+
+    console.log('— R4b: member sweep failure → partial + declared, vault rows intact —');
+    NOW = new Date('2026-07-19T22:30:00Z');
+    CHAIN.sweepFail = ['terra1quiet'];
+    r = await M.run();
+    check('R4b partial + sweep failure recorded', REPO['votion/heartbeat.json'].positions_status === 'partial' && REPO['votion/snapshots/current.json'].member_sweep.failures === 1);
+    check('R4b erin still found via sweep', REPO['votion/snapshots/current.json'].vaults[0].holders.some(h => h.address === 'terra1erin'));
+    CHAIN.sweepFail = null;
 
     console.log('— R5: vault-listing failure → seed fallback declared —');
     NOW = new Date('2026-07-19T03:10:00Z');
@@ -170,14 +193,14 @@ const CATALOG = { tokens: [
     check('R5 discovery_source seed declared in vaults.json', REPO['votion/snapshots/vaults.json'].meta.discovery_source === 'seed_fallback' || REPO['votion/snapshots/vaults.json'].vaults.length === 0);
 
     console.log('— R6: missing price → USD null + source null, amounts intact —');
-    CHAIN = healthyChain(); NOW = new Date('2026-07-20T02:10:00Z');
+    CHAIN = healthyChain(); NOW = new Date('2026-07-20T19:00:00Z');
     REPO['token-catalog/snapshots/current.json'] = { tokens: [] };
     r = await M.run();
     const a6 = REPO['votion/snapshots/current.json'].vaults[0].holders[0];
     check('R6 amounts real, USD honestly null', a6.underlying_lst === 10000 && a6.underlying_usd === null && a6.underlying_usd_price_source === null);
 
     console.log('— R7: balance query failure ≠ zero balance —');
-    NOW = new Date('2026-07-21T02:10:00Z');
+    NOW = new Date('2026-07-21T16:00:00Z');
     REPO['token-catalog/snapshots/current.json'] = CATALOG;
     CHAIN.balances[['terra1alice|factory/' + V1 + '/max/vampluna']] = null;   // read FAILS (≠ '0')
     r = await M.run();

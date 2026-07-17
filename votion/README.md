@@ -29,6 +29,16 @@ Zero balance = exited (drops from current, stays in registry); failed
 balance read ≠ zero (recorded, holder retained). No names — identity joins
 downstream via address-catalog.
 
+**Member sweep (1.1.0):** every wallet member-data currently tracks gets one
+full-balances query per daily run; any votion vdenom found makes that wallet
+a holder — so every TLA participant's Votion position lands in the portfolio
+layer automatically, even pre-retention depositors tx_search can never see.
+The candidate list is DYNAMIC (self-updates with member-data — nothing
+hardcoded); every value is live-verified; sweep coverage + failures are
+declared in the output (member_sweep block), and a failed sweep makes the
+run partial, never silently thin. Rows carry found_via
+(member_sweep | tx_discovery | curated).
+
 **C — optimizer projection (v1.1, deferred):** Eris Votion API
 current-vs-optimized capture; old `votion` cron keeps covering it Sundays
 until then.

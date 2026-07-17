@@ -27,7 +27,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.0.0';
+const VERSION       = 'org-votion-1.1.0';
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -327,6 +327,31 @@ async function runBranchB(now, vaults, errors) {
     // verified by live balance, never assumed). File is human-maintained.
     const curated = (await apiGetJson('votion/curated-holders.json')).data || { addresses: [] };
     const curatedAddrs = Array.isArray(curated.addresses) ? curated.addresses : [];
+
+    // MEMBER SWEEP (dynamic candidates — nothing hardcoded): every wallet
+    // member-data currently tracks gets ONE full-balances query; any votion
+    // vdenom found makes that wallet a holder of that vault. The candidate
+    // list self-updates as member-data does; values are live-verified here.
+    // This is what makes every TLA participant's Votion position appear in
+    // the portfolio layer automatically.
+    const memberDoc = (await apiGetJson('member-data/snapshots/current.json')).data;
+    const memberWallets = memberDoc && Array.isArray(memberDoc.wallets)
+        ? memberDoc.wallets.map(w => w.address || w.wallet).filter(Boolean) : [];
+    if (!memberWallets.length) errors.push({ where: 'member_sweep', error: 'member-data unreadable/empty — sweep skipped this run' });
+    const vdenomToVault = Object.fromEntries(vaults.filter(v => v.vdenom).map(v => [v.vdenom, v.address]));
+    const sweepHits = {};   // vaultAddr → Map<wallet, raw>
+    const sweepResults = await mapConcurrent(memberWallets, CONCURRENCY, async (addr) => {
+        const r = await T.lcdGet(`/cosmos/bank/v1beta1/balances/${addr}?pagination.limit=200`);
+        if (r === null) return { _err: `sweep balance failed ${addr.slice(0, 16)}` };   // failed ≠ zero
+        for (const b of (r.balances || [])) {
+            const vault = vdenomToVault[b.denom];
+            if (vault && Number(b.amount) > 0) (sweepHits[vault] = sweepHits[vault] || {})[addr] = b.amount;
+        }
+        return null;
+    });
+    let sweepFailures = 0;
+    for (const r of sweepResults) if (r && r._err) { sweepFailures++; errors.push({ where: 'member_sweep', error: r._err }); }
+    const sweepComplete = memberWallets.length > 0 && sweepFailures === 0;
     const catalog = (await apiGetJson('token-catalog/snapshots/current.json')).data;
     if (!catalog) errors.push({ where: 'pricing', error: 'token-catalog unreadable — USD will be null' });
 
@@ -335,21 +360,29 @@ async function runBranchB(now, vaults, errors) {
     for (const v of vaults) {
         if (!v.vdenom) { errors.push({ where: `vault ${v.address.slice(0, 16)}`, error: 'no vdenom — cannot enumerate holders' }); anyIncomplete = true; vaultBlocks.push({ address: v.address, holders: null, holder_discovery_complete: false }); continue; }
         const { holders: discovered, complete, next } = await discoverHoldersIncremental(v, registry.vaults, errors);
+        for (const a of Object.keys(sweepHits[v.address] || {})) if (!next.holders.includes(a)) next.holders.push(a);   // sweep finds persist
+        next.holders.sort();
         registry.vaults[v.address] = next;
-        const holders = [...new Set([...discovered, ...curatedAddrs])];   // curated candidates always checked
+        const sweep = sweepHits[v.address] || {};
+        const holders = [...new Set([...discovered, ...curatedAddrs, ...Object.keys(sweep)])];
         if (!complete) anyIncomplete = true;
 
         const { usd: lstUsd, source: priceSource } = priceFromCatalog(catalog, v.lst_contract);
         const rows = (await mapConcurrent(holders, CONCURRENCY, async (addr) => {
-            const bal = await T.lcdGet(`/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=${encodeURIComponent(v.vdenom)}`);
-            if (bal === null) return { _err: `balance failed ${addr.slice(0, 16)}` };   // failed ≠ zero
-            const raw = bal.balance && bal.balance.amount != null ? Number(bal.balance.amount) : 0;
+            let raw;
+            if (sweep[addr] != null) raw = Number(sweep[addr]);   // already live-read in the sweep
+            else {
+                const bal = await T.lcdGet(`/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=${encodeURIComponent(v.vdenom)}`);
+                if (bal === null) return { _err: `balance failed ${addr.slice(0, 16)}` };   // failed ≠ zero
+                raw = bal.balance && bal.balance.amount != null ? Number(bal.balance.amount) : 0;
+            }
             if (raw <= 0) return null;                                                  // fully exited — drops from current, stays in registry
             const vtoken = raw / 1e6;
             const underlyingLst = v.state.exchange_rate != null ? vtoken * v.state.exchange_rate : null;
             const shareOfVault = v.state.vdenom_supply_human ? vtoken / v.state.vdenom_supply_human : null;
             return {
                 address: addr,
+                found_via: sweep[addr] != null ? 'member_sweep' : (curatedAddrs.includes(addr) && !discovered.includes(addr) ? 'curated' : 'tx_discovery'),
                 vtoken_balance: vtoken,
                 underlying_lst: underlyingLst != null ? Math.round(underlyingLst * 1e6) / 1e6 : null,
                 underlying_usd: (underlyingLst != null && lstUsd != null) ? Math.round(underlyingLst * lstUsd * 100) / 100 : null,
@@ -372,6 +405,7 @@ async function runBranchB(now, vaults, errors) {
         });
     }
 
+    if (!sweepComplete) anyIncomplete = true;
     const status = vaults.length === 0 ? 'error' : (anyIncomplete ? 'partial' : 'ok');
     const uniqueHolders = new Set(vaultBlocks.flatMap(b => (b.holders || []).map(h => h.address))).size;
     const doc = {
@@ -379,6 +413,7 @@ async function runBranchB(now, vaults, errors) {
             version: VERSION, generated_at: now.toISOString(), status,
             discovery_basis: 'tx_search deposit events (public LCDs prune; pre-retention depositors are NOT discoverable — the vault exposes no holder query and denom_owners is unimplemented on available LCDs, probed 2026-07-16) + curated-holders.json candidates, all verified by live balance. Holder set = retention-window discoveries + registry (grow-only) + curated; it may undercount pre-retention holders.',
         },
+        member_sweep: { wallets_swept: memberWallets.length, failures: sweepFailures, complete: sweepComplete },
         totals: { vault_count: vaults.length, unique_holders: uniqueHolders, total_tvl_usd: Math.round(vaultBlocks.reduce((s, b) => s + (b.total_underlying_usd || 0), 0) * 100) / 100 },
         vaults: vaultBlocks,
     };
