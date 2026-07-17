@@ -41,7 +41,7 @@
 // =============================================================================
 'use strict';
 
-const ROLLUPS_SCHEMA = 5;
+const ROLLUPS_SCHEMA = 6;
 const OUT = 'tla-voting/events/rollups.json';
 const VS_DIR = 'tla-voting/vote-state';
 const BS_DIR = 'tla-voting/bribe-state';
@@ -89,7 +89,11 @@ async function readAllMonths(apiGetJson, baseDir, monthsPresent) {
 function buildTokenMap(catalog) {
     const map = new Map();
     for (const t of catalog?.tokens || []) {
-        const sym = t?.discovered?.symbol, dec = t?.discovered?.decimals;
+        // schema 6: prefer the catalog's `effective` view (curated override layer
+        // merged by token-catalog 1.5.0+); fall through to `discovered` so older
+        // snapshots keep working identically.
+        const sym = t?.effective?.symbol ?? t?.discovered?.symbol;
+        const dec = (t?.effective?.decimals != null) ? t.effective.decimals : t?.discovered?.decimals;
         if (!t.denom || !sym) continue;
         map.set(t.denom, { symbol: sym, decimals: Number.isFinite(dec) ? dec : 6 });
     }
@@ -389,26 +393,94 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
     if (bsIndex) bsRecords = await readAllMonths(apiGetJson, BS_DIR, bsIndex.months_present);
     const bribe_ledger = buildBribeLedger(bsIndex, bsRecords, bribes);
 
-    // -- bribers (event-derived attribution — the ONLY per-briber source; the
-    //    state ledger knows pools and amounts, not who paid. Completeness is
-    //    now MEASURED in bribe_ledger, not disclaimed in a note.)
+    // -- bribers (schema 6 — SPEC-tla-voting-briber-board): priced, labeled
+    //    leaderboard. Event-derived attribution remains the ONLY per-briber
+    //    source; completeness is MEASURED in bribe_ledger. Value basis (D2/D3):
+    //    gross placed from the add tx's coins; fee_funds never counted;
+    //    usd_at_placement immutable (price on tx date), usd_at_build fallback;
+    //    live today-value stays display-side. Unnameable denoms ride in
+    //    `unpriced` with raw amounts — a `display` field is allowed only when a
+    //    committed trace record exists (PROBES-denom-traces).
+    const walletsR = await apiGetJson('docs/curated/wallets.json');
+    const walletLabels = (walletsR.ok && walletsR.data && walletsR.data.wallets) || {};
+    // Identity from committed PROBES-denom-traces (trace-verified 2026-07-17);
+    // bribe-only tokens are outside token-catalog scope by design.
+    const BRIBE_ONLY_DISPLAY = {
+        'ibc/B2AA4C3CD19954859C3B537EC0705640AFC01075F52993D9AC5E73F07F0386CC': 'DGN',
+    };
     const bribersBy = new Map();
     for (const ev of bribes) {
-        if (ev.type !== 'bribe_add' || !ev.briber) continue;
-        const epoch = ev.epoch_start ?? (epochOf ? epochOf(ev.timestamp) : null);
+        if (!ev.briber) continue;
         let b = bribersBy.get(ev.briber);
-        if (!b) { b = { event_count: 0, via: { msg: 0, wasm_event: 0 }, by_epoch: {} }; bribersBy.set(ev.briber, b); }
+        if (!b) {
+            b = { event_count: 0, withdraw_event_count: 0, via: { msg: 0, wasm_event: 0 },
+                  first_bribe: null, last_bribe: null,
+                  totals: { usd_at_placement: 0, usd_at_build: 0, by_token: {}, unpriced: {} },
+                  by_pool: {}, by_epoch: {} };
+            bribersBy.set(ev.briber, b);
+        }
+        if (ev.type !== 'bribe_add') {
+            if (String(ev.type || '').includes('withdraw_bribes')) b.withdraw_event_count++;
+            continue;
+        }
+        const epoch = ev.epoch_start ?? (epochOf ? epochOf(ev.timestamp) : null);
         b.event_count++;
         b.via[ev.via === 'wasm_event' ? 'wasm_event' : 'msg']++;
+        const date = dayOf(ev.timestamp);
+        if (date) {
+            if (!b.first_bribe || date < b.first_bribe) b.first_bribe = date;
+            if (!b.last_bribe || date > b.last_bribe) b.last_bribe = date;
+        }
         const ek = String(epoch ?? 'unknown');
         const slot = (b.by_epoch[ek] ||= { pools: {}, coins: {} });
         if (ev.pool) slot.pools[ev.pool] = (slot.pools[ev.pool] || 0) + 1;
+        const pslot = ev.pool ? (b.by_pool[ev.pool] ||= { bribe_count: 0, by_token: {} }) : null;
+        if (pslot) pslot.bribe_count++;
         for (const coin of ev.coins || []) {
             if (!coin?.denom || !/^\d+$/.test(String(coin.amount))) continue;
             slot.coins[coin.denom] = (BigInt(slot.coins[coin.denom] || '0') + BigInt(String(coin.amount))).toString();
+            const bare = bareDenom(coin.denom);
+            const tk = tokenMap.get(bare);
+            if (tk && tk.symbol) {
+                const amt = Number(coin.amount) / 10 ** tk.decimals;
+                const p = await prices.priceOn(tk.symbol, date);
+                const tt = (b.totals.by_token[tk.symbol] ||= { amount_display: 0, usd_at_placement: 0, usd_at_build: 0, unpriced_events: 0 });
+                tt.amount_display += amt;
+                if (p != null) { tt.usd_at_placement += amt * p; b.totals.usd_at_placement += amt * p; }
+                else tt.unpriced_events++;
+                if (pslot) {
+                    const pt = (pslot.by_token[tk.symbol] ||= { amount_display: 0, usd_at_placement: 0 });
+                    pt.amount_display += amt;
+                    if (p != null) pt.usd_at_placement += amt * p;
+                }
+            } else {
+                const disp = BRIBE_ONLY_DISPLAY[bare];
+                const u = (b.totals.unpriced[bare] ||= { amount: '0', bribe_events: 0, ...(disp ? { display: disp } : {}) });
+                addBig(u, 'amount', coin.amount);
+                u.bribe_events++;
+                if (pslot) {
+                    const key = disp || bare;
+                    const pu = (pslot.by_token[key] ||= { amount_raw: '0', unpriced: true });
+                    addBig(pu, 'amount_raw', coin.amount);
+                }
+            }
         }
     }
-    const bribers = [...bribersBy.entries()].map(([briber, b]) => ({ briber, ...b })).sort((a, b) => b.event_count - a.event_count);
+    // usd_at_build: latest price × lifetime token total (second pass, per symbol).
+    // latestPrice returns { usd, as_of } — same contract the claims pass uses.
+    for (const b of bribersBy.values()) {
+        for (const [sym, tt] of Object.entries(b.totals.by_token)) {
+            const lpR = await prices.latestPrice(sym, builtDate);
+            const lp = lpR && typeof lpR.usd === 'number' ? lpR.usd : null;
+            if (lp != null) { tt.usd_at_build = tt.amount_display * lp; b.totals.usd_at_build += tt.usd_at_build; }
+        }
+    }
+    const bribers = [...bribersBy.entries()]
+        .map(([briber, b]) => ({ briber, label: (walletLabels[briber] && walletLabels[briber].label) || null, ...b }))
+        // D6 ordering: usd_at_placement desc; ties / all-unpriced bribers rank
+        // after priced ones by bribe_count — never ranked by invented USD.
+        .sort((a, b) => (b.totals.usd_at_placement - a.totals.usd_at_placement) || (b.event_count - a.event_count) || (a.briber < b.briber ? -1 : 1));
+    const bribers_order = bribers.map(x => x.briber);
 
     const rollups = {
         schemaVersion: ROLLUPS_SCHEMA,
@@ -427,10 +499,11 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
         voter_count: voters.length,
         voters,
         bribers,
+        bribers_order,
         bribe_ledger,
         pots: { moved_to: DISTRIBUTIONS_POINTER, note: 'schema-3 event-derived pots retired; distributions is the chain-complete per-period ledger' },
     };
-    await publishFile(OUT, JSON.stringify(rollups), `rollups schema 5: ${voters.length} voters, built on period ${rollups.built_on_period}`);
+    await publishFile(OUT, JSON.stringify(rollups), `rollups schema 6: ${voters.length} voters, built on period ${rollups.built_on_period}`);
     return { voters: voters.length, bribers: bribers.length, built_on_period: rollups.built_on_period };
 }
 
