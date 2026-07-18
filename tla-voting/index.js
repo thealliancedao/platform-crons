@@ -73,7 +73,7 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.3.0';        // 2.3.0 (build #3.5): rollups schema 5 — bribe_ledger (state totals vs event attribution, unattributed MEASURED) + bribers via counts, note retired — on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
+const VERSION = 'org-tla-voting-2.3.1';        // 2.3.1 (v6.1): governance-bribe capture — collision-aware msg_index (N add_bribe under one msg no longer collapse; PD fixture 402AE7B1) + dao_attr attribution (single dao attr → DAO core is briber, dynamic; else msg_target) — on 2.3.0 (rollups schema — bribe_ledger) on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
@@ -695,6 +695,23 @@ function extractContractBribes(tr) {
     }
     return out;
 }
+// v6.1: governance-executed bribes (DAODAO-style: execute proposal → DAO core
+// makes add_bribe calls). The DAO's OWN funds pay (coin_spent spender = DAO
+// core), and the proposal-module wasm event carries a `dao` attribute naming
+// it. Attribution rule (dynamic by construction): exactly ONE distinct dao
+// attribute in the tx → that DAO core is the briber (briber_source
+// 'dao_attr'); zero or 2+ → fall back to msg_target, unlabeled. A new DAO
+// bribing this way therefore surfaces as its own unknown address — it can
+// never be absorbed into another protocol's total by a shared-module label.
+function extractDaoAttr(tr) {
+    const daos = new Set();
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        for (const kv of ev.attributes || [])
+            if (kv.key === 'dao' && typeof kv.value === 'string' && kv.value.startsWith('terra1')) daos.add(kv.value);
+    }
+    return daos.size === 1 ? [...daos][0] : null;
+}
 function extractTrackBribeCallbacks(tr) {
     const out = [];
     for (const ev of tr?.events || []) {
@@ -756,14 +773,29 @@ function classifyIncentiveTxs(txResponses, discovered) {
             if (promoted.length) {
                 const msgs = tr?.tx?.body?.messages || [];
                 const callbacks = extractTrackBribeCallbacks(tr);
+                // v6.1 (PD fixture 402AE7B1…AAAA7): governance-executed bribes put
+                // N add_bribe submessage events under ONE top-level msg, so they
+                // share a msg_index — identical dedup keys would silently collapse
+                // N bribes into one (9/10 dropped on the fixture). Detect the
+                // collision and only then switch those events to guaranteed-unique
+                // indices (100000+pi). The single-add take-rate class never
+                // collides, so every already-committed event keeps its exact key
+                // and window re-walks cannot duplicate history.
+                const seenIdx = new Set(); let idxCollide = false;
+                for (const pb of promoted) if (pb.msg_index != null) {
+                    if (seenIdx.has(pb.msg_index)) { idxCollide = true; break; }
+                    seenIdx.add(pb.msg_index);
+                }
+                const daoAttr = extractDaoAttr(tr);   // v6.1: single unambiguous dao attr, else null
                 promoted.forEach((pb, pi) => {
                     discovered['incentive_event:bribe/add_bribe'] = (discovered['incentive_event:bribe/add_bribe'] || 0) + 1;
                     const initMsg = (pb.msg_index != null && msgs[pb.msg_index]) ? msgs[pb.msg_index] : msgs[0];
                     const matches = pb.coin ? callbacks.filter(c => c.denom === pb.coin.denom && c.amount === pb.coin.amount) : [];
                     bribeEvents.push({
                         type: 'bribe_add', via: 'wasm_event',
-                        briber: initMsg?.contract || null, briber_source: 'msg_target',
-                        msg_index: pb.msg_index != null ? pb.msg_index : 1000 + pi,   // dedup-key uniqueness when the attr is absent
+                        briber: daoAttr || initMsg?.contract || null,
+                        briber_source: daoAttr ? 'dao_attr' : 'msg_target',
+                        msg_index: pb.msg_index == null ? 1000 + pi : (idxCollide ? 100000 + pi : pb.msg_index),   // v6.1: unique under collision; unchanged otherwise
                         ...meta,
                         pool: matches.length === 1 ? matches[0].asset : null,        // aggregated add — ambiguity stays null
                         gauge: null,
@@ -1086,7 +1118,7 @@ async function run() {
     if (harvestLanded || process.env.FORCE_ROLLUPS === '1') {
         try {
             ru = await buildRollups4({ apiGetJson, publishFile, epochOf, log: console });
-            console.log(`  rollups: schema 5 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
+            console.log(`  rollups: schema 6 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
         } catch (re) { addErr('rollups', re); console.warn(`  ⚠ rollups step failed (streams/state unaffected): ${re.message}`); }
     }
 

@@ -248,7 +248,7 @@ console.log('\nT3 — walker end-to-end: gate, decode, classify, monthly merge, 
     assert(idx.streams.votes.count === 1 && idx.streams.votes.months_present['2026'].includes('07'), 'index counts + months updated');
     assert(cur.last_block === 104, `cursor advanced to 104 (${cur.last_block})`);
     assert(hb.status === 'ok' && hb.counts.gated_txs === 2, `heartbeat ok, gated_txs 2 (foreign gated out) — got ${hb.status}/${hb.counts.gated_txs}`);
-    assert(hb.version === 'org-tla-voting-2.3.0' && hb.schemaVersion === 4, 'heartbeat carries 2.2.0 / schema 4');
+    assert(hb.version === 'org-tla-voting-2.3.1' && hb.schemaVersion === 4, 'heartbeat carries 2.3.1 / schema 4');
     // idempotence: re-walk the same window (cursor rolled back) → dedup absorbs
     REPO.set('tla-voting/events/cursor.json', JSON.stringify({ schemaVersion: 4, last_block: 100 }));
     await M.run();
@@ -586,7 +586,7 @@ console.log('\nR1–R4, R6, R7, R13a — rollups schema 5 on real vote-state + c
 
     // R7 — pots retired + bribers (schema 5: measured ledger, note RETIRED)
     assert(roll.pots && /distributions\/history/.test(roll.pots.moved_to) && !roll.protocol_pots_by_epoch, 'pots retired to distributions pointer');
-    assert(roll.schemaVersion === 5 && roll.bribers_coverage_note === undefined, 'schema 5: bribers_coverage_note RETIRED');
+    assert(roll.schemaVersion === 6 && roll.bribers_coverage_note === undefined, 'schema 6 (briber board): bribers_coverage_note RETIRED');
     const mockBriber = roll.bribers.find(b => b.briber === 'terra1mockbriber');
     const tribBriber = roll.bribers.find(b => b.briber === 'terra1tributecontract');
     assert(mockBriber.by_epoch['194'].coins['native:uluna'] === '180000000' && mockBriber.via.msg === 1 && mockBriber.via.wasm_event === 0,
@@ -740,6 +740,62 @@ console.log('\nR10 — classifier v6: contract-bribe promotion on REAL FCD tx 69
     const d = M.classifyIncentiveTxs(directSample.map(adapt), {});
     assert(d.bribeEvents.length > 0 && d.bribeEvents.every(e => e.via === undefined),
         `direct-bribe regression: ${d.bribeEvents.length} events, zero promoted (T1 parity already asserted field-level)`);
+}
+
+console.log('\nR10b — classifier v6.1: governance-executed bribes (PD fixture 402AE7B1…AAAA7)');
+{
+    // REAL anatomy, chainscope-verbatim: one execute-proposal msg → DAO core makes
+    // TEN add_bribe calls; every event shares msg_index 0. Net `added` values as
+    // emitted on-chain (gross transfer minus the 10-LUNA fee each).
+    const MGR = 'terra1tuuwm8yrj54qeg0c8xu00aha9ryatyhtczq8qq2q8tntuw0auzas9037wh';
+    const PD_DAO = 'terra1k8ug6dkzntczfzn76wsh24tdjmx944yj6mk063wum7n20cwd7lxq4lppjg';
+    const PD_PROP = 'terra1660g9mle5kfsq8c0p4k4hgr9ujdyr3m48c22cawy0akr98rmwksqehqnup';
+    const NET_ADDED = ['8478910934', '1695782186', '4239455467', '4239455467', '847891093',
+                       '847891093', '847891093', '8478910934', '3391564373', '1695782186'];
+    const mgrAdd = (amt) => ({ type: 'wasm', attributes: [
+        { key: '_contract_address', value: MGR }, { key: 'action', value: 'bribe/add_bribe' },
+        { key: 'added', value: 'native:uluna:' + amt }, { key: 'end', value: '196' },
+        { key: 'start', value: '193' }, { key: 'msg_index', value: '0' }] });
+    const pdTx = { txhash: '402AE7B14451C9C46612DBD5342FC722A8562B2900AB35973081082B66FAAAA7',
+        height: '21827518', timestamp: '2026-07-09T04:45:27Z',
+        tx: { body: { messages: [{ sender: 'terra14p3mc04s7jcaxvvetlzehvhx9gdx6w4nm3zzw3',
+            contract: PD_PROP, msg: { execute: { proposal_id: 250 } }, funds: [] }] } },
+        events: [
+            { type: 'wasm', attributes: [{ key: '_contract_address', value: PD_PROP },
+                { key: 'action', value: 'execute' }, { key: 'proposal_id', value: '250' },
+                { key: 'dao', value: PD_DAO }, { key: 'msg_index', value: '0' }] },
+            { type: 'wasm', attributes: [{ key: '_contract_address', value: PD_DAO },
+                { key: 'action', value: 'execute_proposal_hook' }, { key: 'msg_index', value: '0' }] },
+            ...NET_ADDED.map(mgrAdd)] };
+    const g = M.classifyIncentiveTxs([pdTx], {});
+    assert(g.bribeEvents.length === 10 && g.bribeEvents.every(e => e.via === 'wasm_event'),
+        `ten shared-msg_index add_bribe events → ten promoted (${g.bribeEvents.length})`);
+    const gm = M.mergeEvents([], g.bribeEvents);
+    assert(gm.merged.length === 10, `ALL TEN survive the merge — the collision that silently dropped 9/10 is fixed (${gm.merged.length})`);
+    const totalU = gm.merged.reduce((s, e) => s + Number(e.coins[0].amount), 0);
+    assert(totalU === 34763534826, `net total chain-exact: 34,763.534826 LUNA (${totalU})`);
+    assert(gm.merged.every(e => e.briber === PD_DAO && e.briber_source === 'dao_attr'),
+        'briber = the DAO core via dao_attr (dynamic — the DAO whose funds paid, never a shared module)');
+    assert(gm.merged.every(e => e.epoch_start === 193 && e.epoch_end === 196 && e.pool === null),
+        'epochs 193–196 carried; pool honestly null (no callbacks in the governance flow)');
+    const keys = new Set(gm.merged.map(e => M.eventKey(e)));
+    assert(keys.size === 10, 'ten distinct dedup keys under collision');
+    // dao ambiguity: TWO distinct dao attrs in one tx → attribution falls back to msg_target
+    const ambigTx = JSON.parse(JSON.stringify(pdTx)); ambigTx.txhash = 'AMBIGDAO';
+    ambigTx.events.push({ type: 'wasm', attributes: [{ key: '_contract_address', value: 'terra1otherprop' },
+        { key: 'dao', value: 'terra1someotherdaocorexxxxxxxxxxxxxxxxxxx' }, { key: 'msg_index', value: '0' }] });
+    const ga = M.classifyIncentiveTxs([ambigTx], {}).bribeEvents;
+    assert(ga.every(e => e.briber === PD_PROP && e.briber_source === 'msg_target'),
+        'two distinct dao attrs → ambiguity falls back to msg_target (never guesses a DAO)');
+    // collision-only activation: single promoted add with msg_index present keeps its PLAIN index
+    const singleTx = { txhash: 'SINGLEPROMO', height: '1', timestamp: '2026-07-15T00:00:00Z',
+        tx: { body: { messages: [{ sender: 'terra1bot', contract: 'terra1trib', msg: { distribute_bribes: {} } }] } },
+        events: [{ type: 'wasm', attributes: [{ key: '_contract_address', value: MGR },
+            { key: 'action', value: 'bribe/add_bribe' }, { key: 'added', value: 'native:uluna:5000' },
+            { key: 'start', value: '200' }, { key: 'end', value: '200' }, { key: 'msg_index', value: '7' }] }] };
+    const gs = M.classifyIncentiveTxs([singleTx], {}).bribeEvents;
+    assert(gs.length === 1 && gs[0].msg_index === 7,
+        `no collision → msg_index unchanged (${gs[0] && gs[0].msg_index}) — every committed take-rate event keeps its exact key`);
 }
 
 console.log('\nR11 — bribe_capture coverage math on a crafted period');

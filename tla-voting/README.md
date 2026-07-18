@@ -1,4 +1,4 @@
-# tla-voting — org-tla-voting 2.3.0 (TLA voting capture, forward)
+# tla-voting — org-tla-voting 2.3.1 (TLA voting capture, forward)
 
 **Render job:** `org-tla-voting` · schedule `0 * * * *` (hourly — D6) · entry `index.js`
 **Specs:** `SPEC-tla-voting-bribe-state.md` (2.2.0 bribe-state + classifier v6) + `SPEC-tla-voting-rollups.md` (2.1.0 rollups + classifier v5) + `SPEC-tla-voting-capture-fix.md` (2.0.0 architecture) over `SPEC-tla-voting.md` (module contract)
@@ -257,6 +257,21 @@ layout (post-restructure) since 2.2.0.
 
 ## Recent changes
 
+- **2.3.1 (2026-07-18) — v6.1: governance-executed bribes (the PD class).**
+  Fixture tx `402AE7B1…AAAA7` (chainscope, DeFi_Patriot): one execute-proposal
+  msg → PD DAO core makes TEN `add_bribe` calls, every event at msg_index 0 —
+  identical dedup keys silently collapsed them to ONE (9/10 dropped,
+  26,284 of 34,763 LUNA lost). Fix: collision-aware promoted msg_index
+  (unique 100000+pi ONLY when 2+ promoted bribes share an index; the
+  single-add take-rate class keeps byte-identical keys — no historical dupes
+  on re-walk). Attribution: NEW `dao_attr` source — exactly one wasm `dao`
+  attribute in the tx → that DAO core is the briber (its funds pay; dynamic:
+  an unknown DAO surfaces as its own address, never absorbed by a
+  shared-module label); zero or 2+ → msg_target fallback. Also reconciles
+  the gate with the in-place rollups schema-6 (briber board) bump. Mock gate
+  **116/116** (R10b: the PD fixture + dao-ambiguity + collision-only
+  activation + key-parity assertions). Second confirmed fixture: proposal
+  247 tx `1CA243A3…AF1E` (37,912.49 LUNA, epochs 189–192). Changelog Rev 9.
 - **2.3.0 (2026-07-15) — build #3.5.** Rollups schema 5: `bribe_ledger`
   (state totals vs event attribution per period/denom, unattributed
   remainder measured, no-division law, events_outside_state declared,
