@@ -728,9 +728,44 @@ function extractTrackBribeCallbacks(tr) {
     }
     return out;
 }
+// ---- unknown-manager-wasm census (SPEC-capture-registry-backfill §5) --------
+// The manager's placed-vs-distributed surplus proved a MISSING EVENT CLASS
+// (refund/rollover) that never arrives as a message — only as manager wasm
+// events inside gauge-distribute txs. Rather than guess shapes from source,
+// census live traffic: every manager wasm `action` we don't explicitly process
+// is counted and first-sampled (full attributes) into the heartbeat. One epoch
+// rollover hands us the real vocabulary; any FUTURE unknown event class
+// surfaces the same way instead of being silently skipped. Observational only:
+// produces no stream events, so over-inclusion cannot corrupt capture.
+const KNOWN_MANAGER_WASM_ACTIONS = new Set(['bribe/add_bribe', 'asset/track_bribes_callback']);
+const UNKNOWN_MANAGER_WASM = { counts: {}, samples: [] };
+const UNKNOWN_WASM_SAMPLE_CAP = 12;
+function censusManagerWasm(tr) {
+    for (const ev of tr?.events || []) {
+        if (ev.type !== 'wasm') continue;
+        let contract = null, action = null;
+        for (const kv of ev.attributes || []) {
+            if (kv.key === '_contract_address') contract = kv.value;
+            else if (kv.key === 'action') action = kv.value;
+        }
+        if (contract !== TLA_INCENTIVE_MANAGER || !action) continue;
+        if (KNOWN_MANAGER_WASM_ACTIONS.has(action)) continue;
+        UNKNOWN_MANAGER_WASM.counts[action] = (UNKNOWN_MANAGER_WASM.counts[action] || 0) + 1;
+        if (UNKNOWN_MANAGER_WASM.counts[action] === 1 && UNKNOWN_MANAGER_WASM.samples.length < UNKNOWN_WASM_SAMPLE_CAP) {
+            UNKNOWN_MANAGER_WASM.samples.push({
+                action,
+                height: Number(tr.height),
+                tx_hash: tr.txhash,
+                attributes: (ev.attributes || []).slice(0, 24).map(kv => `${kv.key}=${String(kv.value).slice(0, 120)}`),
+            });
+        }
+    }
+}
+
 function classifyIncentiveTxs(txResponses, discovered) {
     const bribeEvents = [], rewardEvents = [];
     for (const tr of txResponses) {
+        censusManagerWasm(tr);
         const meta = { height: Number(tr.height), timestamp: tr.timestamp, tx_hash: tr.txhash };
         const bribeStart = bribeEvents.length;   // v6: contract-bribe promotion bracket
         (tr?.tx?.body?.messages || []).forEach((m, mi) => {
@@ -912,6 +947,7 @@ async function publishHeartbeat(h) {
         bribe_state: h.bribeState || undefined,
         bribe_capture: h.bribeCapture || undefined,
         next_expected_run_at: new Date(h.startedAt.getTime() + FORWARD_CADENCE_HOURS * 3600000).toISOString(),
+        unknown_manager_wasm: Object.keys(UNKNOWN_MANAGER_WASM.counts).length ? UNKNOWN_MANAGER_WASM : undefined,
         error_count: h.errors.length, recent_errors: h.errors.slice(-5),
     };
     try { await publishFile(`${OUT_DIR}/heartbeat.json`, hb, `tla-voting heartbeat ${h.status}`); }
@@ -1165,4 +1201,4 @@ if (require.main === module) {
     run().catch(err => { console.error('FATAL:', err.message); process.exit(1); });
 }
 
-module.exports = { run, T, WATCH_SET, classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, extractLockTokenId, extractContractBribes, extractTrackBribeCallbacks, parseDenomAmount, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey, txHashOf, touchesWatched, contractsTouched, walkBlocks, fetchDecodedTx, publishFile, apiGetJson };
+module.exports = { run, T, WATCH_SET, UNKNOWN_MANAGER_WASM, censusManagerWasm, classifyGaugeTxs, classifyEscrowTxs, classifyIncentiveTxs, extractLockTokenId, extractContractBribes, extractTrackBribeCallbacks, parseDenomAmount, rewardEventFromMsg, bribeEventFrom, mergeEvents, buildRollups, extractVotes, normalizeAssetId, makeEpochResolver, isCanonicalLock, parseCoinString, coinsReceivedBy, coinsMovedInTx, eventKey, txHashOf, touchesWatched, contractsTouched, walkBlocks, fetchDecodedTx, publishFile, apiGetJson };
