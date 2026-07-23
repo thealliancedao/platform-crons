@@ -190,7 +190,8 @@ async function G() {
   const foreign = { txhash: 'X', height: 1, timestamp: '2026-01-01T00:00:00Z', code: 0,
     events: [{ type: 'wasm', attributes: [{ key: '_contract_address', value: 'terra1someotherprotocolxxxxxxxxxxxxxxxxxxxxxxx' }, { key: 'action', value: 'claim_rewards' }, { key: 'user', value: 'terra1abc' }] }] };
   check('foreign claim does NOT classify (gate)', !cron.touchesWatched(foreign.events));
-  check('…though classifier alone WOULD have (proving the gate is needed)', cron.classifyFlowTx(foreign) !== null);
+  // v2 tightened claim detection to WATCHED contracts — assert defense in depth
+  check('classifier v2 ALSO rejects foreign claims (defense in depth)', cron.classifyFlowTx(foreign) === null);
 }
 async function N() {
   console.log('— N: noise & call-efficiency —');
