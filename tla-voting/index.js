@@ -1180,7 +1180,7 @@ async function run() {
     // 11b. bribe runway — forward pot probe (SPEC-bribe-runway v1)
     try {
         const { forwardBribeRunway } = require('./lib/bribe-runway.js');
-        const rw = await forwardBribeRunway({ publishFile, log: console });
+        const rw = await forwardBribeRunway({ publishFile, readBribeEvents, apiGetJson, log: console });
         console.log(`  bribe-runway: p${rw.head} → probed p${rw.probed_through} · ${rw.pool_count} funded pools · ${rw.expiring} expiring this epoch`);
     } catch (re) { addErr('bribe-runway', re); console.warn(`  ⚠ bribe-runway step failed (event streams unaffected): ${re.message}`); }
 
