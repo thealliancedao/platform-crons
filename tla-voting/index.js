@@ -1162,17 +1162,19 @@ async function run() {
     // tribute completeness layer. Budgeted walk-down genesis capture + per-period
     // forward harvest + bribe_capture coverage. Failures abort this step only.
     let bs = null;
+    // hoisted: shared by bribe-state AND bribe-runway (v1.1 funders overlay) —
+    // was a try-local, which broke the runway call with "not defined" (2026-07-30)
+    const readBribeEvents = async () => {
+        const all = [];
+        const mp = index.streams?.bribes?.months_present || {};
+        for (const yyyy of Object.keys(mp).sort()) for (const mm of mp[yyyy]) {
+            const r = await apiGetJson(`${OUT_DIR}/bribes/${yyyy}/${mm}.json`);
+            if (!r.ok) throw new Error(`bribe month read failed: ${yyyy}/${mm}`);
+            if (Array.isArray(r.data)) all.push(...r.data);
+        }
+        return all;
+    };
     try {
-        const readBribeEvents = async () => {
-            const all = [];
-            const mp = index.streams?.bribes?.months_present || {};
-            for (const yyyy of Object.keys(mp).sort()) for (const mm of mp[yyyy]) {
-                const r = await apiGetJson(`${OUT_DIR}/bribes/${yyyy}/${mm}.json`);
-                if (!r.ok) throw new Error(`bribe month read failed: ${yyyy}/${mm}`);
-                if (Array.isArray(r.data)) all.push(...r.data);
-            }
-            return all;
-        };
         bs = await forwardBribeState({ publishFile, apiGetJson, readBribeEvents, log: console });
         console.log(`  bribe-state: ${bs.skipped ? `skipped (${bs.reason})` : `+${bs.added} (fwd ${bs.forward_appended} / walk ${bs.walk_appended}) — walked to ${bs.walked_down_to ?? '—'}${bs.floor_period != null ? `, FLOOR ${bs.floor_period}` : ''}`}`);
     } catch (be) { addErr('bribe-state', be); console.warn(`  ⚠ bribe-state step failed (event streams unaffected): ${be.message}`); }
