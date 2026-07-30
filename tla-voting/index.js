@@ -1177,6 +1177,13 @@ async function run() {
         console.log(`  bribe-state: ${bs.skipped ? `skipped (${bs.reason})` : `+${bs.added} (fwd ${bs.forward_appended} / walk ${bs.walk_appended}) — walked to ${bs.walked_down_to ?? '—'}${bs.floor_period != null ? `, FLOOR ${bs.floor_period}` : ''}`}`);
     } catch (be) { addErr('bribe-state', be); console.warn(`  ⚠ bribe-state step failed (event streams unaffected): ${be.message}`); }
 
+    // 11b. bribe runway — forward pot probe (SPEC-bribe-runway v1)
+    try {
+        const { forwardBribeRunway } = require('./lib/bribe-runway.js');
+        const rw = await forwardBribeRunway({ publishFile, log: console });
+        console.log(`  bribe-runway: p${rw.head} → probed p${rw.probed_through} · ${rw.pool_count} funded pools · ${rw.expiring} expiring this epoch`);
+    } catch (re) { addErr('bribe-runway', re); console.warn(`  ⚠ bribe-runway step failed (event streams unaffected): ${re.message}`); }
+
     // 12. heartbeat
     const status = (allComplete && !errors.length) ? 'ok' : (allComplete ? 'partial' : 'partial');
     const horizons = {};
