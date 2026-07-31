@@ -91,7 +91,7 @@ function realGithubApiRequest(method, apiPath, body, accept) {
         req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end();
     });
 }
-const T = { lcdGet: realLcdGet, queryContract: realQueryContract, githubApiRequest: realGithubApiRequest, now: () => new Date() };
+const T = { lcdGet: realLcdGet, queryContract: realQueryContract, githubApiRequest: realGithubApiRequest, now: () => new Date(), fetch: (...a) => fetch(...a) };
 
 async function apiGetJson(repoPath) {
     try {
@@ -427,6 +427,87 @@ async function runBranchB(now, vaults, errors) {
 // =============================================================================
 // MAIN
 // =============================================================================
+// ---- Branch C — Votion optimizer capture (Camron 2026-07-31) ---------------
+// First-party Votion API: per-vault PLANNED reallocation for the next epoch
+// (current% \u2192 optimized% per gauge, isWorthChanging, voteBefore deadline).
+// Complements the on-chain vote-shift signal: this is INTENTION (published by
+// Votion, not yet cast); the chain shows commitment. Captured verbatim.
+// Slugs are explicit config: CONFIRMED are captured; PROBE candidates are
+// tried and reported found/absent in the heartbeat \u2014 never guessed into data.
+const VOTION_OPT_BASE = 'https://backend.erisprotocol.com/votion/liquidity-alliance';
+const VOTION_OPT_SLUGS = (process.env.VOTION_OPT_SLUGS || 'ampluna-max').split(',').map(x => x.trim()).filter(Boolean);
+const VOTION_OPT_PROBES = (process.env.VOTION_OPT_PROBES || 'arbluna-max,ampluna,arbluna,moar-max,solid-max,ampcapa-max').split(',').map(x => x.trim()).filter(Boolean);
+async function fetchOptimization(slug) {
+    const r = await T.fetch(`${VOTION_OPT_BASE}/${slug}/optimization`, { headers: { accept: 'application/json' } });
+    if (r.status === 404) return { slug, found: false };
+    if (!r.ok) throw new Error(`optimization ${slug}: HTTP ${r.status}`);
+    return { slug, found: true, data: await r.json() };
+}
+async function runBranchC(now, errors) {
+    const vaults = {}; const probes = {};
+    for (const slug of VOTION_OPT_SLUGS) {
+        try { const r = await fetchOptimization(slug); if (r.found) vaults[slug] = r.data; else { probes[slug] = 'absent'; errors.push({ where: `opt:${slug}`, error: 'configured slug returned 404' }); } }
+        catch (e) { errors.push({ where: `opt:${slug}`, error: e.message }); }
+    }
+    for (const slug of VOTION_OPT_PROBES) {
+        try { const r = await fetchOptimization(slug); probes[slug] = r.found ? 'FOUND \u2014 promote to VOTION_OPT_SLUGS' : 'absent'; if (r.found) vaults[slug] = r.data; }
+        catch (e) { probes[slug] = `error: ${e.message}`; }
+    }
+    // ---- cross-vault AGGREGATE (the "one place" view Votion doesn't show) ---
+    // Per gauge per pool: sum each vault's current VP and its PLANNED VP,
+    // where planned = newVoted only if that vault's gauge isWorthChanging
+    // (Votion skips low-gain re-votes \u2014 visible as "skipped" in their UI);
+    // otherwise planned = current. Delta = the net Votion move already
+    // scheduled before voteBefore. Pool titles from the payload's own meta.
+    function buildAggregate(vaultDocs) {
+        const gauges = {};
+        for (const [slug, doc] of Object.entries(vaultDocs)) {
+            for (const opt of doc.optimizations || []) {
+                const g = gauges[opt.id] || (gauges[opt.id] = { pools: {}, vaults_moving: [], vaults_keeping: [] });
+                const vp = Number(opt.votingPower || 0);
+                const moving = !!(opt.diff && opt.diff.isWorthChanging);
+                (moving ? g.vaults_moving : g.vaults_keeping).push(slug);
+                const titles = {};
+                for (const v of (opt.meta && opt.meta.votes) || []) titles[v.id] = v.title || null;
+                for (const o of opt.votingOptions || []) if (!(o.id in titles)) titles[o.id] = o.title || null;
+                const cur = opt.activeVoted || {};
+                const nw = moving ? (opt.newVoted || cur) : cur;
+                const ids = new Set([...Object.keys(cur), ...Object.keys(nw)]);
+                for (const id of ids) {
+                    const p = g.pools[id] || (g.pools[id] = { title: titles[id] || null, current_vp: 0, planned_vp: 0 });
+                    if (!p.title && titles[id]) p.title = titles[id];
+                    p.current_vp += (Number(cur[id] || 0) / 100) * vp;
+                    p.planned_vp += (Number(nw[id] || 0) / 100) * vp;
+                }
+            }
+        }
+        for (const g of Object.values(gauges)) {
+            for (const p of Object.values(g.pools)) {
+                p.current_vp = Math.round(p.current_vp); p.planned_vp = Math.round(p.planned_vp);
+                p.delta_vp = p.planned_vp - p.current_vp;
+                p.delta_pct = p.current_vp > 0 ? +(100 * p.delta_vp / p.current_vp).toFixed(2) : (p.planned_vp > 0 ? null : 0);
+                p.note = p.current_vp === 0 && p.planned_vp > 0 ? 'NEW \u2014 Votion plans to enter this pool' : (p.planned_vp === 0 && p.current_vp > 0 ? 'EXIT \u2014 Votion plans to leave this pool' : undefined);
+            }
+        }
+        return gauges;
+    }
+
+    const slugsOk = Object.keys(vaults);
+    if (!slugsOk.length) return { status: 'error', slugs: [], probes };
+    const anyV = vaults[slugsOk[0]];
+    const doc = {
+        schemaVersion: 1, product: 'votion/optimization', capturedAt: now.toISOString(),
+        source: VOTION_OPT_BASE + '/{slug}/optimization (first-party Votion API \u2014 verbatim capture)',
+        semantics: 'PLANNED next-epoch reallocation per vault per gauge \u2014 Votion\u2019s published intention, not yet cast on chain; firms up as voteBefore approaches. The on-chain vote-shift (vote-state vs last payout) is the committed counterpart.',
+        period: anyV.period ?? null, voteBefore: anyV.voteBefore ?? null, calculated: anyV.calculated ?? null,
+        aggregate: buildAggregate(vaults),
+        aggregate_semantics: 'per gauge per pool, summed across captured vaults: current VP vs the VP Votion has ALREADY DECIDED to place (skipped gauges keep current \u2014 matching the \u201cnot worth changing\u201d rows in Votion\u2019s UI). Coverage = the vault slugs captured this run; add slugs to complete it.',
+        vaults, probe_results: probes,
+    };
+    await publishFile('votion/optimization/current.json', doc, `votion: optimization p${doc.period} (${slugsOk.length} vault${slugsOk.length === 1 ? '' : 's'})`);
+    return { status: 'ok', slugs: slugsOk, probes };
+}
+
 async function run() {
     const now = T.now();
     const errors = [];
@@ -451,15 +532,20 @@ async function run() {
         console.log(`  B: skipped (positions ${ageH.toFixed(1)}h old < ${POSITIONS_MAX_AGE_H}h)`);
     }
 
+    // Branch C — optimizer capture (every run: it changes intra-epoch)
+    let optC = { status: 'skipped', slugs: [], probes: {} };
+    try { optC = await runBranchC(now, errors); console.log(`  C: optimization ${optC.status} — vaults [${optC.slugs.join(', ')}]`); }
+    catch (e) { errors.push({ where: 'optimization', error: e.message }); console.warn(`  C: optimization failed: ${e.message}`); }
+
     const status = vaults.length === 0 ? 'error' : (errors.length ? 'partial' : 'ok');
     await publishFile('votion/heartbeat.json', {
         version: VERSION, capturedAt: now.toISOString(), status,
         vaults_at: now.toISOString(), positions_at: positionsAt, positions_status: positionsStatus,
-        vault_count: vaults.length, _errors: errors.length ? errors : null,
+        vault_count: vaults.length, optimization_status: optC.status, optimization_vaults: optC.slugs, optimization_probes: optC.probes, _errors: errors.length ? errors : null,
     }, `votion heartbeat ${status}`);
     console.log(`  done: ${status}${errors.length ? ` (${errors.length} recorded errors)` : ''}`);
     return { status, vaults, errors };
 }
 
-module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, runBranchA, runBranchB, SEED_VAULTS };
+module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, runBranchA, runBranchB, SEED_VAULTS, runBranchC };
 if (require.main === module) run().then(r => process.exit(r.status === 'error' ? 1 : 0)).catch(e => { console.error('FATAL:', e.message); process.exit(1); });
