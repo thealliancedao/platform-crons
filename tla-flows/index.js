@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-2.1.1';   // Rev C.1.1: raw-media reads (>1MB files)
+const VERSION          = 'org-tla-flows-3.0.0';   // v3 classifier: multi-flow + both-sides liquidity + amp rate fields (SPEC-registry-extensions-pnl)
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -185,31 +185,36 @@ async function walkBlocks(from, to, budgetNote) {
 }
 
 // =============================================================================
-// SHARED CLASSIFIER — this section must stay BYTE-IDENTICAL with the copies in
-// tla-core/.github/scripts/tla-flows/ (flows-fill + retained-gap-fill derives).
-// Any drift must show in a plain diff. Marker: <<FLOWS CLASSIFIER v2>>
+// SHARED CLASSIFIER — Marker: <<FLOWS CLASSIFIER v3>>
+// v3 (2026-07-31, SPEC-registry-extensions-pnl — evidenced by DeFi_Patriot's
+// 8-tx live test matrix, blocks 22,163,785–896, all shapes chainscope-read):
+// additive on v2 — every v2 top-level field is emitted UNCHANGED (primary-flow
+// selection keeps v2's exact first-match semantics, so the schema-upgrade
+// merge replaces v2 records with byte-identical v2 fields + the new ones).
+//   • MULTI-FLOW TXS (test tx DCA53591…: non-amp unstake + amp re-stake in ONE
+//     tx — v2's one-flow-per-tx dropped the re-stake, silently corrupting
+//     position tracking): `flows[]` now carries EVERY stake/unstake flow in
+//     event order. Record identity unchanged (one record per tx, txhash key).
+//   • AMP RATE FIELDS (test A38C20B3…): asset-compounding/stake carries
+//     bond_amount + bond_share + bond_share_adjusted → recorded per flow; the
+//     LP↔amplp rate (bond_amount/bond_share) is the measured compounding-yield
+//     curve — no pro-rating ever. Unstake has no rate attrs; amplp burned is
+//     recovered from the tf_burn event (F051E83A…) → rate = returned/burned.
+//   • PROVIDE / WITHDRAW BOTH-SIDES TRUTH (82FBE584…, 29537FA7…): pair
+//     provide_liquidity {assets×2, share} and withdraw_liquidity
+//     {refund_assets×2, withdrawn_share} in the SAME tx are recorded as
+//     `provides[]` / `withdraw_liqs[]` — zap post-value + exit valuation with
+//     zero pair-walk dependency.
+//   • Repeated-attr events handled (zapper callback_send_results carries TWO
+//     `returned` attrs — 29537FA7…): v3 fields parse ALL occurrences; v2's
+//     first-occurrence flowsAttrs stays untouched for v2 semantics.
+// The legacy classifier copies in tla-core/.github/scripts/tla-flows/
+// (flows-fill, retained-gap-fill) are FROZEN at v2 — executed one-shots; any
+// future re-run must require() this live module (no-third-copy doctrine).
 // =============================================================================
-// v2 (2026-07-23, SPEC-portfolio-pnl Phase B / SPEC-capture-registry-backfill):
-// additive on the Rev A.3 v1 parser — every v1 field is emitted unchanged.
-// New, all evidenced by the 55,199-tx FCD fixture census (attrs present on
-// 100% of their action class — nothing inferred):
-//   • pool identity: `pool` + `gauge` on deposits/withdraws — amp stake carries
-//     `asset`+`gauge`; bucket stake/unstake carry `asset` (gauge from the
-//     bucket contract); amp unstake carries it inside `returned` (v1 threw the
-//     prefix away). Missing → null, never guessed.
-//   • claims measured: `asset/claim_rewards` emits ONE event PER pool with
-//     `user`+`assets`+`reward_amount` → per-pool `claims` array; compounder
-//     vault cycles emit `ca/claim_rewards_callback` with `claimed` as
-//     denom:amount → `claimed_coins`, mechanism 'amplified_vault', user null
-//     BY MEANING (the vault claims for everyone; not a wallet flow).
-//   • claim detection tightened to watched shapes — v1's loose /claim/i also
-//     matched foreign airdrop/vesting `claim` events with no user attr (the
-//     1,532 null-user claims in the Phase-A rollup). Foreign claims no longer
-//     classify; a legacy /claim/i fallback remains for WATCHED contracts only.
-// `amount` stays null + `amount_unit` 'rewards' on claims (v1 consumer compat);
-// analysis reads `claims`/`claimed_coins`.
 
 function flowsAttrs(ev) { const o = {}; for (const a of (ev.attributes || [])) if (!(a.key in o)) o[a.key] = a.value; return o; }
+function flowsAttrsAll(ev) { const o = {}; for (const a of (ev.attributes || [])) (o[a.key] ||= []).push(a.value); return o; }
 function flowsEventsOf(txr) {
   if (Array.isArray(txr.events) && txr.events.length) return txr.events;
   const out = []; for (const log of (txr.logs || [])) for (const e of (log.events || [])) out.push(e); return out;
@@ -223,19 +228,37 @@ function flowsParseReturned(returned) {
   if (i <= 0) return { pool: null, amount: s || null };
   return { pool: s.slice(0, i) || null, amount: s.slice(i + 1) || null };
 }
+// '5097943terra10aa3zd…, 124842627uluna' → [{amount,denom}, …] (pair-event coin lists)
+function flowsParseCoinList(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(Boolean).map(x => {
+    const m = /^(\d+)(.+)$/.exec(x);
+    return m ? { amount: m[1], denom: m[2] } : { amount: null, denom: x };
+  });
+}
+
 function classifyFlowTx(txr) {
   if (Number(txr.code || 0) !== 0) return null;
-  const wasmRaw = flowsEventsOf(txr).filter(e => e.type === 'wasm');
+  const allEvents = flowsEventsOf(txr);
+  const wasmRaw = allEvents.filter(e => e.type === 'wasm');
   const wasm = wasmRaw.map(flowsAttrs);
-  let flow = null;
+  // v3: collect EVERY stake/unstake flow in event order (v2 kept only the first)
+  const flowList = [];
   for (const w of wasm) {
     const act = w.action;
-    if (act === 'asset-compounding/stake')        flow = { type: 'deposit',  mechanism: 'amplified',     user: w.user, amount: w.bond_share_adjusted || w.bond_share, unit: 'amplp', pool: w.asset || null, gauge: w.gauge || null };
-    else if (act === 'asset-compounding/unstake') { const r = flowsParseReturned(w.returned); flow = { type: 'withdraw', mechanism: 'amplified', user: w.user, amount: r.amount, unit: 'lp', pool: r.pool, gauge: null }; }
-    else if (act === 'asset/stake')               flow = { type: 'deposit',  mechanism: 'non_amplified', user: w.user, amount: w.share, unit: 'shares', pool: w.asset || null, gauge: flowsGaugeOf(WATCH[w._contract_address]) };
-    else if (act === 'asset/unstake')             flow = { type: 'withdraw', mechanism: 'non_amplified', user: w.user, amount: w.share, unit: 'shares', pool: w.asset || null, gauge: flowsGaugeOf(WATCH[w._contract_address]) };
-    if (flow) break;
+    let f = null;
+    if (act === 'asset-compounding/stake')        f = { type: 'deposit',  mechanism: 'amplified',     user: w.user, amount: w.bond_share_adjusted || w.bond_share, unit: 'amplp', pool: w.asset || null, gauge: w.gauge || null,
+                                                        bond_amount: w.bond_amount || null, bond_share: w.bond_share || null, bond_share_adjusted: w.bond_share_adjusted || null };
+    else if (act === 'asset-compounding/unstake') { const r = flowsParseReturned(w.returned); f = { type: 'withdraw', mechanism: 'amplified', user: w.user, amount: r.amount, unit: 'lp', pool: r.pool, gauge: null, amplp_burned: null }; }
+    else if (act === 'asset/stake')               f = { type: 'deposit',  mechanism: 'non_amplified', user: w.user, amount: w.share, unit: 'shares', pool: w.asset || null, gauge: flowsGaugeOf(WATCH[w._contract_address]) };
+    else if (act === 'asset/unstake')             f = { type: 'withdraw', mechanism: 'non_amplified', user: w.user, amount: w.share, unit: 'shares', pool: w.asset || null, gauge: flowsGaugeOf(WATCH[w._contract_address]) };
+    if (f) flowList.push(f);
   }
+  // amp unstake rate leg: pair tf_burn amplp amounts to amplified withdraws in order
+  const burns = allEvents.filter(e => e.type === 'tf_burn').map(flowsAttrs)
+    .map(a => /^(\d+)(factory\/.+)$/.exec(String(a.amount || ''))).filter(Boolean);
+  let bi = 0;
+  for (const f of flowList) if (f.mechanism === 'amplified' && f.type === 'withdraw' && bi < burns.length) f.amplp_burned = burns[bi++][1];
+  let flow = flowList[0] || null;   // primary = v2's exact first-match
   let claims = null, claimedCoins = null;
   if (!flow) {
     // measured wallet claims: one asset/claim_rewards event per pool, on a
@@ -263,15 +286,33 @@ function classifyFlowTx(txr) {
     if (c) flow = { type: 'claim', mechanism: null, user: c.user || c.sender || null, amount: null, unit: 'rewards', pool: null, gauge: null };
   }
   if (!flow) return null;
-  const viaZap = wasm.some(w => w.action === 'zapper/create_lp' || w.action === 'zapper/withdraw_lp');
+  const viaZap = wasm.some(w => w.action === 'zapper/create_lp' || w.action === 'zapper/withdraw_lp' || w.action === 'zapper/zap');
   const cost = flowsExtractCost(wasm);
-  const rec = { schemaVersion: 2, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
+  // v3: both-sides liquidity truth from pair events riding the same tx
+  const provides = wasmRaw.filter(e => flowsAttrs(e).action === 'provide_liquidity')
+    .map(e => { const a = flowsAttrs(e); return { pair: a._contract_address || null, assets: flowsParseCoinList(a.assets), share: a.share || null }; });
+  const withdrawLiqs = wasmRaw.filter(e => flowsAttrs(e).action === 'withdraw_liquidity')
+    .map(e => { const a = flowsAttrs(e); return { pair: a._contract_address || null, refund_assets: flowsParseCoinList(a.refund_assets), share: a.withdrawn_share || null }; });
+  // v3: final zapper exit assets (callback_send_result(s) — may repeat `returned`)
+  const sendResults = [];
+  for (const e of wasmRaw) {
+    const all = flowsAttrsAll(e);
+    const act = (all.action || [])[0];
+    if (act === 'zapper/callback_send_results' || act === 'zapper/callback_send_result') {
+      for (const r of (all.returned || all.amount || [])) { const p = flowsParseReturned(r); if (p.amount) sendResults.push({ denom: p.pool, amount: p.amount }); }
+    }
+  }
+  const rec = { schemaVersion: 3, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
            type: flow.type, mechanism: flow.mechanism, via_zap: viaZap, user: flow.user || null,
            amount: flow.amount || null, amount_unit: flow.unit, cost,
            pool: flow.pool || null, gauge: flow.gauge || null,
            raw_actions: [...new Set(wasm.map(w => w.action).filter(Boolean))] };
   if (claims) rec.claims = claims;
   if (claimedCoins) rec.claimed_coins = claimedCoins;
+  if (flowList.length) rec.flows = flowList;
+  if (provides.length) rec.provides = provides;
+  if (withdrawLiqs.length) rec.withdraw_liqs = withdrawLiqs;
+  if (sendResults.length) rec.zap_out_assets = sendResults;
   return rec;
 }
 // Entry/exit cost: collect EVERY swap leg (a non-LUNA exit is multi-hop) plus
@@ -291,7 +332,8 @@ function flowsExtractCost(wasm) {
   if (!swaps.length && provide_slippage_pct == null) return null;
   return { swaps, provide_slippage_pct };
 }
-// ============================================================== <<FLOWS CLASSIFIER v2>> END
+// ============================================================== <<FLOWS CLASSIFIER v3>> END
+
 
 // ----------------------------------------------------------------------------- GitHub publish (org standard + 409-retry from the proven harvester)
 async function publishFile(filePath, contentObj, message) {
@@ -500,4 +542,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
-module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsEventsOf, mergeMonth, monthKey, publishFile, T, WATCH, txHashOf, touchesWatched };
+module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, monthKey, publishFile, T, WATCH, txHashOf, touchesWatched };
