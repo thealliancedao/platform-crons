@@ -947,7 +947,12 @@ async function appendToPriceHistory(catalog, dayStr) {
     const PRICE_SRCS = ['tla', 'astroport', 'coingecko', 'skeletonswap'];
     const row = {};
     for (const t of (catalog.tokens || [])) {
-      const sym = t.discovered && t.discovered.symbol;
+      // Effective-first symbol, matching the platform convention (rollups'
+      // buildTokenMap): the curated override layer names tokens discovery
+      // can't (FUEL, ATOM, stLUNA, the wBTC variants — 20 priced tokens were
+      // being silently dropped from the daily append, so bribes in those
+      // tokens went forward-unpriced). Discovered stays the fallback.
+      const sym = (t.effective && t.effective.symbol) || (t.discovered && t.discovered.symbol);
       if (!sym) continue; // only named tokens
       const p = t.prices || {};
       const sources = {};
