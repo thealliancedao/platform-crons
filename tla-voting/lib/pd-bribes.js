@@ -54,12 +54,12 @@ const PD_CORE = 'terra1k8ug6dkzntczfzn76wsh24tdjmx944yj6mk063wum7n20cwd7lxq4lppj
 const PD_PROP_MODULE = 'terra1660g9mle5kfsq8c0p4k4hgr9ujdyr3m48c22cawy0akr98rmwksqehqnup';
 const INCENTIVE_MANAGER = 'terra1tuuwm8yrj54qeg0c8xu00aha9ryatyhtczq8qq2q8tntuw0auzas9037wh';
 const FEE_LUNA_RAW = 10000000; // 10 LUNA add_bribe fee, forwarded to PD core (fee income, never a bribe)
-const VERSION = 'pd-bribes-1.0.0';
+const VERSION = 'pd-bribes-1.1.0';
 
 function poolIdFrom(ab) {
     // add_bribe payload pool identity — defensive across the shapes the
     // manager accepts. Returns canonical 'cw20:addr' | 'native:denom' | null.
-    const cand = ab.lp_token ?? ab.lp ?? ab.pool ?? ab.asset ?? ab.lp_asset ?? null;
+    const cand = ab.for_info ?? ab.lp_token ?? ab.lp ?? ab.pool ?? ab.asset ?? ab.lp_asset ?? null;   // ve3 AddBribe: for_info = the LP's AssetInfo (live-verified 2026-08-02)
     if (cand == null) return null;
     if (typeof cand === 'string') {
         if (cand.startsWith('cw20:') || cand.startsWith('native:')) return cand;
@@ -85,33 +85,54 @@ function decodeProposalLegs(prop, flags) {
         catch (e) { flags.push({ where: 'msg_decode', error: e.message }); continue; }
         const ab = payload && payload.add_bribe;
         if (!ab) continue; // other manager calls in a PD prop are not bribes
-        const start = Number(ab.start ?? ab.epoch_start);
-        const end = Number(ab.end ?? ab.epoch_end ?? start);
+        // `distribution` is an opaque ve3 enum — spans are AUTHORITATIVELY taken
+        // from the matched chain events (which echo start/end exactly); the
+        // deep scan below is best-effort metadata only, never used for matching.
+        const deepNum = (o, key) => {
+            if (o == null || typeof o !== 'object') return null;
+            if (o[key] != null && !isNaN(Number(o[key]))) return Number(o[key]);
+            for (const v of Object.values(o)) { const r = deepNum(v, key); if (r != null) return r; }
+            return null;
+        };
+        const start = deepNum(ab.distribution ?? ab, 'start');
+        const end = deepNum(ab.distribution ?? ab, 'end') ?? start;
         const pool = poolIdFrom(ab);
         if (pool == null) flags.push({ where: 'pool_identity', error: 'add_bribe payload carried no recognizable pool key', keys: Object.keys(ab) });
-        // funds → bribe coin + fee. Fee is 10 LUNA always; same-denom (uluna)
-        // bribes arrive as ONE merged uluna coin (gross = net + fee).
+        // ve3 AddBribe carries the bribe as an Asset {info, amount} — the exact
+        // NET the manager's event echoes as `added`. Funds (net + the 10-LUNA
+        // fee, merged when same-denom) are kept as a CONSISTENCY CHECK, and as
+        // fallback for any legacy shape without `bribe`.
         const funds = ex.funds || [];
         let denomKey = null, netRaw = null, feeLuna = 0;
-        const uluna = funds.find(c => c.denom === 'uluna');
-        const other = funds.find(c => c.denom !== 'uluna');
-        if (other) {
-            denomKey = 'native:' + other.denom;
-            netRaw = Number(other.amount);
-            feeLuna = uluna ? Number(uluna.amount) : 0;
-        } else if (uluna) {
-            denomKey = 'native:uluna';
-            netRaw = Number(uluna.amount) - FEE_LUNA_RAW;
+        const ba = ab.bribe;
+        if (ba && ba.info && ba.amount != null) {
+            if (ba.info.native_token && ba.info.native_token.denom) denomKey = 'native:' + ba.info.native_token.denom;
+            else if (ba.info.token && ba.info.token.contract_addr) denomKey = 'cw20:' + ba.info.token.contract_addr;
+            netRaw = Number(ba.amount);
+            const fu = funds.find(c => 'native:' + c.denom === denomKey);
+            const uf = funds.find(c => c.denom === 'uluna');
             feeLuna = FEE_LUNA_RAW;
+            if (denomKey === 'native:uluna') {
+                if (fu && Number(fu.amount) !== netRaw + FEE_LUNA_RAW) flags.push({ where: 'funds_consistency', error: `uluna funds ${fu.amount} != bribe ${netRaw} + fee`, });
+            } else if (fu && Number(fu.amount) !== netRaw) {
+                flags.push({ where: 'funds_consistency', error: `${denomKey} funds ${fu.amount} != bribe ${netRaw}` });
+            } else if (!fu && denomKey && denomKey.startsWith('cw20:')) {
+                flags.push({ where: 'funds', error: 'cw20 bribe asset — transfer path not decoded in v1, amounts from msg only', pool });
+            }
+            if (uf == null && denomKey !== 'native:uluna') feeLuna = 0;
         } else {
-            flags.push({ where: 'funds', error: 'add_bribe msg with no funds (cw20 send-hook path?) — leg recorded unpriceable', pool });
+            const uluna = funds.find(c => c.denom === 'uluna');
+            const other = funds.find(c => c.denom !== 'uluna');
+            if (other) { denomKey = 'native:' + other.denom; netRaw = Number(other.amount); feeLuna = uluna ? Number(uluna.amount) : 0; }
+            else if (uluna) { denomKey = 'native:uluna'; netRaw = Number(uluna.amount) - FEE_LUNA_RAW; feeLuna = FEE_LUNA_RAW; }
+            else flags.push({ where: 'funds', error: 'add_bribe msg with no bribe asset and no funds', pool });
         }
         legs.push({ pool_gauge_id: pool, gauge: ab.gauge || null, denom: denomKey, net_raw: netRaw, fee_luna_raw: feeLuna, start, end, dist_func: ab.func ?? ab.dist_func ?? null });
     }
     return legs;
 }
 
-const legKey = (l) => `${l.denom}|${l.net_raw}|${l.start}|${l.end}`;
+const legKey = (l) => `${l.denom}|${l.net_raw}`;   // spans intentionally excluded: msg-side spans are opaque; events supply them post-match
 const multisetKey = (legs) => legs.map(legKey).sort().join('~');
 
 async function listAllProposals(queryContract, flags) {
@@ -172,9 +193,27 @@ function buildProduct(proposals, pdEvents, now, flags) {
         const k = multisetKey(p.legs);
         const pool = execByMs.get(k);
         const exec = pool && pool.length ? pool.shift() : null;
+        // span enrichment: chain events are the span authority. Pair proposal
+        // legs to event legs by (denom|net); equal-key queues pair in order
+        // (identical amounts have identical spans in practice — mismatches flag).
+        let spanQueues = null;
+        if (exec) {
+            spanQueues = new Map();
+            for (const el of exec.legs) {
+                const k = `${el.denom}|${el.net_raw}`;
+                (spanQueues.get(k) || spanQueues.set(k, []).get(k)).push(el);
+            }
+        }
         const legs = p.legs.map(l => {
-            const epochs = (l.end - l.start + 1) || 1;
-            return { ...l, net_display: l.net_raw != null ? l.net_raw / 1e6 : null, epochs, per_epoch_display: l.net_raw != null ? Math.round(l.net_raw / epochs) / 1e6 : null };
+            let start = l.start, end = l.end, span_source = 'msg_scan';
+            if (spanQueues) {
+                const q = spanQueues.get(`${l.denom}|${l.net_raw}`);
+                const el = q && q.shift();
+                if (el && el.start != null) { start = el.start; end = el.end ?? el.start; span_source = 'chain_event'; }
+            }
+            if (start == null) { flags.push({ where: `proposal ${p.id}`, error: 'leg has no span from events or msg — per-epoch spread impossible for this leg', pool: l.pool_gauge_id }); }
+            const epochs = start != null ? ((end - start + 1) || 1) : 1;
+            return { ...l, start, end, span_source, net_display: l.net_raw != null ? l.net_raw / 1e6 : null, epochs, per_epoch_display: l.net_raw != null && start != null ? Math.round(l.net_raw / epochs) / 1e6 : null };
         });
         const rec = {
             proposal_id: p.id, title: p.prop.title || null,
@@ -192,7 +231,7 @@ function buildProduct(proposals, pdEvents, now, flags) {
     // rollups: by_epoch spread + by_pool lifetime (verified placements only)
     const by_epoch = {}, by_pool = {};
     for (const pl of placements) for (const l of pl.legs) {
-        if (l.pool_gauge_id == null || l.net_raw == null) continue;
+        if (l.pool_gauge_id == null || l.net_raw == null || l.start == null) continue;
         for (let e = l.start; e <= l.end; e++) {
             const slot = (by_epoch[e] ||= { pools: {}, total_display_by_denom: {} });
             const ps = (slot.pools[l.pool_gauge_id] ||= { gauge: l.gauge, by_denom: {} });
