@@ -73,13 +73,14 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.3.1';        // 2.3.1 (v6.1): governance-bribe capture — collision-aware msg_index (N add_bribe under one msg no longer collapse; PD fixture 402AE7B1) + dao_attr attribution (single dao attr → DAO core is briber, dynamic; else msg_target) — on 2.3.0 (rollups schema — bribe_ledger) on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
+const VERSION = 'org-tla-voting-2.4.0';        // 2.3.1 (v6.1): governance-bribe capture — collision-aware msg_index (N add_bribe under one msg no longer collapse; PD fixture 402AE7B1) + dao_attr attribution (single dao attr → DAO core is briber, dynamic; else msg_target) — on 2.3.0 (rollups schema — bribe_ledger) on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
 const { forwardDistributions } = require('./lib/distributions.js');
 const { forwardVoteState } = require('./lib/vote-state.js');
 const { buildRollups4 } = require('./lib/rollups.js');
+const { buildPdBribes } = require('./lib/pd-bribes.js');
 const { forwardBribeState } = require('./lib/bribe-state.js');
 
 // ----------------------------------------------------------------------------- action maps
@@ -1156,6 +1157,16 @@ async function run() {
             ru = await buildRollups4({ apiGetJson, publishFile, epochOf, log: console });
             console.log(`  rollups: schema 6 rebuilt — ${ru.voters} voters, ${ru.bribers} bribers, period ${ru.built_on_period}`);
         } catch (re) { addErr('rollups', re); console.warn(`  ⚠ rollups step failed (streams/state unaffected): ${re.message}`); }
+
+        // 11b½. pd-bribes (SPEC-pd-directive-watch): governance-executed bribe
+        // attribution — PD's proposal-module STATE (permanent) decoded per
+        // executed proposal, cross-verified against the captured event stream,
+        // spread per-epoch from each leg's start/end. Same cadence as rollups
+        // (weekly harvest + FORCE_ROLLUPS on demand); isolated failures.
+        try {
+            const pb = await buildPdBribes({ apiGetJson, publishFile, log: console });
+            console.log(`  pd-bribes: ${pb.meta.verified_placements} verified placements, ${pb.totals.net_luna_display.toLocaleString()} LUNA net (${pb.meta.unmatched_proposals} unmatched props, ${pb.meta.unmatched_executions} unmatched execs)`);
+        } catch (pe) { addErr('pd-bribes', pe); console.warn(`  ⚠ pd-bribes step failed (rollups/streams unaffected): ${pe.message}`); }
     }
 
     // 11c. bribe-state harvest (SPEC-tla-voting-bribe-state §2 — build #3): the
