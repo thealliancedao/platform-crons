@@ -42,10 +42,11 @@ const COMPOUND_PERIODS = 365.25;            // their aprToApy periods
 const EPOCH_DAYS = 7;                       // rewardsPerEpoch = perYear/365×7 (plain 365, verbatim)
 
 // Injectable transport (mock gate stubs this; production default wired below).
-const CH = { queryContract: null, lcdJson: null };
+const CH = { queryContract: null, lcdJson: null, fetchJson: null };
 try {
   const F = require('./fetch');
   CH.queryContract = F.queryContract;
+  CH.fetchJson = async (url) => JSON.parse((await F.httpRequest(url, { timeoutMs: 15000 })).body);
   CH.lcdJson = async (path) => {
     let lastErr = null;
     for (const base of F.TERRA_LCD_ENDPOINTS) {
@@ -77,6 +78,31 @@ function assetKeyFromInfo(info) {
 function connectorAddrFromDenom(denom) {
   const parts = String(denom || '').split('/');
   if (parts[0] === 'factory' && parts.length >= 2 && /^terra1[a-z0-9]{20,}$/.test(parts[1])) return parts[1];
+  return null;
+}
+
+// token-catalog price fallback (1.3.1): the org price home backs up the
+// adapter-derived prices so ONE upstream DEX API outage (observed live
+// 2026-08-02: astroport tRPC 500s) can't null every USD leg. Priority per
+// PRICING-DOCTRINE order tla > coingecko > astroport > skeletonswap; every
+// fallback use is source-labeled — adapter prices stay primary when present.
+const TOKEN_CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
+async function fetchCatalog(T = CH) {
+  if (typeof T.fetchJson !== 'function') return null;
+  try { return await T.fetchJson(TOKEN_CATALOG_URL + '?t=' + Date.now()); }
+  catch (_) { return null; }
+}
+function catalogPrice(catalog, denomOrCw20) {
+  if (!catalog || !Array.isArray(catalog.tokens)) return null;
+  const t = catalog.tokens.find(x => x.denom === denomOrCw20);
+  const prices = t && t.prices;
+  if (!prices) return null;
+  for (const srcName of ['tla', 'coingecko', 'astroport', 'skeletonswap']) {
+    const p = prices[srcName];
+    if (p && p.status === 'ok' && p.usd != null && isFinite(Number(p.usd))) {
+      return { price_usd: Number(p.usd), decimals: t.decimals != null ? Number(t.decimals) : 6, source: `token-catalog/${srcName}` };
+    }
+  }
   return null;
 }
 
@@ -208,14 +234,20 @@ async function captureInputs(T = CH) {
 // assetPrices (optional) = { denomOrCw20 -> { price_usd, decimals } } for
 // single-asset gauge entries that never appear as an LP pair.
 // ---------------------------------------------------------------------------
-function composeErisApr(inputs, dexPools = [], assetPrices = {}) {
-  // LUNA price: from the adapters' own asset captures (median across pools).
+function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null) {
+  // LUNA price: adapters' own asset captures (median) PRIMARY; token-catalog
+  // fallback (labeled) when no adapter carried uluna this run.
   const lunaPrices = [];
   for (const p of dexPools) for (const a of (p.assets || [])) {
     if (a && a.denom === 'uluna' && a.price_usd != null && isFinite(a.price_usd)) lunaPrices.push(Number(a.price_usd));
   }
   lunaPrices.sort((x, y) => x - y);
-  const lunaUsd = lunaPrices.length ? lunaPrices[Math.floor(lunaPrices.length / 2)] : null;
+  let lunaUsd = lunaPrices.length ? lunaPrices[Math.floor(lunaPrices.length / 2)] : null;
+  let lunaSource = lunaUsd != null ? 'adapter uluna asset prices (median)' : null;
+  if (lunaUsd == null && catalog) {
+    const cp = catalogPrice(catalog, 'uluna');
+    if (cp) { lunaUsd = cp.price_usd; lunaSource = cp.source + ' (fallback)'; }
+  }
 
   // dex pool join index by gauge_pool_id
   const poolByKey = {};
@@ -248,11 +280,16 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}) {
         stakedBasis = 'staked_supply_ratio_x_pool_tvl';
       } else if (stakedRaw != null && !dexPool) {
         const ident = key.startsWith('cw20:') ? key.slice(5) : key.startsWith('native:') ? key.slice(7) : null;
-        const ap = ident != null ? assetPrices[ident] : null;
+        let ap = ident != null ? assetPrices[ident] : null;
+        let apSource = 'adapter';
+        if ((!ap || ap.price_usd == null) && ident != null && catalog) {
+          const cp = catalogPrice(catalog, ident);
+          if (cp) { ap = cp; apSource = cp.source + ' (fallback)'; }
+        }
         if (ap && ap.price_usd != null && isFinite(ap.price_usd)) {
           const dec = ap.decimals != null ? Number(ap.decimals) : 6;
           stakedUsd = (stakedRaw / Math.pow(10, dec)) * Number(ap.price_usd);
-          stakedBasis = 'staked_units_x_asset_price';
+          stakedBasis = apSource === 'adapter' ? 'staked_units_x_asset_price' : `staked_units_x_asset_price (${apSource})`;
         }
       }
       if (stakedUsd == null) {
@@ -319,7 +356,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}) {
       substitutions: 'trading_apr = dex-data fee_apr (their pool service not queryable); LUNA price + LP TVL from dex-data adapter captures.',
       validation: 'pending ground-truth reconciliation (SPEC-lp-apr §7 4-pool + CRON-FIXES-BRIEF §2.10 19-pool) — run at deploy before pages consume.',
       luna_price_used_usd: lunaUsd,
-      luna_price_source: lunaUsd != null ? 'adapter uluna asset prices (median)' : null,
+      luna_price_source: lunaSource,
       annual_provisions_luna: inputs.annual_provisions_luna ?? null,
       total_reward_weight: inputs.total_reward_weight ?? null,
       alliances_active_count: inputs.alliances_active_count ?? null,
@@ -336,7 +373,8 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}) {
 // Orchestrator entry: capture + compose in one call.
 async function runErisApr(dexPools, assetPrices, T = CH) {
   const inputs = await captureInputs(T);
-  return composeErisApr(inputs, dexPools, assetPrices || {});
+  const catalog = await fetchCatalog(T);
+  return composeErisApr(inputs, dexPools, assetPrices || {}, catalog);
 }
 
-module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, CH, ERIS_INCENTIVE_CUT };
+module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, CH, ERIS_INCENTIVE_CUT };
