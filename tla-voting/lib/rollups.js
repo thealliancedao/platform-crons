@@ -432,7 +432,8 @@ async function buildRollups4({ apiGetJson, publishFile, epochOf, log = console }
             if (!b.last_bribe || date > b.last_bribe) b.last_bribe = date;
         }
         const ek = String(epoch ?? 'unknown');
-        const slot = (b.by_epoch[ek] ||= { pools: {}, coins: {} });
+        const slot = (b.by_epoch[ek] ||= { pools: {}, coins: {}, n: 0 });
+        slot.n = (slot.n || 0) + 1;   // total events this epoch — pool-null (governance-executed) events count too; the modal charts this
         if (ev.pool) slot.pools[ev.pool] = (slot.pools[ev.pool] || 0) + 1;
         const pslot = ev.pool ? (b.by_pool[ev.pool] ||= { bribe_count: 0, by_token: {} }) : null;
         if (pslot) pslot.bribe_count++;
