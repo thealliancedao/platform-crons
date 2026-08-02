@@ -40,7 +40,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const LOCAL_OUT = process.env.LOCAL_OUT || './out';
 
-const VERSION = 'dex-data-1.2.0';
+const VERSION = 'dex-data-1.3.0';
 
 // TLA epoch math (epochs are weekly; used to tag snapshots).
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');
@@ -164,6 +164,38 @@ async function main() {
     }
   }
 
+  // ---- Eris-convention per-pool APR (1.3.0, AUDIT-eris-apr-pricing fix #4) --
+  // Cron-side, never page-side: Stage 1-4 of the audit's §Gauge-LP-APR over the
+  // snapshots just captured. Isolated like a DEX: its failure never affects the
+  // per-DEX products. Publishes dex-data/eris-apr/{current,daily,heartbeat}.
+  let erisStatus = 'skipped';
+  try {
+    const { runErisApr } = require('./lib/eris-apr');
+    const okSnaps = results.filter(r => r.status === 'ok' && r.snapshot);
+    const allPools = [].concat(...okSnaps.map(r => r.snapshot.pools || []));
+    // single-asset gauge entries price via the adapters' own asset captures
+    const assetPrices = {};
+    for (const p of allPools) for (const a of (p.assets || [])) {
+      if (a && a.denom && a.price_usd != null && assetPrices[a.denom] === undefined) {
+        assetPrices[a.denom] = { price_usd: a.price_usd, decimals: a.decimals };
+      }
+    }
+    const eris = await runErisApr(allPools, assetPrices);
+    const erisDoc = { meta: { version: VERSION, epoch, ...eris.meta }, alliance: eris.alliance, pools: eris.pools };
+    await writeJson('dex-data/eris-apr/current.json', erisDoc);
+    await writeJson(`dex-data/eris-apr/daily/${date}.json`, erisDoc);
+    erisStatus = eris.meta.input_errors ? 'partial' : 'ok';
+    await writeJson('dex-data/eris-apr/heartbeat.json', {
+      generated_at: erisDoc.meta.generated_at, epoch, status: erisStatus,
+      pools_total: eris.meta.pools_total, pools_fully_priced: eris.meta.pools_fully_priced,
+      input_errors: eris.meta.input_errors || null,
+    });
+    console.log(`  \u2713 eris-apr: ${eris.meta.pools_fully_priced}/${eris.meta.pools_total} pools fully priced (${erisStatus})`);
+  } catch (e) {
+    erisStatus = 'failed';
+    console.log(`  \u2717 eris-apr: FAILED — ${String(e && e.message || e)}`);
+  }
+
   // top-level index: which DEXes exist, enabled, last status
   const index = {
     meta: { version: VERSION, generated_at: new Date().toISOString(), epoch },
@@ -175,6 +207,7 @@ async function main() {
         pools_total: r && r.pools_total != null ? r.pools_total : null,
       };
     }),
+    eris_apr: { last_status: erisStatus },
   };
   await writeJson('dex-data/index.json', index);
 

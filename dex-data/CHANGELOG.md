@@ -1,3 +1,26 @@
+# 1.3.0 — 2026-08-02 — eris-apr rider: cron-published Eris-convention APR (audit fix #4)
+
+- **eris-apr rider (AUDIT-eris-apr-pricing fix #4):** new `lib/eris-apr.js` +
+  orchestrator stage publishing `dex-data/eris-apr/{current,daily/<date>,heartbeat}`.
+  Implements Eris's OWN displayed-APR pipeline source-confirmed via Philipp
+  (audit §Gauge-LP-APR), VERBATIM mixed convention: `eris_apy_pct =
+  aprToApy(incentive×0.92, 365.25) + trading − take` and `eris_apr_pct =
+  incentive − take + trading` (their linear `total`, no 0.92 — per source).
+  Inputs: `/terra/alliances` + `annual_provisions` (LCD), connector→gauge
+  SELF-DISCOVERED from alliance factory denoms via `{config:{}}` probes (zero
+  hardcoded connector addresses), controller `distributions` raw (never
+  normalized; sum deviations reported), per-bucket `total_staked_balances` +
+  `yearly_take_rate` from `whitelisted_asset_details` configs. TLA-staked USD =
+  staked/lp-supply ratio × pool TVL (unit-free); single-asset entries priced
+  via adapter asset prices; zero staked = $0 by identity. Edge cases verbatim
+  (0/0→0; tvl==0→Infinity published null+flag). Honest nulls with reasons,
+  components always published; substitution stated (trading = our fee_apr).
+  Stage isolated like a DEX — its failure never touches per-DEX products.
+  Gate: mock-run M7, 21 asserts on hand-computed fixtures, full suite 59/59.
+  ⚠ Deploy step: reconcile against BOTH ground-truth tables (SPEC-lp-apr §7 +
+  §2.10) before any page consumes the figures — `meta.validation` carries the
+  pending marker until then.
+
 # 1.1.0 — 2026-07-15 — bucket labels now GAUGE TRUTH (defect register #8, closed)
 
 The bug, found by cross-checking tonight's committed snapshots against

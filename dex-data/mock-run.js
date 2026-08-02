@@ -211,6 +211,145 @@ NET.pools_list = () => ([
         assert(cap.meta.platform.total_supplied_usd === 650926.35 && /lending markets/.test(cap.meta.source), 'platform totals + honest source label');
     }
 
+
+    console.log('\nM7 — eris-apr rider (1.3.0): AUDIT §Gauge-LP-APR verbatim pipeline');
+    {
+        const E = require('./lib/eris-apr');
+        // aprToApy unit truth: 100% nominal, daily 365.25 compounding
+        assert(Math.abs(E.aprToApy(100) - 171.4570017990229) < 1e-9, 'aprToApy(100) = 171.4570018 (their compound conversion)');
+
+        const CONTROLLER = 'terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj';
+        const CONN = { project: 'terra1connproject' + 'x'.repeat(24), stable: 'terra1connstable' + 'x'.repeat(25), single: 'terra1connsingle' + 'x'.repeat(25) };
+        const FOREIGN = 'terra1foreignproj' + 'x'.repeat(24);
+        const K = { lunaSolid: 'cw20:terra1lp_lunasolid_astro', lunaWhale: 'cw20:terra1lp_lunawhale',
+                    xastro: 'cw20:terra1xastro', notake: 'cw20:terra1notake',
+                    zero: 'cw20:terra1zerozero', inf: 'cw20:terra1infcase', ssPool: 'cw20:terra1lp_lunasolid_ss' };
+
+        E.CH.lcdJson = async (path) => {
+            if (path.includes('/terra/alliances')) return { alliances: [
+                { denom: `factory/${CONN.project}/vt`, reward_weight: '0.025', reward_start_time: '2024-08-27T00:00:00Z', last_reward_change_time: '2024-09-01T00:00:00Z', reward_change_interval: '604800s' },
+                { denom: `factory/${CONN.stable}/vt`,  reward_weight: '0.015', reward_start_time: '2024-08-27T00:00:00Z', last_reward_change_time: '2024-09-01T00:00:00Z', reward_change_interval: '604800s' },
+                { denom: `factory/${CONN.single}/vt`,  reward_weight: '0.010', reward_start_time: '2024-08-27T00:00:00Z', last_reward_change_time: '2024-09-01T00:00:00Z', reward_change_interval: '604800s' },
+                { denom: `factory/${FOREIGN}/vt`,      reward_weight: '0.5',   reward_start_time: '2024-01-01T00:00:00Z', last_reward_change_time: '2024-01-01T00:00:00Z', reward_change_interval: '600s' },
+                { denom: 'factory/terra1notyetactive' + 'y'.repeat(20) + '/vt', reward_weight: '9', reward_start_time: '2030-01-01T00:00:00Z', last_reward_change_time: '2030-01-01T00:00:00Z', reward_change_interval: '600s' },
+            ] };
+            if (path.includes('/cosmos/mint/v1beta1/annual_provisions')) return { annual_provisions: '150000000000000.000000000000000000' };
+            throw new Error('mock lcd: ' + path);
+        };
+        E.CH.queryContract = async (addr, q) => {
+            if (q.config) {
+                if (addr === CONN.project) return { gauge: 'project', reward_denom: 'uluna' };
+                if (addr === CONN.stable)  return { gauge: 'stable',  reward_denom: 'uluna' };
+                if (addr === CONN.single)  return { gauge: 'single',  reward_denom: 'uluna' };
+                throw new Error('not a connector');
+            }
+            if (q.distributions && addr === CONTROLLER) return { distributions: [
+                { gauge: 'project', assets: [
+                    { asset: { cw20: 'terra1lp_lunasolid_astro' }, distribution: '0.6' },
+                    { asset: { cw20: 'terra1lp_lunawhale' },      distribution: '0.4' } ] },
+                { gauge: 'stable', assets: [
+                    { asset: { cw20: 'terra1zerozero' },          distribution: '0' },
+                    { asset: { cw20: 'terra1infcase' },           distribution: '0.1' },
+                    { asset: { cw20: 'terra1lp_lunasolid_ss' },   distribution: '0.9' } ] },
+                { gauge: 'single', assets: [
+                    { asset: { cw20: 'terra1xastro' },            distribution: '1.0' },
+                    { asset: { cw20: 'terra1notake' },            distribution: '0.2' } ] },
+            ] };
+            if (q.total_staked_balances) {
+                if (addr === A.project) return [
+                    { asset: { cw20: 'terra1lp_lunasolid_astro' }, balance: '400000000000' },
+                    { asset: { cw20: 'terra1lp_lunawhale' },       balance: '100000000000' } ];
+                if (addr === A.stable) return [
+                    { asset: { cw20: 'terra1zerozero' }, balance: '0' },
+                    { asset: { cw20: 'terra1infcase' },  balance: '0' } ];
+                if (addr === A.single) return [
+                    { asset: { cw20: 'terra1xastro' }, balance: '250000000000' },
+                    { asset: { cw20: 'terra1notake' }, balance: '1000000000' } ];
+                return [];
+            }
+            if (q.whitelisted_asset_details) {
+                if (addr === A.project) return [
+                    { info: { cw20: 'terra1lp_lunasolid_astro' }, whitelisted: true, config: { yearly_take_rate: '0.10' } },
+                    { info: { cw20: 'terra1lp_lunawhale' },       whitelisted: true, config: { yearly_take_rate: '0.10' } } ];
+                if (addr === A.stable) return [
+                    { info: { cw20: 'terra1zerozero' }, whitelisted: true, config: { yearly_take_rate: '0.10' } },
+                    { info: { cw20: 'terra1infcase' },  whitelisted: true, config: { yearly_take_rate: '0.10' } },
+                    { info: { cw20: 'terra1lp_lunasolid_ss' }, whitelisted: true, config: { yearly_take_rate: '0.10' } } ];
+                if (addr === A.single) return [
+                    { info: { cw20: 'terra1xastro' }, whitelisted: true, config: { yearly_take_rate: '0.10' } } ];
+                return [];
+            }
+            throw new Error('mock qc: ' + addr + ' ' + JSON.stringify(q).slice(0, 60));
+        };
+
+        const dexPools = [
+            { dex: 'astroport', pool_address: 'terra1pair_lunasolid_astro', pool_name: 'LUNA-SOLID',
+              tvl_usd: 1000000, lp_total_supply: '1000000000000', fee_apr: 0.85,
+              assets: [ { denom: 'uluna', price_usd: 0.10, decimals: 6 }, { denom: 'terra1solid', price_usd: 0.01, decimals: 6 } ],
+              raw: { gauge: { gauge_pool_id: K.lunaSolid } } },
+            { dex: 'astroport', pool_address: 'terra1pair_lunawhale', pool_name: 'LUNA-WHALE',
+              tvl_usd: 200000, lp_total_supply: '500000000000', fee_apr: null,
+              assets: [ { denom: 'uluna', price_usd: 0.10, decimals: 6 } ],
+              raw: { gauge: { gauge_pool_id: K.lunaWhale } } },
+            { dex: 'skeletonswap', pool_address: 'terra1swap_lunasolid_ss', pool_name: 'LUNA-SOLID',
+              tvl_usd: null, lp_total_supply: null, fee_apr: null,
+              assets: [],
+              raw: { gauge: { gauge_pool_id: K.ssPool } } },
+        ];
+        const assetPrices = { terra1xastro: { price_usd: 0.02, decimals: 6 }, terra1notake: { price_usd: 1.0, decimals: 6 } };
+
+        const doc = await E.runErisApr(dexPools, assetPrices);
+        const by = Object.fromEntries(doc.pools.map(p => [p.gauge_pool_id, p]));
+
+        // Stage 1+2: discovery + weights
+        assert(Math.abs(doc.meta.total_reward_weight - 1.55) < 1e-12, 'totalReward = Σ ACTIVE weights + 1 = 1.55 (future-start alliance excluded)');
+        assert(doc.alliance.per_gauge.project && doc.alliance.per_gauge.project.connector === CONN.project
+            && doc.alliance.per_gauge.single && !doc.alliance.per_gauge.foreign, 'connectors self-discovered from alliance denoms; foreign alliance rejected by config probe');
+        assert(Math.abs(doc.alliance.per_gauge.project.rewards_per_year_luna - 2419354.8387096776) < 1e-4, 'project rewardsPerYear = provisions × 0.025/1.55');
+        assert(doc.alliance.per_gauge.project.rewards_update === new Date(Date.parse('2024-09-01T00:00:00Z') + 604800000).toISOString(), 'rewardsUpdate = last_change + interval');
+
+        // Stage 3+4: the full acceptance pool, every leg exact
+        const ls = by[K.lunaSolid];
+        assert(Math.abs(ls.incentive_apr_pct - 36.29032258064517) < 1e-9, `LUNA-SOLID incentive APR 36.2903% (got ${ls.incentive_apr_pct.toFixed(6)})`);
+        assert(Math.abs(ls.tla_staked_usd - 400000) < 1e-9 && ls.tla_staked_usd_basis === 'staked_supply_ratio_x_pool_tvl', 'TLA-staked USD = supply-ratio × pool TVL (unit-free)');
+        assert(Math.abs(ls.eris_apr_pct - 27.14032258064517) < 1e-9, 'linear total = incentive − take + trading (source-verbatim, NO 0.92)');
+        assert(Math.abs(ls.eris_apy_pct - 30.465002564975258) < 1e-9, `displayed APY = aprToApy(incentive×0.92) + trading − take (got ${ls.eris_apy_pct.toFixed(6)})`);
+        assert(ls.eris_cut_pct === 8 && ls.yearly_take_rate_pct === 10 && ls.trading_apr_pct === 0.85, 'components block published (cut 8, take 10, trading 0.85)');
+
+        // trading ?? 0 verbatim, flagged
+        const lw = by[K.lunaWhale];
+        assert(Math.abs(lw.eris_apr_pct - 231.93548387096774) < 1e-9 && lw.trading_apr_pct === null
+            && lw.flags && lw.flags.includes('trading_apr_assumed_zero'), 'unknown trading APR → 0 in formula (verbatim), null + flagged in components');
+
+        // edge cases verbatim
+        assert(by[K.zero].incentive_apr_pct === 0, '0 incentives / 0 staked → 0 (verbatim)');
+        assert(by[K.inf].incentive_apr_pct === null && by[K.inf].flags.includes('infinite_apr_zero_tvl'), 'tvl==0 with incentives → Infinity, JSON-published null + flag');
+
+        // honest nulls: SS pool has no TVL basis
+        const ss = by[K.ssPool];
+        assert(ss.tla_staked_usd === null && ss.eris_apy_pct === null && ss.flags.includes('staked_balance_unavailable') || ss.flags.includes('staked_usd_unavailable'), 'SS pool without TVL → figures null with reason, never a guess');
+
+        // single-asset pricing path
+        const xa = by[K.xastro];
+        assert(Math.abs(xa.tla_staked_usd - 5000) < 1e-9 && xa.tla_staked_usd_basis === 'staked_units_x_asset_price', 'single-asset gauge entry priced via adapter asset prices');
+        assert(Math.abs(xa.incentive_apr_pct - 1935.483870967742) < 1e-6, 'single-asset incentive APR exact');
+
+        // take missing → figures null, components live
+        const nt = by[K.notake];
+        assert(nt.eris_apr_pct === null && nt.eris_apy_pct === null && nt.flags.includes('take_rate_unavailable')
+            && Math.abs(nt.incentive_apr_pct - 1935.483870967742) < 1e-6, 'missing take rate nulls the figure WITH reason; incentive component still published');
+
+        // dist-sum deviation reported, never normalized
+        assert(doc.meta.dist_sum_deviations && Math.abs(doc.meta.dist_sum_deviations.single - 1.2) < 1e-12, 'distribution sum ≠ 1 reported (single = 1.2), raw values used verbatim');
+
+        // idempotence of the pure compose
+        const doc2 = E.composeErisApr(await E.captureInputs(E.CH), dexPools, assetPrices);
+        const strip = (d) => JSON.stringify({ ...d, meta: { ...d.meta, generated_at: null } });
+        assert(strip(doc) === strip(doc2), 'compose is deterministic (byte-identical sans generated_at)');
+
+        assert(doc.meta.luna_price_used_usd === 0.10 && doc.meta.pools_fully_priced === 4, 'LUNA price from adapter assets; 4/7 pools fully priced (honest count)');
+    }
+
     console.log('\n' + '='.repeat(60));
     console.log(failed ? `❌ mock gate: ${passed} passed, ${failed} failed` : `✅ mock gate: ${passed} passed, 0 failed`);
     process.exit(failed ? 1 : 0);
