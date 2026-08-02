@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.0.0';   // v3 classifier: multi-flow + both-sides liquidity + amp rate fields (SPEC-registry-extensions-pnl)
+const VERSION          = 'org-tla-flows-3.1.0';   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -89,6 +89,45 @@ function realGithubApiRequest(method, apiPath, body, accept) {
   });
 }
 const T = { httpGet: realHttpGet, githubApiRequest: realGithubApiRequest, now: () => new Date() };
+const AX = require('./lib/aux-classifiers.js');
+
+// ----------------------------------------------------------------------------- aux forward capture (registry-driven — SPEC-registry-extensions-pnl)
+// The capture registry is the single source of watched extension addresses:
+// fetched fresh each run (cache-busted raw), parsed into watch-sets. Fetch
+// failure disables aux for THIS run only (warned + heartbeat-noted) — core
+// flows capture is never blocked by the extension layer.
+let AUX = null;
+const AUX_DIRS = { votion: 'votion/events', dex: 'dex-liquidity/events', nft: 'nfts/adao/transfers', samples: 'price-history/reserve-implied' };
+function parseAuxRegistry(reg) {
+    const vaults = {}, pairs = {}, nfts = {}; const watch = new Set();
+    for (const c of (reg && reg.contracts) || []) {
+        const s = c.streams || [];
+        if (s.includes('votion_flows')) { vaults[c.address] = { vdenom: c.vdenom, lst: c.lst }; watch.add(c.address); }
+        if (s.includes('dex_liquidity')) { pairs[c.address] = { name: (c.label.match(/pair ([^ ]+)/) || [])[1] || c.label }; watch.add(c.address); }
+        if (s.includes('nft_transfers')) { nfts[c.address] = c.label; watch.add(c.address); }
+    }
+    return { vaults, pairs, nfts, watch };
+}
+async function loadAuxRegistry() {
+    const url = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/tla-voting/capture-registry.json?t=${Date.now()}`;
+    const reg = await tryGetJson(url, 'capture-registry (aux watch-sets)');
+    if (!reg) return null;
+    const a = parseAuxRegistry(reg);
+    console.log(`  aux registry: ${Object.keys(a.vaults).length} vaults, ${Object.keys(a.pairs).length} pairs, ${Object.keys(a.nfts).length} nft contracts watched`);
+    return a;
+}
+// day-sample merge: same pair+date keeps the HIGHEST-height sample (last swap
+// of the day wins across runs — mergeKeyed's schema rule can't express that)
+function mergeSamples(existing, incoming) {
+    const byK = new Map(existing.map(r => [r.k, r]));
+    let changed = 0;
+    for (const r of incoming) {
+        const prev = byK.get(r.k);
+        if (!prev) { byK.set(r.k, r); changed++; }
+        else if (Number(r.height) > Number(prev.height)) { byK.set(r.k, r); changed++; }
+    }
+    return { merged: [...byK.values()].sort((a, b) => a.height - b.height || String(a.k).localeCompare(String(b.k))), changed };
+}
 
 async function rpcGet(p, label) {
   let lastErr;
@@ -127,14 +166,19 @@ const txHashOf = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'b
 // Only txs touching a watched contract are classified — block data sees the
 // whole chain, unlike tx_search; without this gate the classifier's claim
 // fallback would capture other protocols (spec D4). Classifier unchanged.
-function touchesWatched(events) {
+function touchesOf(events) {
+  let core = false, aux = false;
   for (const e of events || []) {
     if (e.type !== 'wasm') continue;
-    for (const a of e.attributes || [])
-      if (a.key === '_contract_address' && WATCH[a.value]) return true;
+    for (const a of e.attributes || []) {
+      if (a.key !== '_contract_address') continue;
+      if (WATCH[a.value]) core = true;
+      if (AUX && AUX.watch.has(a.value)) aux = true;
+    }
   }
-  return false;
+  return { core, aux };
 }
+function touchesWatched(events) { return touchesOf(events).core; }   // compat (harness)
 
 // Binary-search the lowest available block in (lo..hi] after hitting pruning.
 async function firstAvailable(lo, hi) {
@@ -152,6 +196,7 @@ async function firstAvailable(lo, hi) {
 async function walkBlocks(from, to, budgetNote) {
   const CONC = Number(process.env.WALK_CONCURRENCY || 4);
   const records = [], gaps = [];
+  const aux = { votion: [], dex: [], nft: [], rawSamples: [] };
   let N = from, inFlight = new Map();
   const launch = (h) => { if (h <= to && !inFlight.has(h)) inFlight.set(h, getBlock(h)); };
   for (let h = N; h < N + CONC && h <= to; h++) launch(h);
@@ -173,15 +218,22 @@ async function walkBlocks(from, to, budgetNote) {
       const results = await getBlockResults(N);
       for (let i = 0; i < blk.txsB64.length; i++) {
         const res = results[i]; if (!res) continue;
-        if (!touchesWatched(res.events)) continue;
-        const rec = classifyFlowTx({ txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: res.code || 0, events: res.events });
-        if (rec) records.push(rec);
+        const t2 = touchesOf(res.events);
+        if (!t2.core && !t2.aux) continue;
+        const txr = { txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: res.code || 0, events: res.events };
+        if (t2.core) { const rec = classifyFlowTx(txr); if (rec) records.push(rec); }
+        if (t2.aux) {
+          aux.votion.push(...AX.classifyVotionTx(txr, AUX.vaults));
+          const pr = AX.classifyPairLiquidityTx(txr, AUX.pairs);
+          aux.dex.push(...pr.records); aux.rawSamples.push(...pr.swapSamples);
+          aux.nft.push(...AX.classifyNftTx(txr, AUX.nfts));
+        }
       }
     }
     if (Date.now() - lastLog > 15000) { console.log(`  walked to ${N} (${to - N} to go, ${records.length} flows)`); lastLog = Date.now(); }
     N++; launch(N + CONC - 1);
   }
-  return { records, processedTo: to, gaps, note: budgetNote };
+  return { records, processedTo: to, gaps, note: budgetNote, aux };
 }
 
 // =============================================================================
@@ -366,6 +418,16 @@ async function apiGetJson(file) {
     return { ok: false, data: null };                            // UNKNOWN — not absent
   }
 }
+async function apiGetJsonAt(fullPath) {
+  // generic-path clone of apiGetJson (aux streams live outside OUT_DIR)
+  try {
+    const r = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${fullPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw+json');
+    return { ok: true, data: typeof r === 'string' ? JSON.parse(r) : r };
+  } catch (e) {
+    if (e.statusCode === 404) return { ok: true, data: null };
+    return { ok: false, error: e.message };
+  }
+}
 
 // ----------------------------------------------------------------------------- heartbeat (tla-core standard)
 async function publishHeartbeat(h) {
@@ -427,6 +489,10 @@ async function run() {
     await publishHeartbeat({ startedAt, status: 'error', errors: [{ step: 'priors', message: 'index has events but cursor.json unreachable' }], note: 'refusing to bootstrap over existing history' });
     throw new Error('cursor unreachable while index shows history — aborting');
   }
+
+  // 1b. aux watch-sets (registry-driven; failure disables aux this run only)
+  AUX = await loadAuxRegistry();
+  if (!AUX) console.warn('  ⚠ aux registry unavailable — extension streams skipped THIS run (core capture unaffected)');
 
   // 2. window (cursor = last block processed; schema-2, with schema-1 migration)
   let head;
@@ -495,6 +561,36 @@ async function run() {
     } catch (e) { addErr(`publish:${mk}`, e); allComplete = false; }
   }
 
+  // 5b. aux streams (registry-driven; publish failures hold the cursor — the
+  //     extension streams can never silently gap while core advances)
+  const auxCounts = { votion: 0, dex: 0, nft: 0, samples: 0 };
+  if (AUX && walk.aux) {
+    const jobs = [
+      { key: 'votion',  dir: AUX_DIRS.votion,  recs: walk.aux.votion, merge: (e, i2) => { const m = AX.mergeKeyed(e, i2); return { merged: m.merged, changed: m.added + m.upgraded }; } },
+      { key: 'dex',     dir: AUX_DIRS.dex,     recs: walk.aux.dex,    merge: (e, i2) => { const m = AX.mergeKeyed(e, i2); return { merged: m.merged, changed: m.added + m.upgraded }; } },
+      { key: 'nft',     dir: AUX_DIRS.nft,     recs: walk.aux.nft,    merge: (e, i2) => { const m = AX.mergeKeyed(e, i2); return { merged: m.merged, changed: m.added + m.upgraded }; } },
+      { key: 'samples', dir: AUX_DIRS.samples, recs: AX.samplesToRecords(walk.aux.rawSamples), merge: mergeSamples },
+    ];
+    for (const j of jobs) {
+      const byM = {};
+      for (const r of j.recs) (byM[monthKey(r.timestamp)] ||= []).push(r);
+      for (const mk of Object.keys(byM).sort()) {
+        const path2 = `${j.dir}/${mk}.json`;
+        const mr = await apiGetJsonAt(path2);
+        if (!mr.ok) { addErr(`aux:${j.key}:${mk}`, new Error('read failed — skipping publish this run')); allComplete = false; continue; }
+        const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
+        if (existing === null) { addErr(`aux:${j.key}:${mk}`, new Error('existing is not an array — refusing to overwrite')); allComplete = false; continue; }
+        const { merged, changed } = j.merge(existing, byM[mk]);
+        if (merged.length < existing.length) { addErr(`aux:${j.key}:${mk}`, new Error('never-shrink violation')); allComplete = false; continue; }
+        if (!changed) continue;
+        try { await publishFile(path2, JSON.stringify(merged), `${j.dir} ${mk}: +${changed} (${merged.length} total)`); auxCounts[j.key] += changed; }
+        catch (e) { addErr(`aux-publish:${j.key}:${mk}`, e); allComplete = false; }
+      }
+    }
+    if (auxCounts.votion + auxCounts.dex + auxCounts.nft + auxCounts.samples > 0)
+      console.log(`  aux: +${auxCounts.votion} votion, +${auxCounts.dex} dex-liquidity, +${auxCounts.nft} nft, +${auxCounts.samples} price samples`);
+  }
+
   // 6. index (never-shrink totals)
   if (totalAdded > 0 || walk.gaps.length) {
     index.schemaVersion = SCHEMA_VERSION;
@@ -531,7 +627,7 @@ async function run() {
   // 8. heartbeat
   await publishHeartbeat({
     startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1 },
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX },
     lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });
@@ -542,4 +638,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
-module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, monthKey, publishFile, T, WATCH, txHashOf, touchesWatched };
+module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, mergeSamples, monthKey, parseAuxRegistry, publishFile, T, WATCH, txHashOf, touchesWatched, touchesOf };
