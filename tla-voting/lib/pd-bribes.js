@@ -54,7 +54,7 @@ const PD_CORE = 'terra1k8ug6dkzntczfzn76wsh24tdjmx944yj6mk063wum7n20cwd7lxq4lppj
 const PD_PROP_MODULE = 'terra1660g9mle5kfsq8c0p4k4hgr9ujdyr3m48c22cawy0akr98rmwksqehqnup';
 const INCENTIVE_MANAGER = 'terra1tuuwm8yrj54qeg0c8xu00aha9ryatyhtczq8qq2q8tntuw0auzas9037wh';
 const FEE_LUNA_RAW = 10000000; // 10 LUNA add_bribe fee, forwarded to PD core (fee income, never a bribe)
-const VERSION = 'pd-bribes-1.1.0';
+const VERSION = 'pd-bribes-1.2.0';
 
 function poolIdFrom(ab) {
     // add_bribe payload pool identity — defensive across the shapes the
@@ -106,8 +106,12 @@ function decodeProposalLegs(prop, flags) {
         let denomKey = null, netRaw = null, feeLuna = 0;
         const ba = ab.bribe;
         if (ba && ba.info && ba.amount != null) {
+            // both AssetInfo dialects: Astroport ({native_token:{denom}}/{token:{contract_addr}})
+            // and cw-asset ({native:"denom"}/{cw20:"addr"}) — ve3 uses the latter (live-verified: prop-250 denom parsed None until this).
             if (ba.info.native_token && ba.info.native_token.denom) denomKey = 'native:' + ba.info.native_token.denom;
             else if (ba.info.token && ba.info.token.contract_addr) denomKey = 'cw20:' + ba.info.token.contract_addr;
+            else if (typeof ba.info.native === 'string') denomKey = 'native:' + ba.info.native;
+            else if (typeof ba.info.cw20 === 'string') denomKey = 'cw20:' + ba.info.cw20;
             netRaw = Number(ba.amount);
             const fu = funds.find(c => 'native:' + c.denom === denomKey);
             const uf = funds.find(c => c.denom === 'uluna');
