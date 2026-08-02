@@ -27,7 +27,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.1.0';
+const VERSION       = 'org-votion-1.2.0';
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -47,6 +47,56 @@ const SEED_VAULTS = [
     'terra1dr7mv4w6chznedhp7uw6ntz9zjj4hxcdga2lmenlfuj35vmwpf0qhnzm5p',
     'terra1mzelg87h36y6wvtgj6fh9s4crgx9acw63l3zc6f9px6pc5f8h8lqs0sux0',
 ];
+
+// --------------------------------------------------------------------------- LST hub rates (1.2.0)
+// AUDIT-eris-apr-pricing fix #1: every LST is priced as LUNA x its OWN hub
+// exchange rate — never a catalog LST price, never another LST's rate. The
+// arb (slow-burn) hub has compounded since 2022 (rate ~2.9) while amp sits
+// ~1.34; catalog pricing was collapsing that difference (the 2.2x arbLUNA
+// understatement). Keyed by LST cw20 CONTRACT (chain truth, not labels).
+// ampLUNA carries two candidates because the curated registry holds two
+// entries labeled "Eris ampLUNA Hub" — first sane responder wins, and which
+// one answered is published so the registry label conflict can be curated.
+const LST_HUB_CANDIDATES = {
+    // ampLUNA
+    'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct': [
+        'terra10788fkzah89xrdm27zkj5yvhj9x3494lxawzm5qq3vvxcqz2yzaqyd3enk',
+        'terra1kye343r8hl7wm6f3uzynyyzl2zmcm2sqmvvzwzj7et2j5jj7rjkqa2ue88',
+    ],
+    // arbLUNA (Eris arbitrage vault)
+    'terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490': [
+        'terra1r9gls56glvuc4jedsvc3uwh6vj95mqm9efc7hnweqxa2nlme5cyqxygy5m',
+    ],
+    // bLUNA — no verified hub entry yet; falls back (labeled) if a vault appears
+    'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml': [],
+};
+const HUB_RATE_MIN = 0.5, HUB_RATE_MAX = 50;   // reject only the clearly-broken
+function saneHubRate(x) { return typeof x === 'number' && isFinite(x) && x >= HUB_RATE_MIN && x <= HUB_RATE_MAX; }
+
+async function queryHubRate(addr) {
+    // dual shape, defensively: {state:{}} -> .exchange_rate, else {exchange_rate:{}}
+    const st = await T.queryContract(addr, { state: {} });
+    const r1 = st && st.exchange_rate != null ? Number(st.exchange_rate) : null;
+    if (saneHubRate(r1)) return { rate: r1, method: 'state.exchange_rate' };
+    const ex = await T.queryContract(addr, { exchange_rate: {} });
+    const r2 = typeof ex === 'number' ? ex : ex && ex.exchange_rate != null ? Number(ex.exchange_rate) : null;
+    if (saneHubRate(r2)) return { rate: r2, method: 'exchange_rate' };
+    return null;
+}
+
+async function resolveLstHubRates(vaults, errors) {
+    const contracts = [...new Set(vaults.map(v => v.lst_contract).filter(Boolean))];
+    const out = {};
+    for (const lst of contracts) {
+        const candidates = LST_HUB_CANDIDATES[lst] || [];
+        for (const addr of candidates) {
+            const r = await queryHubRate(addr);
+            if (r) { out[lst] = { rate: r.rate, hub_addr: addr, method: r.method }; break; }
+        }
+        if (!out[lst]) errors.push({ where: `lst_hub ${lst.slice(0, 16)}`, error: candidates.length ? 'no hub candidate gave a sane exchange_rate — catalog fallback in use' : 'no hub contract registered — catalog fallback in use' });
+    }
+    return out;
+}
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -236,6 +286,8 @@ function buildNowRollup(vaults) {
 async function runBranchA(now, errors) {
     const { vaults, discovery_source } = await discoverVaults(errors);
     for (const v of vaults) v.state = await loadVaultState(v, errors);
+    const hubRates = await resolveLstHubRates(vaults, errors);
+    for (const v of vaults) v.hub = (v.lst_contract && hubRates[v.lst_contract]) || null;
     const votion_vp_now_per_pool = buildNowRollup(vaults);
     const total_vp = Math.round(vaults.reduce((s, v) => s + (v.state.lock_vp_human || 0), 0) * 100) / 100;
 
@@ -243,7 +295,8 @@ async function runBranchA(now, errors) {
         meta: { version: VERSION, generated_at: now.toISOString(), discovery_source, vault_count: vaults.length },
         totals: { total_vault_vp: total_vp },
         votion_vp_now_per_pool,
-        vaults: vaults.map(v => ({ address: v.address, label: v.label, lst_contract: v.lst_contract, vdenom: v.vdenom, lock_id: v.lock_id, protocol_fee: v.protocol_fee, ...v.state })),
+        vaults: vaults.map(v => ({ address: v.address, label: v.label, lst_contract: v.lst_contract, vdenom: v.vdenom, lock_id: v.lock_id, protocol_fee: v.protocol_fee,
+            lst_luna_hub_rate: v.hub ? v.hub.rate : null, lst_hub_addr: v.hub ? v.hub.hub_addr : null, ...v.state })),
     };
     await publishFile('votion/snapshots/vaults.json', vaultsDoc, `votion: vaults @ ${now.toISOString()}`);
 
@@ -255,7 +308,7 @@ async function runBranchA(now, errors) {
     const before = hDoc.points.length;
     hDoc.points.push({
         at: now.toISOString(),
-        vaults: vaults.map(v => ({ address: v.address, staked_lst_human: v.state.staked_lst_human, exchange_rate: v.state.exchange_rate, lock_vp_human: v.state.lock_vp_human })),
+        vaults: vaults.map(v => ({ address: v.address, staked_lst_human: v.state.staked_lst_human, exchange_rate: v.state.exchange_rate, lst_luna_hub_rate: v.hub ? v.hub.rate : null, lock_vp_human: v.state.lock_vp_human })),
         total_vault_vp: total_vp,
     });
     if (hDoc.points.length !== before + 1) throw new Error('never-shrink violated — aborting');
@@ -367,7 +420,18 @@ async function runBranchB(now, vaults, errors) {
         const holders = [...new Set([...discovered, ...curatedAddrs, ...Object.keys(sweep)])];
         if (!complete) anyIncomplete = true;
 
-        const { usd: lstUsd, source: priceSource } = priceFromCatalog(catalog, v.lst_contract);
+        // 1.2.0 pricing: LUNA_USD x LST's OWN hub rate (three-link chain) is
+        // PRIMARY; the old catalog LST price survives only as a labeled fallback.
+        const luna = priceFromCatalog(catalog, 'uluna');
+        let lstUsd = null, priceSource = null, rateSource = null;
+        if (v.hub && luna.usd != null) {
+            lstUsd = v.hub.rate * luna.usd;
+            priceSource = 'hub_exchange_rate';
+            rateSource = 'hub_exchange_rate';
+        } else {
+            const fb = priceFromCatalog(catalog, v.lst_contract);
+            if (fb.usd != null) { lstUsd = fb.usd; priceSource = `${fb.source} (fallback)`; rateSource = priceSource; }
+        }
         const rows = (await mapConcurrent(holders, CONCURRENCY, async (addr) => {
             let raw;
             if (sweep[addr] != null) raw = Number(sweep[addr]);   // already live-read in the sweep
@@ -397,6 +461,8 @@ async function runBranchB(now, vaults, errors) {
         vaultBlocks.push({
             address: v.address, lst_contract: v.lst_contract, vdenom: v.vdenom,
             exchange_rate: v.state.exchange_rate, lock_vp_human: v.state.lock_vp_human,
+            lst_luna_hub_rate: v.hub ? v.hub.rate : null, lst_hub_addr: v.hub ? v.hub.hub_addr : null, lst_rate_source: rateSource,
+            vault_tvl_usd: (v.state.staked_lst_human != null && lstUsd != null) ? Math.round(v.state.staked_lst_human * lstUsd * 100) / 100 : null,
             holder_count: valid.length, candidates_checked: holders.length,
             holder_discovery_complete: complete,   // paging completed — NOT full-history coverage (see meta.discovery_basis)
             balance_failures: failed.length,
@@ -411,10 +477,13 @@ async function runBranchB(now, vaults, errors) {
     const doc = {
         meta: {
             version: VERSION, generated_at: now.toISOString(), status,
+            lst_pricing_convention: 'underlying_usd = underlying_lst x LST_own_hub_rate x LUNA_USD (AUDIT-eris-apr-pricing); catalog LST price only as labeled fallback',
             discovery_basis: 'tx_search deposit events (public LCDs prune; pre-retention depositors are NOT discoverable — the vault exposes no holder query and denom_owners is unimplemented on available LCDs, probed 2026-07-16) + curated-holders.json candidates, all verified by live balance. Holder set = retention-window discoveries + registry (grow-only) + curated; it may undercount pre-retention holders.',
         },
         member_sweep: { wallets_swept: memberWallets.length, failures: sweepFailures, complete: sweepComplete },
-        totals: { vault_count: vaults.length, unique_holders: uniqueHolders, total_tvl_usd: Math.round(vaultBlocks.reduce((s, b) => s + (b.total_underlying_usd || 0), 0) * 100) / 100 },
+        totals: { vault_count: vaults.length, unique_holders: uniqueHolders,
+            total_tvl_usd: Math.round(vaultBlocks.reduce((s, b) => s + (b.total_underlying_usd || 0), 0) * 100) / 100,   // discovered-holders sum (existing semantic, unchanged)
+            total_vault_tvl_usd: Math.round(vaultBlocks.reduce((s, b) => s + (b.vault_tvl_usd || 0), 0) * 100) / 100 },  // REAL vault TVL via hub chain (1.2.0, additive)
         vaults: vaultBlocks,
     };
     await publishFile('votion/snapshots/current.json', doc, `votion: positions ${status} @ ${now.toISOString()}`);
@@ -541,11 +610,12 @@ async function run() {
     await publishFile('votion/heartbeat.json', {
         version: VERSION, capturedAt: now.toISOString(), status,
         vaults_at: now.toISOString(), positions_at: positionsAt, positions_status: positionsStatus,
+        lst_rate_fallback_in_use: errors.some(e => /lst_hub/.test(e.where)),
         vault_count: vaults.length, optimization_status: optC.status, optimization_vaults: optC.slugs, optimization_probes: optC.probes, _errors: errors.length ? errors : null,
     }, `votion heartbeat ${status}`);
     console.log(`  done: ${status}${errors.length ? ` (${errors.length} recorded errors)` : ''}`);
     return { status, vaults, errors };
 }
 
-module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, runBranchA, runBranchB, SEED_VAULTS, runBranchC };
+module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, resolveLstHubRates, queryHubRate, LST_HUB_CANDIDATES, runBranchA, runBranchB, SEED_VAULTS, runBranchC };
 if (require.main === module) run().then(r => process.exit(r.status === 'error' ? 1 : 0)).catch(e => { console.error('FATAL:', e.message); process.exit(1); });

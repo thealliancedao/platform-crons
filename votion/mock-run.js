@@ -21,7 +21,10 @@ function healthyChain() {
             [V1]: { lock_info: { cw20: AMPLUNA }, vdenom: 'factory/' + V1 + '/max/vampluna', lock_id: '101', protocol_fee: '0.1' },
             [V2]: { lock_info: { cw20: ARBLUNA }, vdenom: 'factory/' + V2 + '/max/varbluna', lock_id: '102', protocol_fee: '0.1' },
         },
-        state: { [V1]: { staked: '50000000000' }, [V2]: { staked: '200000000000' } },   // 50k / 200k LST
+        state: { [V1]: { staked: '50000000000' }, [V2]: { staked: '200000000000' },   // 50k / 200k LST
+                 // LST hub contracts (1.2.0) — amp hub 1.34, arb hub 2.90
+                 ['terra10788fkzah89xrdm27zkj5yvhj9x3494lxawzm5qq3vvxcqz2yzaqyd3enk']: { exchange_rate: '1.34', total_ustake: '1' },
+                 ['terra1r9gls56glvuc4jedsvc3uwh6vj95mqm9efc7hnweqxa2nlme5cyqxygy5m']: { exchange_rate: '2.90' } },
         lock: { '101': { fixed_amount: '10000000000', voting_power: '40000000000' },     // VP = 50k (fixed+boost!)
                 '102': { fixed_amount: '30000000000', voting_power: '120000000000' } },  // VP = 150k
         supply: { ['factory/' + V1 + '/max/vampluna']: '40000000000', ['factory/' + V2 + '/max/varbluna']: '160000000000' },   // rates 1.25
@@ -91,8 +94,16 @@ M.T.lcdGet = async (path) => {
 };
 let NOW = new Date('2026-07-17T02:10:00Z');
 M.T.now = () => NOW;
+// Branch C stub (hermetic gate — the harness previously let T.fetch hit the
+// real Votion backend, which fails offline/CI): configured slug answers with
+// an empty-but-valid payload, probes 404.
+M.T.fetch = async (url) => {
+    if (url.includes('/ampluna-max/optimization')) return { ok: true, status: 200, json: async () => ({ optimizations: [] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+};
 const CATALOG = { tokens: [
-    { denom: AMPLUNA, prices: { tla: { usd: 0.105, status: 'ok' } } },
+    { denom: 'uluna', prices: { tla: { usd: 0.10, status: 'ok' } } },
+    { denom: AMPLUNA, prices: { tla: { usd: 0.105, status: 'ok' } } },   // catalog LST price = the OLD path, fallback-only since 1.2.0
     { denom: ARBLUNA, prices: { tla: { usd: null, status: 'fail' }, coingecko: { usd: 0.133, status: 'ok' } } },
 ] };
 
@@ -117,10 +128,14 @@ const CATALOG = { tokens: [
     check('R1 discovery_basis declared', /pre-retention/.test(cur.meta.discovery_basis));
     check('R1 curated zero-balance in V1 dropped silently', !cur.vaults[0].holders.some(h => h.address === 'terra1multisig'));
     const alice = cur.vaults[0].holders.find(h => h.address === 'terra1alice');
-    check('R1 alice: 8k vtoken × 1.25 = 10k ampLUNA, $1050, tagged tla', alice.underlying_lst === 10000 && alice.underlying_usd === 1050 && alice.underlying_usd_price_source === 'token-catalog/tla');
+    check('R1 alice: 8k vtoken × 1.25 = 10k ampLUNA, $1,340 via amp HUB (1.34 × $0.10 LUNA)', alice.underlying_lst === 10000 && alice.underlying_usd === 1340 && alice.underlying_usd_price_source === 'hub_exchange_rate', alice);
     check('R1 alice implied VP = 20% share × 50k = 10k', alice.implied_vp === 10000, alice);
     const carol = cur.vaults[1].holders.find(h => h.address === 'terra1carol');
-    check('R1 arbLUNA priced via coingecko fallback + tagged', carol.underlying_usd_price_source === 'token-catalog/coingecko' && carol.underlying_usd === Math.round(20000 * 0.133 * 100) / 100);
+    check('R1 carol: 20k arbLUNA × ARB hub 2.90 × $0.10 = $5,800 (v1.1 catalog said $2,660)', carol.underlying_usd_price_source === 'hub_exchange_rate' && carol.underlying_usd === 5800, carol);
+    check('R1 vault hub fields + real vault TVL (V2: 200k × 0.29 = $58,000; totals additive)', cur.vaults[1].lst_luna_hub_rate === 2.90 && cur.vaults[1].lst_rate_source === 'hub_exchange_rate' && cur.vaults[1].vault_tvl_usd === 58000 && cur.totals.total_vault_tvl_usd === 6700 + 58000, cur.totals);
+    check('R1 vaults.json + history carry hub rate (Branch A)', vd.vaults[1].lst_luna_hub_rate === 2.90 && REPO['votion/history/2026/07.json'].points[0].vaults[1].lst_luna_hub_rate === 2.90);
+    check('R1 pricing convention declared in meta', /LST_own_hub_rate/.test(cur.meta.lst_pricing_convention));
+    check('R1 heartbeat: no hub fallback in use', REPO['votion/heartbeat.json'].lst_rate_fallback_in_use === false);
     check('R1 daily archive written', 'votion/snapshots/daily/2026-07-17.json' in REPO);
     const reg = REPO['votion/holders-registry.json'];
     check('R1 MEMBER SWEEP: erin found via sweep (pre-retention member), valued', cur.vaults[0].holders.some(h => h.address === 'terra1erin' && h.found_via === 'member_sweep' && h.underlying_lst === 2500), cur.vaults[0].holders.map(h=>h.address));
@@ -197,7 +212,8 @@ const CATALOG = { tokens: [
     REPO['token-catalog/snapshots/current.json'] = { tokens: [] };
     r = await M.run();
     const a6 = REPO['votion/snapshots/current.json'].vaults[0].holders[0];
-    check('R6 amounts real, USD honestly null', a6.underlying_lst === 10000 && a6.underlying_usd === null && a6.underlying_usd_price_source === null);
+    check('R6 amounts real, USD honestly null (hub rate known, LUNA price missing — no leg guessed)', a6.underlying_lst === 10000 && a6.underlying_usd === null && a6.underlying_usd_price_source === null);
+    check('R6 hub rate still published though USD null', REPO['votion/snapshots/current.json'].vaults[0].lst_luna_hub_rate === 1.34);
 
     console.log('— R7: balance query failure ≠ zero balance —');
     NOW = new Date('2026-07-21T16:00:00Z');
@@ -207,6 +223,18 @@ const CATALOG = { tokens: [
     const v7 = REPO['votion/snapshots/current.json'].vaults[0];
     check('R7 partial + failure counted, alice NOT dropped as exited', REPO['votion/heartbeat.json'].positions_status === 'partial' && v7.balance_failures === 1 && !v7.holders.some(h => h.address === 'terra1alice'));
     check('R7 registry still holds alice', REPO['votion/holders-registry.json'].vaults[V1].holders.includes('terra1alice'));
+
+    console.log('— R8: arb hub dead → labeled catalog fallback + partial + heartbeat flag —');
+    NOW = new Date('2026-07-22T19:00:00Z');
+    CHAIN.balances['terra1alice|factory/' + V1 + '/max/vampluna'] = '8000000000';   // restore after R7
+    delete CHAIN.state['terra1r9gls56glvuc4jedsvc3uwh6vj95mqm9efc7hnweqxa2nlme5cyqxygy5m'];
+    r = await M.run();
+    const v8 = REPO['votion/snapshots/current.json'].vaults[1];
+    const carol8 = v8.holders.find(h => h.address === 'terra1carol');
+    check('R8 arbLUNA falls back to catalog coingecko, LABELED ($2,660)', carol8.underlying_usd_price_source === 'token-catalog/coingecko (fallback)' && carol8.underlying_usd === Math.round(20000 * 0.133 * 100) / 100, carol8);
+    check('R8 vault fallback fields honest (hub null, source labeled)', v8.lst_luna_hub_rate === null && v8.lst_rate_source === 'token-catalog/coingecko (fallback)');
+    check('R8 partial + heartbeat lst flag + error recorded', REPO['votion/heartbeat.json'].status === 'partial' && REPO['votion/heartbeat.json'].lst_rate_fallback_in_use === true && REPO['votion/heartbeat.json']._errors.some(e => /lst_hub/.test(e.where)));
+    check('R8 ampLUNA (hub alive) unaffected', REPO['votion/snapshots/current.json'].vaults[0].lst_rate_source === 'hub_exchange_rate');
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);

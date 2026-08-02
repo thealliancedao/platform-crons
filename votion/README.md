@@ -20,10 +20,17 @@ realized compounding APY as a pure derivation).
 `votion-la/deposit` events, **incremental** via `holders-registry.json`
 (grow-only holder sets + per-vault tx totals; cursors advance ONLY on
 complete walks — a failed page can never lose holders or skip deposits).
-Per-holder vdenom balance × exchange rate = underlying LST; USD from
-token-catalog prices (priority tla → coingecko → astroport → skeletonswap,
-per-row `underlying_usd_price_source` tag — the arbLUNA hub-vs-market
-transparency lesson); share × vault VP = implied VP. Writes
+Per-holder vdenom balance × exchange rate = underlying LST; USD via the
+**three-link hub chain (1.2.0, AUDIT-eris-apr-pricing fix #1):**
+`underlying_lst × LST's OWN hub exchange_rate × LUNA_USD` — every LST gets
+its own hub rate (amp ~1.34, arb ~2.9), queried on-chain each run, never a
+catalog LST price and never another LST's rate (the old catalog pricing
+collapsed that difference → the 2.2× arbLUNA understatement). Catalog LST
+price survives ONLY as a labeled `(fallback)` when the hub query fails
+(status → partial, heartbeat `lst_rate_fallback_in_use`). Per-row
+`underlying_usd_price_source` + per-vault `lst_luna_hub_rate`/`lst_hub_addr`/
+`lst_rate_source` + real `vault_tvl_usd` published; share × vault VP =
+implied VP. Writes
 `snapshots/current.json` + `snapshots/daily/{date}.json` (THE archive).
 Zero balance = exited (drops from current, stays in registry); failed
 balance read ≠ zero (recorded, holder retained). No names — identity joins
