@@ -225,6 +225,7 @@ NET.pools_list = () => ([
                     xastro: 'cw20:terra1xastro', notake: 'cw20:terra1notake',
                     zero: 'cw20:terra1zerozero', inf: 'cw20:terra1infcase', ssPool: 'cw20:terra1lp_lunasolid_ss' };
 
+        E.CH.fetchJson = async () => { throw new Error('no catalog in M7 base'); };   // base scenario: catalog absent
         E.CH.lcdJson = async (path) => {
             if (path.includes('/terra/alliances')) return { alliances: [
                 { denom: `factory/${CONN.project}/vt`, reward_weight: '0.025', reward_start_time: '2024-08-27T00:00:00Z', last_reward_change_time: '2024-09-01T00:00:00Z', reward_change_interval: '604800s' },
@@ -348,6 +349,28 @@ NET.pools_list = () => ([
         assert(strip(doc) === strip(doc2), 'compose is deterministic (byte-identical sans generated_at)');
 
         assert(doc.meta.luna_price_used_usd === 0.10 && doc.meta.pools_fully_priced === 4, 'LUNA price from adapter assets; 4/7 pools fully priced (honest count)');
+
+        console.log('\nM7b — astroport-outage resilience (1.3.1): token-catalog price fallback, labeled');
+        // The 2026-08-02 live failure mode: astroport down -> no adapter uluna
+        // price, no adapter asset prices. Catalog backs up LUNA + singles;
+        // pair TVL legs stay honestly null (no substitute for pool TVL).
+        const CAT = { tokens: [
+            { denom: 'uluna', decimals: 6, prices: { tla: { usd: 0.10, status: 'ok' } } },
+            { denom: 'terra1xastro', decimals: 6, prices: { coingecko: { usd: 0.02, status: 'ok' } } },
+        ] };
+        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT; throw new Error('unexpected fetch ' + url); };
+        const noAstroPools = dexPools.filter(p => p.dex !== 'astroport');   // SS survivor only — no uluna price anywhere
+        const doc3 = await E.runErisApr(noAstroPools, {});                  // no adapter assetPrices either
+        const by3 = Object.fromEntries(doc3.pools.map(p => [p.gauge_pool_id, p]));
+        assert(doc3.meta.luna_price_used_usd === 0.10 && doc3.meta.luna_price_source === 'token-catalog/tla (fallback)', 'LUNA price recovered from token-catalog, source LABELED fallback');
+        const xa3 = by3[K.xastro];
+        assert(Math.abs(xa3.tla_staked_usd - 5000) < 1e-9 && /token-catalog\/coingecko \(fallback\)/.test(xa3.tla_staked_usd_basis), 'single-asset priced via catalog fallback, basis labeled');
+        assert(Math.abs(xa3.incentive_apr_pct - 1935.483870967742) < 1e-6 && xa3.eris_apy_pct != null, 'single-asset figures fully computed through the outage');
+        const ls3 = by3[K.lunaSolid];
+        assert(ls3.tla_staked_usd === null && ls3.eris_apy_pct === null && ls3.flags.includes('staked_usd_unavailable'), 'pair pools stay honestly null without astroport TVL — never guessed');
+        E.CH.fetchJson = async () => { throw new Error('catalog down too'); };
+        const doc4 = await E.runErisApr(noAstroPools, {});
+        assert(doc4.meta.luna_price_used_usd === null && doc4.pools.every(p => p.eris_apy_pct === null || p.incentive_apr_pct === 0), 'catalog ALSO down -> honest nulls everywhere, run survives');
     }
 
     console.log('\n' + '='.repeat(60));

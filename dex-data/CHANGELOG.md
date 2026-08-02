@@ -1,3 +1,17 @@
+# 1.3.1 — 2026-08-02 — eris-apr resilience: token-catalog price fallback (labeled)
+
+First live run (during a live astroport tRPC outage — their backend 500ing on
+an internal 403) proved two things: every chain-input shape parsed (status ok,
+28 gauge entries) AND the product's USD legs all rode the astroport adapter
+(LUNA price + asset prices), so one upstream DEX outage nulled 28/28. Fix:
+token-catalog (the org price home, PRICING-DOCTRINE priority tla > coingecko >
+astroport > skeletonswap) now backs up the LUNA price and single-asset prices
+— adapter prices stay PRIMARY, every fallback use is source-labeled
+(`token-catalog/<src> (fallback)` in `luna_price_source` / staked basis).
+Pair-pool TVL legs have no substitute and stay honestly null when astroport is
+down. Gate: M7b, full suite 64/64 (incl. catalog-also-down -> honest nulls,
+run survives).
+
 # 1.3.0 — 2026-08-02 — eris-apr rider: cron-published Eris-convention APR (audit fix #4)
 
 - **eris-apr rider (AUDIT-eris-apr-pricing fix #4):** new `lib/eris-apr.js` +
