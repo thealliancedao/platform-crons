@@ -167,8 +167,16 @@ const txHashOf = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'b
 // whole chain, unlike tx_search; without this gate the classifier's claim
 // fallback would capture other protocols (spec D4). Classifier unchanged.
 function touchesOf(events) {
-  let core = false, aux = false;
+  let core = false, aux = false, transfer = false;
   for (const e of events || []) {
+    if (e.type === 'transfer') {
+      // v4: amp position tokens moving between wallets (classifyTransferTx
+      // applies the watched-party + denom rules; this is just the cheap hit)
+      for (const a of e.attributes || []) {
+        if (a.key === 'amount' && a.value && a.value.includes('amplp') && a.value.includes('factory/')) { transfer = true; break; }
+      }
+      continue;
+    }
     if (e.type !== 'wasm') continue;
     for (const a of e.attributes || []) {
       if (a.key !== '_contract_address') continue;
@@ -176,7 +184,7 @@ function touchesOf(events) {
       if (AUX && AUX.watch.has(a.value)) aux = true;
     }
   }
-  return { core, aux };
+  return { core, aux, transfer };
 }
 function touchesWatched(events) { return touchesOf(events).core; }   // compat (harness)
 
@@ -195,7 +203,7 @@ async function firstAvailable(lo, hi) {
 // { records, processedTo, gaps } — safe to commit partial progress.
 async function walkBlocks(from, to, budgetNote) {
   const CONC = Number(process.env.WALK_CONCURRENCY || 4);
-  const records = [], gaps = [];
+  const records = [], gaps = [], transfers = [];
   const aux = { votion: [], dex: [], nft: [], rawSamples: [] };
   let N = from, inFlight = new Map();
   const launch = (h) => { if (h <= to && !inFlight.has(h)) inFlight.set(h, getBlock(h)); };
@@ -219,9 +227,13 @@ async function walkBlocks(from, to, budgetNote) {
       for (let i = 0; i < blk.txsB64.length; i++) {
         const res = results[i]; if (!res) continue;
         const t2 = touchesOf(res.events);
-        if (!t2.core && !t2.aux) continue;
+        if (!t2.core && !t2.aux && !t2.transfer) continue;
         const txr = { txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: res.code || 0, events: res.events };
         if (t2.core) { const rec = classifyFlowTx(txr); if (rec) records.push(rec); }
+        if (t2.transfer) {
+          const watchedAll = new Set([...Object.keys(WATCH), ...((AUX && AUX.watch) ? AUX.watch : [])]);
+          transfers.push(...classifyTransferTx(txr, watchedAll));
+        }
         if (t2.aux) {
           aux.votion.push(...AX.classifyVotionTx(txr, AUX.vaults));
           const pr = AX.classifyPairLiquidityTx(txr, AUX.pairs);
@@ -233,10 +245,9 @@ async function walkBlocks(from, to, budgetNote) {
     if (Date.now() - lastLog > 15000) { console.log(`  walked to ${N} (${to - N} to go, ${records.length} flows)`); lastLog = Date.now(); }
     N++; launch(N + CONC - 1);
   }
-  return { records, processedTo: to, gaps, note: budgetNote, aux };
+  return { records, processedTo: to, gaps, note: budgetNote, aux, transfers };
 }
 
-// =============================================================================
 // SHARED CLASSIFIER — Marker: <<FLOWS CLASSIFIER v3>>
 // v3 (2026-07-31, SPEC-registry-extensions-pnl — evidenced by DeFi_Patriot's
 // 8-tx live test matrix, blocks 22,163,785–896, all shapes chainscope-read):
@@ -354,7 +365,8 @@ function classifyFlowTx(txr) {
       for (const r of (all.returned || all.amount || [])) { const p = flowsParseReturned(r); if (p.amount) sendResults.push({ denom: p.pool, amount: p.amount }); }
     }
   }
-  const rec = { schemaVersion: 3, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
+  const fee = flowsExtractFee(allEvents);
+  const rec = { schemaVersion: 4, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
            type: flow.type, mechanism: flow.mechanism, via_zap: viaZap, user: flow.user || null,
            amount: flow.amount || null, amount_unit: flow.unit, cost,
            pool: flow.pool || null, gauge: flow.gauge || null,
@@ -365,6 +377,7 @@ function classifyFlowTx(txr) {
   if (provides.length) rec.provides = provides;
   if (withdrawLiqs.length) rec.withdraw_liqs = withdrawLiqs;
   if (sendResults.length) rec.zap_out_assets = sendResults;
+  if (fee) rec.fee = fee;
   return rec;
 }
 // Entry/exit cost: collect EVERY swap leg (a non-LUNA exit is multi-hop) plus
@@ -384,7 +397,45 @@ function flowsExtractCost(wasm) {
   if (!swaps.length && provide_slippage_pct == null) return null;
   return { swaps, provide_slippage_pct };
 }
-// ============================================================== <<FLOWS CLASSIFIER v3>> END
+function flowsExtractFee(allEvents) {
+  for (const e of allEvents || []) {
+    if (e.type !== 'tx') continue;
+    const a = flowsAttrs(e);
+    if (!a.fee) continue;
+    const c = flowsParseCoinList(a.fee)[0];
+    if (c && c.amount) return { amount: c.amount, denom: c.denom, payer: a.fee_payer || null };
+  }
+  return null;
+}
+// wallet↔wallet amp-token movements. `watched` = every custody/aux contract
+// address; movements touching any of them are pool flows, not transfers.
+function classifyTransferTx(txr, watched) {
+  if (Number(txr.code || 0) !== 0) return [];
+  const allEvents = flowsEventsOf(txr);
+  const fee = flowsExtractFee(allEvents);
+  const out = [];
+  let idx = 0;
+  for (const e of allEvents) {
+    if (e.type !== 'transfer') continue;
+    const all = flowsAttrsAll(e);
+    const n = Math.max((all.recipient || []).length, (all.sender || []).length, (all.amount || []).length);
+    for (let i = 0; i < n; i++) {
+      const from = (all.sender || [])[i] || null, to = (all.recipient || [])[i] || null;
+      if (!from || !to) continue;
+      if ((watched && (watched.has ? (watched.has(from) || watched.has(to)) : (watched[from] || watched[to])))) continue;
+      for (const c of flowsParseCoinList((all.amount || [])[i])) {
+        if (!c.amount || !c.denom) continue;
+        if (!(c.denom.startsWith('factory/') && c.denom.includes('amplp'))) continue;
+        const rec = { schemaVersion: 4, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
+                      key: `${txr.txhash}:${idx++}`, type: 'transfer', denom: c.denom, amount: c.amount, from, to };
+        if (fee) rec.fee = fee;
+        out.push(rec);
+      }
+    }
+  }
+  return out;
+}
+// ============================================================== <<FLOWS CLASSIFIER v4>> END
 
 
 // ----------------------------------------------------------------------------- GitHub publish (org standard + 409-retry from the proven harvester)
@@ -561,6 +612,27 @@ async function run() {
     } catch (e) { addErr(`publish:${mk}`, e); allComplete = false; }
   }
 
+  // 5b-pre. v4 TRANSFERS stream — amp position tokens moving wallet↔wallet.
+  // Own stream + key-based merge (txhash:idx): the events stream's txhash
+  // dedupe stays untouched. Publish failure holds the cursor like aux.
+  const transferCounts = { added: 0 };
+  if (walk.transfers && walk.transfers.length) {
+    const byM = {};
+    for (const r of walk.transfers) (byM[monthKey(r.timestamp)] ||= []).push(r);
+    for (const mk of Object.keys(byM).sort()) {
+      const p2 = `tla-flows/transfers/${mk}.json`;
+      const mr = await apiGetJsonAt(p2);
+      if (!mr.ok) { addErr(`transfers:${mk}`, new Error('read failed — skipping publish this run')); allComplete = false; continue; }
+      const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
+      if (existing === null) { addErr(`transfers:${mk}`, new Error('existing is not an array — refusing to overwrite')); allComplete = false; continue; }
+      const m = AX.mergeKeyed(existing, byM[mk]);
+      if (m.merged.length < existing.length) { addErr(`transfers:${mk}`, new Error('never-shrink violation')); allComplete = false; continue; }
+      if (!(m.added + m.upgraded)) continue;
+      try { await publishFile(p2, JSON.stringify(m.merged), `tla-flows/transfers ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`); transferCounts.added += m.added + m.upgraded; }
+      catch (e) { addErr(`transfers-publish:${mk}`, e); allComplete = false; }
+    }
+  }
+
   // 5b. aux streams (registry-driven; publish failures hold the cursor — the
   //     extension streams can never silently gap while core advances)
   const auxCounts = { votion: 0, dex: 0, nft: 0, samples: 0 };
@@ -627,7 +699,7 @@ async function run() {
   // 8. heartbeat
   await publishHeartbeat({
     startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX },
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added },
     lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });
@@ -638,4 +710,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
-module.exports = { run, classifyFlowTx, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, mergeSamples, monthKey, parseAuxRegistry, publishFile, T, WATCH, txHashOf, touchesWatched, touchesOf };
+module.exports = { run, classifyFlowTx, classifyTransferTx, flowsExtractFee, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, mergeSamples, monthKey, parseAuxRegistry, publishFile, T, WATCH, txHashOf, touchesWatched, touchesOf };
