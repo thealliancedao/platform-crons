@@ -1,0 +1,1826 @@
+{
+ "meta": {
+  "note": "TRIMMED REAL FIXTURE \u2014 live capture 2026-08-03/04, fields the canary reads only",
+  "captured_at": "2026-08-04T00:00:36.014Z"
+ },
+ "pools": [
+  {
+   "pool_name": "ampLUNA-USDC",
+   "pool_type": "concentrated",
+   "assets": [
+    {
+     "symbol": "ampLUNA",
+     "denom": "terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct",
+     "amount_raw": "6190573611450",
+     "decimals": 6
+    },
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "560179572037",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ampLUNA",
+   "pool_type": "concentrated",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "11345203291595",
+     "decimals": 6
+    },
+    {
+     "symbol": "ampLUNA",
+     "denom": "terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct",
+     "amount_raw": "3053120962801",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "USDC-SOLID",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "45095950425",
+     "decimals": 6
+    },
+    {
+     "symbol": "SOLID",
+     "denom": "terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst",
+     "amount_raw": "44964254517",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ATOM",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "ATOM",
+     "denom": "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+     "amount_raw": "10015974459",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "335165020026",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-INJ",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "282380032978",
+     "decimals": 6
+    },
+    {
+     "symbol": "INJ",
+     "denom": "ibc/25BC59386BB65725F735EFC0C369BB717AA8B5DAD846EAF9CBF5D0F18F207211",
+     "amount_raw": "2.330373066065998e+21",
+     "decimals": 18
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-SOLID",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "SOLID",
+     "denom": "terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst",
+     "amount_raw": "10574604822",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "257761791412",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-USDC.axl",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "242695908891",
+     "decimals": 6
+    },
+    {
+     "symbol": "USDC.axl",
+     "denom": "ibc/B3504E092456BA618CC28AC671A71FB08C6CA0FD0BE7C8A5B5A3E2DD933CC9E4",
+     "amount_raw": "9961900011",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-arbLUNA",
+   "pool_type": "concentrated",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "300635907455",
+     "decimals": 6
+    },
+    {
+     "symbol": "arbLUNA",
+     "denom": "terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490",
+     "amount_raw": "60494248874",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-arbLUNA",
+   "pool_type": "stable",
+   "assets": [
+    {
+     "symbol": "arbLUNA",
+     "denom": "terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490",
+     "amount_raw": "9895512521",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "150027984303",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CAPA",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CAPA",
+     "denom": "terra1t4p3u8khpd7f8qzurwyafxt648dya6mp6vur3vaapswt6m24gkuqrfdhar",
+     "amount_raw": "2265321170904",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "56749871256",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ASTRO.cw20",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "56481735068",
+     "decimals": 6
+    },
+    {
+     "symbol": "ASTRO.cw20",
+     "denom": "terra1nsuqsk6kh58ulczatwev87ttq2z6r3pusulg9r24mfj2fvtzd4uq3exn26",
+     "amount_raw": "321934083954",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ampLUNA",
+   "pool_type": "stable",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "13062345787",
+     "decimals": 6
+    },
+    {
+     "symbol": "ampLUNA",
+     "denom": "terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct",
+     "amount_raw": "2434693406",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-SWTH",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "SWTH",
+     "denom": "ibc/792AAE6279F4709F66068E29A79E6F16BBC0A9B93561A91FC040606793E62D6B",
+     "amount_raw": "130738260157276",
+     "decimals": 8
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "4985522179",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-GEM",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "GEM",
+     "denom": "terra1ynvsz80w9xmhdxucv96gkwpxlwvjgsq75xh2f3pf825c4wfmkfxskq6pqv",
+     "amount_raw": "1368319574",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "7451197293",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ROAR",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "ROAR",
+     "denom": "terra1lxx40s29qvkrcj8fsa3yzyehy7w50umdvvnls2r830rys6lu2zns63eelv",
+     "amount_raw": "632269023892213",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2801650202",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-GUGU",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "GUGU",
+     "denom": "terra19nu4q2y0xe3vza6ve5ymup33uzm049pnrqq5ddeuulmrg279t57qstcces",
+     "amount_raw": "883247754",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "5420125813",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-TPT",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "TPT",
+     "denom": "terra13j2k5rfkg0qhk58vz63cze0uze4hwswlrfnm0fa4rnyggjyfrcnqcrs5z2",
+     "amount_raw": "25982030779402",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2552412032",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CRBRUS",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CRBRUS",
+     "denom": "ibc/7A6428206CBDE7B47F78A7A8CF4587CDCFD2B3BF06DD0352CEF678E88F1A501D",
+     "amount_raw": "73301288887471",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "131931270",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-FATMAN",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "FATMAN",
+     "denom": "terra1zf90xr38pdgq0yjq2d56scclpfyu3ep4d720s9r2yw9gmwg7khaq0c30rl",
+     "amount_raw": "531392775526150",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "715641223",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-STEAK",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "STEAK",
+     "denom": "terra1xumzh893lfa7ak5qvpwmnle5m5xp47t3suwwa9s0ydqa8d8s5faqn6x7al",
+     "amount_raw": "474878727",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "715150271",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-fac...oco",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "factory/terra1hj8vslywgrgwuluajuggzpgcudk5fc9d4e6la08426dffgyl7ujs8a3e88/coco",
+     "amount_raw": "731147161044398800",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "686374932",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-wKWEEN.wh",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "586345600",
+     "decimals": 6
+    },
+    {
+     "symbol": "wKWEEN.wh",
+     "denom": "terra13c7t0xtfpafcr6gae9f404x5am7euf87c9qwmsphsecamqjjujqs7yfm4m",
+     "amount_raw": "64863184271",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-xASTRO.cw20",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "xASTRO.cw20",
+     "denom": "terra1x62mjnme4y0rdnag3r8rfgjuutsqlkkyuh4ndgex0wl3wue25uksau39q8",
+     "amount_raw": "7342941656",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "581342346",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-Dinheiros",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "503172903",
+     "decimals": 6
+    },
+    {
+     "symbol": "Dinheiros",
+     "denom": "terra1spkm49wd9dqkranhrks4cupecl3rtgeqqljq3qrvrrts2ev2gw6sy5vz3k",
+     "amount_raw": "101",
+     "decimals": 0
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-SAYVE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "SAYVE",
+     "denom": "terra1xp9hrhthzddnl7j5du83gqqr4wmdjm5t0guzg9jp6jwrtpukwfjsjgy4f3",
+     "amount_raw": "1902386349372",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "474036518",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-xxx",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "xxx",
+     "denom": "terra10se906awphtccf4vd83m0ulpmpt9v4msuakmpy0pwvmtxmup3kdq25rayn",
+     "amount_raw": "89243565620565560000",
+     "decimals": 10
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "396178810",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-LUBI",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUBI",
+     "denom": "terra1uv8ltv32tuq4qf6xspytpv058p0pef64s5xdncfywjexv22lfjzs7mul8s",
+     "amount_raw": "119529550347",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "334983938",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-RED",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "RED",
+     "denom": "terra1xe8umegahlqphtpvjsuwfzfvyjfvag5h8rffsx6ezm0el4xzsf8s7uzezk",
+     "amount_raw": "595910088851",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "298184850",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-Reis",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "223005494",
+     "decimals": 6
+    },
+    {
+     "symbol": "Reis",
+     "denom": "terra1sdglum2dt4f3fmq7jrt2phf2tegmnudc7qqqqujkpqcm9ujuxxkqakv5u8",
+     "amount_raw": "2408714639637",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...qh6",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1uc3r74qg44csdrl8hrm5muzlue9gf7umgkyv569pgazh7tudpr4qdtgqh6",
+     "amount_raw": "24066921742149",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "114368398",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-Escudos",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "87026022",
+     "decimals": 6
+    },
+    {
+     "symbol": "Escudos",
+     "denom": "terra1qj5hs3e86qn4vm9dvtgtlkdp550r0rayk9wpay44mfw3gn3tr8nq5jw3dg",
+     "amount_raw": "71640697596919840000",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-Alem",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "Alem",
+     "denom": "terra1cmf8ytutcwrjrv08zskj9phuh46a3w3nkjax7en4hxezsrdr58lqvzy05q",
+     "amount_raw": "118640285503",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "86846749",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ORNE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "ORNE",
+     "denom": "terra19p20mfnvwh9yvyr7aus3a6z6g6uk28fv4jhx9kmnc2m7krg27q2qkfenjw",
+     "amount_raw": "65234662422",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "81884981",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-KUJI",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "KUJI",
+     "denom": "ibc/B22B4DD21586965DAEF42A7600BA371EA77C02E90FC8A7F2330BF9F9DE129B07",
+     "amount_raw": "73454702",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "22378685",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-fac...ing",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "factory/terra1hj8vslywgrgwuluajuggzpgcudk5fc9d4e6la08426dffgyl7ujs8a3e88/king",
+     "amount_raw": "25651262",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "42689516",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...s6g",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1x7hzfa70wyhm936arahdp76620y87s6jjm8q6fn6x7yd9uvdtqwsueas6g",
+     "amount_raw": "308",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "39171760",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-dUST",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "dUST",
+     "denom": "terra17gck626vgax9jpe6utm7dhx4vdzawfkt0jhru03l7a3dzu98wedsfad4sz",
+     "amount_raw": "29912785098141",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "32823610",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ARMANI",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "ARMANI",
+     "denom": "terra1aa7stl3fytvave9xtcexgv0kne4k7ks068dcljkrfj37hy8q270sjadav8",
+     "amount_raw": "13294097243533516",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "28033827",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...c9s",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1pdzmdmm6rp3c6hud9xfnk0mu95x0gjpvcjjd3w4x7a9afkx5vk5qu42c9s",
+     "amount_raw": "5144211126",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "19268431",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-DROGO",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "DROGO",
+     "denom": "terra1cl273523kmr2uwjhhznq54je69mted2u3ljffm8kp2ap4z3drdksftwqun",
+     "amount_raw": "166577295988644200000",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "15219502",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-wSOL.wh",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "wSOL.wh",
+     "denom": "terra1ctelwayk6t2zu30a8v9kdg3u2gr0slpjdfny5pjp7m3tuquk32ysugyjdg",
+     "amount_raw": "618026",
+     "decimals": 8
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2773529",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...y8q",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra13e7da9f90m32s04kg4knlpsakmn50kqz2zx2rqypkahhp29gxdwqu4vy8q",
+     "amount_raw": "19158169050",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "13123688",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ibc...14C",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "ibc/815FC81EB6BD612206BD9A9909A02F7691D24A5B97CDFE2124B1BDCA9D4AB14C",
+     "amount_raw": "371692577",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "11103327",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-USK",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "USK",
+     "denom": "ibc/14ACCAD1750327C74BB35978AD0C3E97B184DAB9F0BF4BD876FBD1F782B57110",
+     "amount_raw": "451208",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "9430035",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-RISE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "RISE",
+     "denom": "factory/terra1dvvduq0uegn9juch9v0fc97fff3c85nu9f9gveu83dldej07jxysyrrg7m/rise",
+     "amount_raw": "14532779280895",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "9354706",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...j5w",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1z7xe8pjrr0tdguvsdxh2hj6u0gk3y93dxs2xncz00jsjzt8g6suq95lj5w",
+     "amount_raw": "99563823115",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "9257825",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...srk",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1ykxe98arwtahe97h9y5nck8gw88kxn2z73gfwlnx5twcd96ct98sqzcsrk",
+     "amount_raw": "4512226260",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "7479874",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...6nv",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1s4gl6854gjfy90h7hy90wk8zzh7f9ryuw4lmeep6g8jasyrhpt4stve6nv",
+     "amount_raw": "87648527331361",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "6538604",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-fac...oin",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "factory/terra1hj8vslywgrgwuluajuggzpgcudk5fc9d4e6la08426dffgyl7ujs8a3e88/bcoin",
+     "amount_raw": "8338542621122",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "6007195",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...v8j",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra154klny52tlnjw46hkp3zunletuk9as37vrxxuyj2ucda9whycfysahrv8j",
+     "amount_raw": "3681322228504730",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "5856188",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-WETH.wh",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "WETH.wh",
+     "denom": "terra15hhqg8gyz04zapynqtk7uvlsp7lzay7etrt9ann0276v94yae63sxygeat",
+     "amount_raw": "13931",
+     "decimals": 8
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "5370203",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CLON",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CLON",
+     "denom": "terra164ssz60yvsxey0ku9mtcaegdeyxwzuwwqyrp238nvflwqve0pvxsra7fa2",
+     "amount_raw": "26004415489",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "4865026",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-VKR",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "VKR",
+     "denom": "terra1gy73st560m2j0esw5c5rjmr899hvtv4rhh4seeajt3clfhr4aupszjss4j",
+     "amount_raw": "2794332988",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "4515770",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-PEPE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "PEPE",
+     "denom": "terra16a9ylm639l8ehh89ny2k97w9lgkn7txrt8ukq3y8l4e9d6u7hrwslyw9xz",
+     "amount_raw": "2489683309825671700",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "3993363",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...p56",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "3537721",
+     "decimals": 6
+    },
+    {
+     "symbol": null,
+     "denom": "terra1yrxlwkpf42uz646puplelpsflhwsz6fqfayr96xrhmjy9vysgluqc9qp56",
+     "amount_raw": "87054425737",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...n5c",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra10nz4aa0p7wm639jang56n456yfglvzhf7pjea08r5q3h86u5w9tq5lnn5c",
+     "amount_raw": "6074696",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "3382181",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...f5u",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1mma39sqn43aen4jh2sdmka84mv94uk7v7xw3ype2fdvlay6emrlqweyf5u",
+     "amount_raw": "334701",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "3042345",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-BASE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "BASE",
+     "denom": "terra17r9jrknn2m0a8nuymhdpzhcnjz3c8veqszf6ajs7rkjz8zr3jtgqplhw2u",
+     "amount_raw": "21754934070",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2773844",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-HERO",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2377765",
+     "decimals": 6
+    },
+    {
+     "symbol": "HERO",
+     "denom": "terra1klxa4rxjgpg9xuaf5mwpgykpv7x9decrvgg3ejresupcne69cgdqzx5yhu",
+     "amount_raw": "432813",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ibc...EEB",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "ibc/4F81B5D69A628383427EF02C5A8CF95CB747C9BC0F867B0625796F452F2E9EEB",
+     "amount_raw": "403084595792228100000",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2250464",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ibc...9EA",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "ibc/1E6C27CE5A5C42F1D0BC946CE267425896F1B9EE42C9A69B1238A55210CB79EA",
+     "amount_raw": "324236257",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2246572",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-SEAS",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "SEAS",
+     "denom": "terra1rc6ssp5rym7a0hg29xpj4cc9e67tl56kg5jyzgl9qrhfxxc2ugvsnrkala",
+     "amount_raw": "439720064045921",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "2191009",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-bLUNA",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1259144",
+     "decimals": 6
+    },
+    {
+     "symbol": "bLUNA",
+     "denom": "terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml",
+     "amount_raw": "809375",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...ppv",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1gn3fwtw7k40gl465723phk4qgarthw32t962acxz5e5rjzgepwpsjysppv",
+     "amount_raw": "2.4371757485737834e+21",
+     "decimals": 18
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1910518",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-IDC",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "IDC",
+     "denom": "terra1d4j9lsl453mkvtlg4ctw8y52rdkhafsaefug0hq0z06phczuvvvs7uq0vg",
+     "amount_raw": "168855277367",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1622631",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CMST",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CMST",
+     "denom": "ibc/BCB139B1FB690E0AC1AD98EBAAD281949ECB341872E697717BCF95B67917C34F",
+     "amount_raw": "1507534",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1570435",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-BLUE",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1560989",
+     "decimals": 6
+    },
+    {
+     "symbol": "BLUE",
+     "denom": "terra1gwrz9xzhqsygyr5asrgyq3pu0ewpn00mv2zenu86yvx2nlwpe8lqppv584",
+     "amount_raw": "49530788171",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CUB",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CUB",
+     "denom": "terra1lalvk0r6nhruel7fvzdppk3tup3mh5j4d4eadrqzfhle4zrf52as58hh9t",
+     "amount_raw": "999530186586498",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1493081",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "USDC-ibc...992",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "52690",
+     "decimals": 6
+    },
+    {
+     "symbol": null,
+     "denom": "ibc/AC65808D27055D0A44359F4196176B7017C124DE9E866F48BC793C13291BA992",
+     "amount_raw": "8487",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-CMDX",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "CMDX",
+     "denom": "ibc/6CD39EACF052B761E3ADC709A11747CFCCA49F07DA23A26E61DB1CEF4D0CCC33",
+     "amount_raw": "31642927",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "1204223",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...cgq",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1z97enjcmucqrvg92zge0rk0kf8nrp6y73p9dkm99tk2kmxy4pn6sdxpcgq",
+     "amount_raw": "13931930700467",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "698938",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ibc...B4D",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "ibc/30C9FA3DF80892CF4615A84845349EAD427670CB38C6B03B0388BE8543B2AB4D",
+     "amount_raw": "13534126",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "679974",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...y4z",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1ywyvm0pqjfxrt3ucf45rl7cxga72rjx9nw6f39p7c0f8qukfwk9s33xy4z",
+     "amount_raw": "86005440600",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "649398",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...kws",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1a75qhypnu6twvapgrjwv8tg4k0agmazeqwzexmdl6qntdesu3jns59vkws",
+     "amount_raw": "159987673490163200000",
+     "decimals": 18
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "637327",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...7eu",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1h35lj3kw44grdtqjw969cp5kz3eh4kmruqwvay8j4gmuyhkyc3hsvuy7eu",
+     "amount_raw": "94557403352",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "590029",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...8hl",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra189qv5dhpd5s7e0l5n5j0c4mejcef5l9tygq4patzg74yx0xlfkqqef58hl",
+     "amount_raw": "95382402036",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "585668",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...7r9",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1mgvdfqpzl7yufh23jshu3dksrcvhaa57n2sl3xxds39hpldl3rwqd2g7r9",
+     "amount_raw": "95659333509",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "584026",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "DROGO-USDC",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "DROGO",
+     "denom": "terra1cl273523kmr2uwjhhznq54je69mted2u3ljffm8kp2ap4z3drdksftwqun",
+     "amount_raw": "1762930341808467200",
+     "decimals": 6
+    },
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "21769",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...ve0",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1y2c7ezyv6t59z49jrykmh4carmx3sy26t90hh5zjzxy0urspl88sd4hve0",
+     "amount_raw": "105533214159",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "529171",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...2f5",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1atdjzu6ee6ukyyps0s7vufsz9j6dlw00lhcax6geddrxcyl54v8qras2f5",
+     "amount_raw": "105542643131",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "528789",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...v29",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1l3rs9uc3hmc98drp9hs5mfak3c22c5csv46qfvkt65v7a6lsrynqrljv29",
+     "amount_raw": "105549075297",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "528563",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...tg5",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra12jtz69v84yqjrlhy9vg32ckxndvqfry5kglsd86y9er2nupy990q2vytg5",
+     "amount_raw": "105562006200",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "528156",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...j8f",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1f777yyatjjf4uyc43kq8kqz05z2g7xzytkyvgst3cr6lwrpzg67q4yrj8f",
+     "amount_raw": "105566833579",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "528021",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...yd0",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra145lh0ke0njls4q2qqqdaf3nu44sd0ycv3eq43kr0sm8uvtcqjlpscr2yd0",
+     "amount_raw": "105566833572",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "528021",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...dz5",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1hfdtedtnpff6q6wg4sqek0kccqu5yrvtyyqweqzrsajh85w0lq0qgj0dz5",
+     "amount_raw": "105572058577",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "527884",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "USDC-wBNB.wh",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "12935",
+     "decimals": 6
+    },
+    {
+     "symbol": "wBNB.wh",
+     "denom": "terra1xc7ynquupyfcn43sye5pfmnlzjcw2ck9keh0l2w2a4rhjnkp64uq4pr388",
+     "amount_raw": "1299",
+     "decimals": 8
+    }
+   ]
+  },
+  {
+   "pool_name": "xxx-USDC",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "xxx",
+     "denom": "terra10se906awphtccf4vd83m0ulpmpt9v4msuakmpy0pwvmtxmup3kdq25rayn",
+     "amount_raw": "43193450279226880",
+     "decimals": 10
+    },
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "15165",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-TRUMP",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "TRUMP",
+     "denom": "terra18ha3r45syfpp46qg85p9wqxy6p0nj82rlxt7c74qkdr0yzcjut9sw7gerz",
+     "amount_raw": "14119470614507",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "351473",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...vpq",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1rwg5kt6kcyxtz69acjgpeut7dgr4y3r7tvntdxqt03dvpqktrfxq4jrvpq",
+     "amount_raw": "70844927",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "317197",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...dqz",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1leavh38n7ycjh5xed5us2s8f576zmpj48ec0nhjs25r0wq5au9lqw3kdqz",
+     "amount_raw": "207002",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "288907",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-NICO",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "226488",
+     "decimals": 6
+    },
+    {
+     "symbol": "NICO",
+     "denom": "terra1e0efrrrj8d55pflme3dmtyuj7klzcef5cfmz6r2jyqz77kk2jz3qa6drg3",
+     "amount_raw": "3.349235962863333e+23",
+     "decimals": 18
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...hmr",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1nu0c3s69umqz862ltp6wytuztm0rrn6w5079g999u0hvwy62tf3q02qhmr",
+     "amount_raw": "146815",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "143761",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-BGT",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "BGT",
+     "denom": "terra1kkpf3f049trkyscv0av2pa9ad02dzls7f6m8s24q07ehetggytesru7qqp",
+     "amount_raw": "758",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "126069",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-OSMO",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "125040",
+     "decimals": 6
+    },
+    {
+     "symbol": "OSMO",
+     "denom": "ibc/0471F1C4E7AFD3F07702BEF6DC365268D64570F7C1FDC98EA6098DD6DE59817B",
+     "amount_raw": "171077",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...0xu",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra16er279t0mgumskzqp2eq5wju9ge68v6y7ylq4qju35rj5as6gwaqpf70xu",
+     "amount_raw": "19601975",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "100450",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-fac...olo",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "factory/terra1hj8vslywgrgwuluajuggzpgcudk5fc9d4e6la08426dffgyl7ujs8a3e88/yolo",
+     "amount_raw": "989581056",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "100337",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...3cr",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra1dzahfzk3vavwy4zqt0x49guswvwe6ef8jm60fpl2cqmq0yl7pp4qyrx3cr",
+     "amount_raw": "6910367877",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "97133",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...vku",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra170e8mepwmndwfgs5897almdewrt6phnkksktlf958s90eh055xvsrndvku",
+     "amount_raw": "11",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "95793",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "LUNA-ter...rkj",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": null,
+     "denom": "terra13lyzasysm32z904mxvkpx3mtpunqk4cm7mfxkzs24vrzw5zah60s03zrkj",
+     "amount_raw": "16129176748",
+     "decimals": 6
+    },
+    {
+     "symbol": "LUNA",
+     "denom": "uluna",
+     "amount_raw": "80675",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "GUGU-USDC",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "GUGU",
+     "denom": "terra19nu4q2y0xe3vza6ve5ymup33uzm049pnrqq5ddeuulmrg279t57qstcces",
+     "amount_raw": "1607",
+     "decimals": 6
+    },
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "623",
+     "decimals": 6
+    }
+   ]
+  },
+  {
+   "pool_name": "GEM-USDC",
+   "pool_type": "xyk",
+   "assets": [
+    {
+     "symbol": "GEM",
+     "denom": "terra1ynvsz80w9xmhdxucv96gkwpxlwvjgsq75xh2f3pf825c4wfmkfxskq6pqv",
+     "amount_raw": "3226",
+     "decimals": 6
+    },
+    {
+     "symbol": "USDC",
+     "denom": "ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB",
+     "amount_raw": "311",
+     "decimals": 6
+    }
+   ]
+  }
+ ]
+}

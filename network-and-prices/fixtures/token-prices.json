@@ -1,1 +1,113 @@
-
+{
+ "note": "REAL final prices from live nap capture 2026-08-04T00:40Z",
+ "token_prices": {
+  "LUNA": {
+   "final_price_usd": 0.04087107,
+   "final_source": "astroport"
+  },
+  "USDC": {
+   "final_price_usd": 0.999735,
+   "final_source": "astroport"
+  },
+  "USDT": {
+   "final_price_usd": 0.998977,
+   "final_source": "astroport"
+  },
+  "WBTC": {
+   "final_price_usd": 63346,
+   "final_source": "astroport"
+  },
+  "PAXG": {
+   "final_price_usd": 4052.76,
+   "final_source": "astroport"
+  },
+  "EURE": {
+   "final_price_usd": 0.5128071587576233,
+   "final_source": "coingecko (astroport flagged stale)"
+  },
+  "INJ": {
+   "final_price_usd": 4.9298735453309686,
+   "final_source": "coingecko"
+  },
+  "ATOM": {
+   "final_price_usd": 1.36,
+   "final_source": "astroport"
+  },
+  "ETH": {
+   "final_price_usd": 1848.88,
+   "final_source": "astroport"
+  },
+  "WETH": {
+   "final_price_usd": 1849.5063079024972,
+   "final_source": "coingecko"
+  },
+  "WSTETH": {
+   "final_price_usd": 2295.99,
+   "final_source": "astroport"
+  },
+  "BNB": {
+   "final_price_usd": 588.65,
+   "final_source": "astroport"
+  },
+  "WBNB": {
+   "final_price_usd": 587.4672777002935,
+   "final_source": "coingecko"
+  },
+  "OSMO": {
+   "final_price_usd": 0.028297649095629675,
+   "final_source": "coingecko"
+  },
+  "STLUNA": {
+   "final_price_usd": 0.07698907560558596,
+   "final_source": "coingecko"
+  },
+  "STATOM": {
+   "final_price_usd": 2.6377947364159064,
+   "final_source": "coingecko"
+  },
+  "SOLID": {
+   "final_price_usd": 1.0015615474611197,
+   "final_source": "astroport"
+  },
+  "SWTH": {
+   "final_price_usd": 0.000152584365370851,
+   "final_source": "coingecko"
+  },
+  "ROAR": {
+   "final_price_usd": 1.80187308087e-07,
+   "final_source": "astroport"
+  },
+  "CAPA": {
+   "final_price_usd": 0.001027235660444784,
+   "final_source": "astroport"
+  },
+  "ASTRO": {
+   "final_price_usd": 0.000429698530234451,
+   "final_source": "astroport"
+  },
+  "xASTRO": {
+   "final_price_usd": 0.000569334467580603,
+   "final_source": "astroport-direct"
+  },
+  "ampLUNA": {
+   "final_price_usd": 0.09195166587406017,
+   "final_source": "calculated-eris"
+  },
+  "arbLUNA": {
+   "final_price_usd": 0.12231644456749324,
+   "final_source": "calculated-eris"
+  },
+  "bLUNA": {
+   "final_price_usd": 0.07233580553806204,
+   "final_source": "calculated-eris"
+  },
+  "ampCAPA": {
+   "final_price_usd": 0.0011356477931284772,
+   "final_source": "calculated-eris"
+  },
+  "ampROAR": {
+   "final_price_usd": 2.1335215685605774e-07,
+   "final_source": "calculated-eris"
+  }
+ }
+}
