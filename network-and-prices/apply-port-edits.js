@@ -131,6 +131,21 @@ module.exports = {
     TOKEN_REGISTRY, CALCULATED_TOKENS, OUT_BASE, GITHUB_REPO,
 };`, 'E10 guard+exports');
 
+// E11 (3.0.1): EURE cgId correction. Legacy mapped EURE → 'euroe-stablecoin'
+// (EUROe — an UNRELATED, collapsed euro token, ~$0.51 stale). Terra's EURE is
+// the Noble channel-253 denom = Monerium EUR emoney, CG id 'monerium-eur-money-2'
+// (verified 2026-08-04 on the live CG page API-ID field by Camron; ~$1.15-1.17, agreeing with Astroport; Monerium
+// lists Noble among its deployment chains). Live impact of the bug: the
+// flagged_mismatch resolver demoted the CORRECT Astroport $1.15 as "stale" and
+// shipped $0.5128 as final. CG migration trap: the OLD Monerium token kept
+// API id 'monerium-eur-money' under the '-old' slug; the CURRENT token's API
+// id is 'monerium-eur-money-2' — URL slugs are NOT API ids after migrations. — EURE USD understated ~2.24× platform-wide.
+// NOTE: EURE only trades in CONCENTRATED pools, so the xyk canary has no
+// reference for it — match_quality is the guard for this token; expect
+// direct_match after this fix.
+rep(`    EURE:    { cgId: 'euroe-stablecoin',     astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },`,
+`    EURE:    { cgId: 'monerium-eur-money-2', astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },   // 3.0.1: was 'euroe-stablecoin' (wrong coin) — see E11`, 'E11 EURE cgId (3.0.1)');
+
 fs.writeFileSync('index.js', src);
 const leftover = (src.match(/pushToGithub\('data\//g) || []).length;
 console.log('\nApplied ' + edits + " edits · remaining legacy 'data/' write refs: " + leftover);

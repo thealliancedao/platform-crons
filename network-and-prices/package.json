@@ -1,6 +1,6 @@
 {
   "name": "network-and-prices",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Hourly Terra network stats + LST ratios + dual-source token prices + price canary (org home; publishes to tla-core)",
   "main": "index.js",
   "scripts": {

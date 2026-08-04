@@ -110,7 +110,7 @@ const TOKEN_REGISTRY = {
     WBTC:    { cgId: 'wrapped-bitcoin',      astroportAddresses: { 'phoenix-1': 'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB' }, preferChain: 'phoenix-1' },
     PAXG:    { cgId: 'pax-gold',             astroportAddresses: { 'phoenix-1': 'ibc/0EF5630576C66968EF0787868CF09FD866FAD131BC148D24A148358A85F0EB62' }, preferChain: 'phoenix-1' },
     // EURE: ueure native, channel-253 from Noble
-    EURE:    { cgId: 'euroe-stablecoin',     astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },
+    EURE:    { cgId: 'monerium-eur-money-2', astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },   // 3.0.1: was 'euroe-stablecoin' (wrong coin) — see E11
     INJ:     { cgId: 'injective-protocol',   astroportAddresses: {}, preferChain: null },
     ATOM:    { cgId: 'cosmos',               astroportAddresses: { 'phoenix-1': 'ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2' }, preferChain: 'phoenix-1' },
     ETH:     { cgId: 'ethereum',             astroportAddresses: { 'phoenix-1': 'ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B' }, preferChain: 'phoenix-1' },

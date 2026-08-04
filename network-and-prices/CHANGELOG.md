@@ -1,5 +1,17 @@
 # network-and-prices CHANGELOG
 
+## 3.0.1 — 2026-08-04 — EURE cgId correction (wrong coin)
+- TOKEN_REGISTRY EURE cgId 'euroe-stablecoin' → 'monerium-eur-money-2'. The old
+  id pointed at EUROe (unrelated, collapsed, ~$0.51 stale); Terra's EURE is
+  the Noble channel-253 Monerium EURe (current token; the '-2' id is the post-migration API id — the un-suffixed id belongs to the OLD token) (~$1.15-1.17 on CG, agreeing with
+  Astroport). Live impact before fix: flagged_mismatch resolver demoted the
+  CORRECT Astroport price as "stale" and shipped $0.5128 as final — EURE USD
+  understated ~2.24x platform-wide. Expect direct_match + final ~$1.15 after.
+- Canary blind spot documented: EURE trades only in concentrated pools, so
+  the xyk canary has no reference for it — match_quality is EURE's guard.
+- Shipped as edit E11 in apply-port-edits.js; provenance gate (Layer 1)
+  updated to 16 declared edits; new Layer-2 assertion pins the cgId.
+
 ## 3.0.0 — 2026-08-04 — ORG PORT + PRICE CANARY
 - Ported from `defipatriot/cron-scripts` v2 (legacy repo now inspiration-only).
   Provenance-gated: index.js proven byte-identical to legacy + 15 declared

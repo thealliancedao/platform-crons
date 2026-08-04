@@ -33,7 +33,7 @@ execFileSync('node', ['apply-port-edits.js'], { cwd: tmp, stdio: 'pipe' });
 execFileSync('node', ['apply-canary.js'], { cwd: tmp, stdio: 'pipe' });
 const rebuilt = fs.readFileSync(path.join(tmp, 'index.js'), 'utf8');
 const shipped = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-assert(rebuilt === shipped, 'index.js is BYTE-IDENTICAL to legacy-v2 + the 15 declared edits');
+assert(rebuilt === shipped, 'index.js is BYTE-IDENTICAL to legacy-v2 + the 16 declared edits');
 
 console.log('\n=== LAYER 2: behavior on trimmed-REAL fixtures ===');
 const M = require('./index.js');
@@ -41,6 +41,9 @@ assert(typeof M.runPriceCanary === 'function' && typeof M.assemblePriceTable ===
     'module loads under require.main guard; test surface exported');
 assert(M.OUT_BASE === 'network-and-prices' && M.GITHUB_REPO === 'thealliancedao/tla-core',
     `org paths: OUT_BASE='${M.OUT_BASE}', GITHUB_REPO default '${M.GITHUB_REPO}'`);
+assert(M.TOKEN_REGISTRY.EURE.cgId === 'monerium-eur-money-2',
+    "3.0.1: EURE cgId is 'monerium-eur-money-2' (current Monerium token post-migration; 'euroe-stablecoin' was the wrong coin)",
+    M.TOKEN_REGISTRY.EURE.cgId);
 assert(!/pushToGithub\('data\//.test(shipped), "no legacy 'data/' write paths remain");
 assert((shipped.match(/LEGACY_REPO_RAW/g) || []).length === 3,
     'LEGACY_REPO_RAW appears exactly 3× (const + 2 migration reads — never a write)',
