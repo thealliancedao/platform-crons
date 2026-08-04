@@ -1,0 +1,15 @@
+{
+  "name": "network-and-prices",
+  "version": "3.0.0",
+  "description": "Hourly Terra network stats + LST ratios + dual-source token prices + price canary (org home; publishes to tla-core)",
+  "main": "index.js",
+  "scripts": {
+    "snapshot": "node index.js",
+    "gate": "node mock-run.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Alliance DAO",
+  "license": "MIT"
+}
