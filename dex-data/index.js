@@ -219,4 +219,19 @@ async function main() {
   if (enabledCount > 0 && ok === 0) process.exit(1);
 }
 
-main().catch((e) => { console.error('fatal:', e); process.exit(1); });
+main()
+  .then(async () => {
+    // FOLD (2026-08-09, strip #2): epoch/rolling/weekly series module — ported
+    // legacy astroport-snapshot publishing into this job's own trees. Isolated:
+    // its failure never fails the core snapshot run (per-DEX isolation doctrine).
+    // Disable via EPOCHS_ASTROPORT=0.
+    if (process.env.EPOCHS_ASTROPORT === '0') return;
+    try {
+      console.log('\n=== epochs-astroport (folded module) ===');
+      await require('./epochs-astroport.js').main();
+      console.log('=== epochs-astroport done ===');
+    } catch (e) {
+      console.error('epochs-astroport failed (isolated, core snapshots unaffected):', e.message);
+    }
+  })
+  .catch((e) => { console.error('fatal:', e); process.exit(1); });
