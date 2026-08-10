@@ -233,5 +233,17 @@ main()
     } catch (e) {
       console.error('epochs-astroport failed (isolated, core snapshots unaffected):', e.message);
     }
+    // FOLD (2026-08-10, strip #3): SkeletonSwap daily/rolling/weekly/monthly
+    // series module — ported legacy skeletonswap-lp_data publishing into this
+    // job's own trees. Isolated: its failure never fails the core snapshot run
+    // (per-DEX isolation doctrine). Disable via EPOCHS_SKELETONSWAP=0.
+    if (process.env.EPOCHS_SKELETONSWAP === '0') return;
+    try {
+      console.log('\n=== epochs-skeletonswap (folded module) ===');
+      await require('./epochs-skeletonswap.js').main();
+      console.log('=== epochs-skeletonswap done ===');
+    } catch (e) {
+      console.error('epochs-skeletonswap failed (isolated, core snapshots unaffected):', e.message);
+    }
   })
   .catch((e) => { console.error('fatal:', e); process.exit(1); });
