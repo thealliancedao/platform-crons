@@ -82,11 +82,13 @@ const TLA_EPOCH_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Astroport TRPC base. Server-side (no CORS, no proxy needed).
 const ASTROPORT_TRPC_BASE = 'https://app.astroport.fi/api/trpc';
-// Env-overridable (default D30 keeps normal runs light). The ONE-TIME weekly
-// heal run sets ASTRO_CHART_RANGE=D90 alongside ASTRO_WEEKLY_BACKFILL=1 so the
-// bucket reach extends ~13 epochs back and the whole fallback-mixed weekly
-// series gets rewritten bucket-direct; verify the logged reach spans the
-// target epochs before removing both envs. D90 is a valid dateRange enum.
+// Env-overridable; DEFAULT D30 IS THE ONLY KNOWN-VALID VALUE for the
+// charts.* tRPC endpoint — 'D90' was REJECTED with HTTP 400 (enum error) on
+// 2026-08-10, failing all 36 pool fetches for that run. (The old "D90 is
+// valid" note applied to pools.getAll, a different endpoint.) The endpoint
+// takes no date offsets, so epochs older than the D30 window are UNREACHABLE
+// through this API. The env override remains only for supervised future
+// probing — never set it blind on production.
 const ASTROPORT_CHART_RANGE = process.env.ASTRO_CHART_RANGE || 'D30';
 
 // HTTP timing. Astroport's charts endpoint takes 3-5s per pool under load,
@@ -916,9 +918,20 @@ async function captureAstroportSnapshot() {
     if (process.env.ASTRO_WEEKLY_BACKFILL === '1') {
         const allEpochs = new Set();
         for (const p of poolsData) for (const k of Object.keys(p.epochs || {})) allEpochs.add(Number(k));
+        // FULL-COVERAGE GUARD: only rewrite epochs whose whole window sits
+        // inside the chart range — a partially-covered bucket (e.g. epoch 193
+        // under D30) has fewer points than the file already on disk, and
+        // rewriting from it would DEGRADE a value-correct file.
+        const rangeDays = parseInt((ASTROPORT_CHART_RANGE.match(/\d+/) || ['30'])[0], 10);
+        const oldestFullyCoveredMs = startedAt.getTime() - rangeDays * 24 * 60 * 60 * 1000;
         for (const ep of [...allEpochs].sort((a, b) => a - b)) {
             if (ep >= currentEpoch) continue;           // in-progress/future: never
             if (ep === previousEpoch) continue;         // already covered above
+            const epStartMs = TLA_EPOCH_START_MS + (ep - 1) * TLA_EPOCH_DURATION_MS;
+            if (epStartMs < oldestFullyCoveredMs) {
+                console.log(`   ↷ backfill skip epoch ${ep}: window not fully inside ${ASTROPORT_CHART_RANGE} reach (partial bucket would degrade the existing file)`);
+                continue;
+            }
             const w = buildWeeklyForEpoch(poolsData, ep);
             if (w) weeklyBackfill.push(w);
         }
