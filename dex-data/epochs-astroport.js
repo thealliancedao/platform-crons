@@ -82,7 +82,12 @@ const TLA_EPOCH_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Astroport TRPC base. Server-side (no CORS, no proxy needed).
 const ASTROPORT_TRPC_BASE = 'https://app.astroport.fi/api/trpc';
-const ASTROPORT_CHART_RANGE = 'D30';
+// Env-overridable (default D30 keeps normal runs light). The ONE-TIME weekly
+// heal run sets ASTRO_CHART_RANGE=D90 alongside ASTRO_WEEKLY_BACKFILL=1 so the
+// bucket reach extends ~13 epochs back and the whole fallback-mixed weekly
+// series gets rewritten bucket-direct; verify the logged reach spans the
+// target epochs before removing both envs. D90 is a valid dateRange enum.
+const ASTROPORT_CHART_RANGE = process.env.ASTRO_CHART_RANGE || 'D30';
 
 // HTTP timing. Astroport's charts endpoint takes 3-5s per pool under load,
 // and the getAll endpoint can take 5-10s for the full 350KB response.
@@ -444,33 +449,8 @@ async function fetchPoolEpochData(poolMeta) {
 // SELECTION HELPERS
 // -----------------------------------------------------------------------------
 
-function pickLastCompleteEpoch(epochs) {
-    const sorted = Object.keys(epochs).map(Number).sort((a, b) => b - a);
-    if (sorted.length === 0) return null;
-    const latestEp = sorted[0];
-
-    const pickTier = (minVol, minLiq, tier) => {
-        for (const ep of sorted) {
-            if (ep === latestEp) continue;
-            const d = epochs[ep];
-            if (!d) continue;
-            if (minVol != null && (d.volPointCount || 0) < minVol) continue;
-            if (minLiq != null && (d.liqPointCount || 0) < minLiq) continue;
-            return {
-                epoch: ep,
-                avgLiquidity: d.avgLiquidity || 0,
-                totalVolume: (d.avgVolume || 0) * 7,
-                liqPointCount: d.liqPointCount || 0,
-                volPointCount: d.volPointCount || 0,
-                tier,
-            };
-        }
-        return null;
-    };
-    return pickTier(5, null, 'stable')
-        || pickTier(1, null, 'sparse-volume')
-        || pickTier(null, 1, 'liquidity-only');
-}
+// (pickLastCompleteEpoch removed 2026-08-10 — its tier fallback silently mixed
+// epochs per pool; weekly is now bucket-direct. See cron-dex-data-log 1.6.0.)
 
 // -----------------------------------------------------------------------------
 // CSV BUILDERS
@@ -633,16 +613,25 @@ function buildDailyCsv(poolsData, captureDate, captureTime) {
     return [header, ...rows].join('\n') + '\n';
 }
 
-function buildWeeklyCsv(poolsData, meta) {
-    // Aggregate CSV schema with embedded data-quality metadata.
-    // Mirrors SkeletonSwap's AGG_HEADERS structure.
+function buildWeeklyCsv(poolsData, targetEpoch, meta) {
+    // BUCKET-DIRECT (2026-08-10 fix, cron-dex-data-log 1.6.0): every row comes
+    // from the pool's chart bucket for EXACTLY targetEpoch — the old
+    // pickLastCompleteEpoch tier-fallback silently substituted OLDER epochs
+    // for sparse pools (51 mixed rows across the historical series). Pools
+    // with no bucket for targetEpoch get an honest zero-point row instead.
+    // META SEMANTICS (differ from SS's day-based columns — documented here):
+    //   period_start/period_end = the epoch's TRUE window (canonical math)
+    //   snapshots_used          = pools with >=1 liquidity point in the bucket
+    //   snapshots_expected      = total pools in the file
+    //   has_gaps                = used < expected
     const header = 'period,period_start,period_end,snapshots_used,snapshots_expected,has_gaps,dex,pool_name,pool_address,bucket,epoch,avg_liquidity_usd,total_volume_usd,liq_points,vol_points,tier,deprecated';
     const rows = poolsData.map(p => {
-        const lce = pickLastCompleteEpoch(p.epochs) || {};
+        const b = (p.epochs || {})[targetEpoch] || {};
+        const hasLiq = (b.liqPointCount || 0) > 0;
         return [
-            `2026-epoch-${lce.epoch || meta.period}`,
-            meta.period_start || '',
-            meta.period_end || '',
+            `2026-epoch-${targetEpoch}`,
+            meta.period_start,
+            meta.period_end,
             meta.snapshots_used,
             meta.snapshots_expected,
             meta.has_gaps,
@@ -650,16 +639,47 @@ function buildWeeklyCsv(poolsData, meta) {
             csvEscape(p.name),
             p.poolContract,
             p.bucket || '',
-            lce.epoch ?? '',
-            (lce.avgLiquidity || 0).toFixed(2),
-            (lce.totalVolume || 0).toFixed(2),
-            lce.liqPointCount || 0,
-            lce.volPointCount || 0,
-            lce.tier || '',
+            targetEpoch,
+            (b.avgLiquidity || 0).toFixed(2),
+            ((b.avgVolume || 0) * 7).toFixed(2),
+            b.liqPointCount || 0,
+            b.volPointCount || 0,
+            hasLiq ? 'bucket-direct' : 'no-data',
             p.deprecated ? 'true' : 'false',
         ].join(',');
     });
     return [header, ...rows].join('\n') + '\n';
+}
+
+// True window of a canonical epoch (start Monday .. end Sunday, UTC dates).
+function epochWindow(epoch) {
+    const startMs = TLA_EPOCH_START_MS + (epoch - 1) * TLA_EPOCH_DURATION_MS;
+    return {
+        start: new Date(startMs).toISOString().slice(0, 10),
+        end:   new Date(startMs + 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    };
+}
+
+// Assemble one bucket-direct weekly product for an epoch, or null if NO pool
+// has a bucket for it (early-Monday chart lag → skip, self-heals next run).
+function buildWeeklyForEpoch(poolsData, targetEpoch) {
+    const poolsWithBucket = poolsData.filter(p => (p.epochs || {})[targetEpoch]);
+    if (poolsWithBucket.length === 0) return null;
+    const used = poolsData.filter(p => (((p.epochs || {})[targetEpoch] || {}).liqPointCount || 0) > 0).length;
+    const w = epochWindow(targetEpoch);
+    const meta = {
+        period_start: w.start,
+        period_end: w.end,
+        snapshots_used: used,
+        snapshots_expected: poolsData.length,
+        has_gaps: used < poolsData.length,
+    };
+    const year = new Date(TLA_EPOCH_START_MS + (targetEpoch - 1) * TLA_EPOCH_DURATION_MS).getUTCFullYear();
+    return {
+        filename: `dex-data/astroport/weekly-avg/${year}-epoch-${targetEpoch}.csv`,
+        csv: buildWeeklyCsv(poolsData, targetEpoch, meta),
+        meta,
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -879,18 +899,31 @@ async function captureAstroportSnapshot() {
     const rollingDailyFilename = `dex-data/astroport/rolling/day-${dayNum}.csv`;
     const rollingDailyContent = dailyCsvContent;  // same payload
 
-    // STEP 2 (continued): Weekly avg ALWAYS runs (not gated on runMode='weekly'),
-    // so the file accumulates each day. Bug-fix vs. previous behavior.
+    // STEP 2 (continued): Weekly = BUCKET-DIRECT for the previous completed
+    // epoch, refreshed every run (values converge as Astroport's chart
+    // finalizes). Early-Monday guard: if the chart has no bucket yet for the
+    // target, skip this run — self-heals on the next one.
     const previousEpoch = currentEpoch - 1;
-    const weeklyCsvFilename = `dex-data/astroport/weekly-avg/${startedAt.getUTCFullYear()}-epoch-${previousEpoch}.csv`;
-    // Weekly meta — daily snapshots within the prior epoch's 7-day window
-    const weeklyMeta = computeAggMetadata(
-        poolsData.length > 0 ? 1 : 0,  // best-effort; we only know about THIS run's data
-        7,
-        [dateStr]
-    );
-    weeklyMeta.period = previousEpoch;
-    const weeklyCsvContent = buildWeeklyCsv(poolsData, weeklyMeta);
+    const weekly = buildWeeklyForEpoch(poolsData, previousEpoch);
+    if (!weekly) console.log(`⚠ weekly skipped: no pool has a chart bucket for epoch ${previousEpoch} yet (early-Monday lag) — will self-heal next run`);
+
+    // ONE-TIME HEAL (env-gated, Render: set ASTRO_WEEKLY_BACKFILL=1, trigger
+    // once, then remove): rebuild every REACHABLE completed epoch bucket-direct
+    // — repairs the 51 fallback-mixed rows + degenerate metadata across the
+    // historical weekly files (D90 chart reach; epoch-184 is beyond reach and
+    // stays as-is, flagged in CHANGES_PENDING pending the step-2 reader map).
+    const weeklyBackfill = [];
+    if (process.env.ASTRO_WEEKLY_BACKFILL === '1') {
+        const allEpochs = new Set();
+        for (const p of poolsData) for (const k of Object.keys(p.epochs || {})) allEpochs.add(Number(k));
+        for (const ep of [...allEpochs].sort((a, b) => a - b)) {
+            if (ep >= currentEpoch) continue;           // in-progress/future: never
+            if (ep === previousEpoch) continue;         // already covered above
+            const w = buildWeeklyForEpoch(poolsData, ep);
+            if (w) weeklyBackfill.push(w);
+        }
+        console.log(`🔧 weekly backfill: ${weeklyBackfill.length} reachable completed epochs will be rewritten bucket-direct`);
+    }
 
     // STEP 3: 6-day rolling average — fetches past 6 dated daily CSVs from the repo
     // and aggregates. Will have has_gaps=true until we've accumulated 6 days of dailies.
@@ -945,7 +978,10 @@ async function captureAstroportSnapshot() {
         await pushToGithub(jsonFilename, jsonContent, `📊 Astroport epoch ${currentEpoch} — ${dateStr} (${runMode})`);
         await pushToGithub(dailyCsvFilename, dailyCsvContent, `📊 Astroport daily — ${dateStr}`);
         await pushToGithub(rollingDailyFilename, rollingDailyContent, `📊 Astroport day-${dayNum} (${dateStr})`);
-        await pushToGithub(weeklyCsvFilename, weeklyCsvContent, `📊 Astroport weekly accumulating — epoch ${previousEpoch}`);
+        if (weekly) await pushToGithub(weekly.filename, weekly.csv, `📊 Astroport weekly bucket-direct — epoch ${previousEpoch}`);
+        for (const w of weeklyBackfill) {
+            await pushToGithub(w.filename, w.csv, `🔧 Astroport weekly backfill bucket-direct — ${w.filename.split('/').pop()}`);
+        }
         await pushToGithub(sixDayAvgFilename, sixDayAvgContent, `📊 Astroport 6-day rolling avg`);
         // Heartbeat last — only written if everything above succeeded reaching this point
         await pushToGithub(heartbeatFilename, heartbeatContent, `📍 Astroport heartbeat — ${dateStr}`);
@@ -959,7 +995,8 @@ async function captureAstroportSnapshot() {
         writeLocal(jsonFilename, jsonContent);
         writeLocal(dailyCsvFilename, dailyCsvContent);
         writeLocal(rollingDailyFilename, rollingDailyContent);
-        writeLocal(weeklyCsvFilename, weeklyCsvContent);
+        if (weekly) writeLocal(weekly.filename, weekly.csv);
+        for (const w of weeklyBackfill) writeLocal(w.filename, w.csv);
         writeLocal(sixDayAvgFilename, sixDayAvgContent);
         writeLocal(heartbeatFilename, heartbeatContent);
     }
@@ -970,7 +1007,9 @@ async function captureAstroportSnapshot() {
 
 // Require-safe entry: standalone run keeps legacy behavior (exit codes);
 // folded invocation from dex-data/index.js awaits main() without exiting.
-module.exports = { main: captureAstroportSnapshot };
+module.exports = { main: captureAstroportSnapshot,
+  // Gate-only surface (real-fixture tests). Not a public API.
+  _test: { buildWeeklyCsv, buildWeeklyForEpoch, epochWindow, timestampMsToEpoch } };
 if (require.main === module) captureAstroportSnapshot()
     .then(() => process.exit(0))
     .catch((err) => {
