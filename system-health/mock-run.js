@@ -62,6 +62,10 @@ function healthyRepo() {
         'token-catalog/snapshots/heartbeat.json': H('2026-07-16T10:00:00Z'),
         'dex-data/astroport/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
         'dex-data/skeletonswap/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
+        // fold-series heartbeats (rows added 2026-08-10, strip step 3) —
+        // real shape: capturedAt (fold-authored), no generated_at
+        'dex-data/astroport/epochs/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },
+        'dex-data/skeletonswap/rolling/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },
         'tla-voting/vote-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'tla-voting/bribe-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),

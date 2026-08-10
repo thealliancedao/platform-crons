@@ -189,6 +189,11 @@ const FRESHNESS_MAP = [
     { product: 'token-catalog',      kind: 'cron',    path: 'token-catalog/snapshots/heartbeat.json',      ts: ['capturedAt', 'generated_at'], max_age_h: 6 },
     { product: 'dex-astroport',      kind: 'cron',    path: 'dex-data/astroport/snapshots/heartbeat.json', ts: ['generated_at', 'capturedAt'], max_age_h: 6 },
     { product: 'dex-skeletonswap',   kind: 'cron',    path: 'dex-data/skeletonswap/snapshots/heartbeat.json', ts: ['generated_at', 'capturedAt'], max_age_h: 6 },
+    // 2026-08-10 (strip step 3, same paste as the legacy dex kills): the two
+    // FOLD series heartbeats — these products are what the site now READS
+    // (tla-stats/index repoint Rev 3.1/3.71), so they get their own rows.
+    { product: 'dex-astroport-series',    kind: 'cron', path: 'dex-data/astroport/epochs/heartbeat.json',    ts: ['capturedAt'],                max_age_h: 6 },
+    { product: 'dex-skeletonswap-series', kind: 'cron', path: 'dex-data/skeletonswap/rolling/heartbeat.json', ts: ['capturedAt'],               max_age_h: 6 },
     { product: 'tla-voting',         kind: 'cron',    path: 'tla-voting/events/heartbeat.json',            ts: ['capturedAt'],                max_age_h: 6 },
     { product: 'tla-voting-votestate', kind: 'cron',  path: 'tla-voting/vote-state/heartbeat.json',        ts: ['capturedAt'],                max_age_h: 216 },
     { product: 'tla-voting-bribestate', kind: 'cron', path: 'tla-voting/bribe-state/heartbeat.json',       ts: ['capturedAt'],                max_age_h: 216 },
