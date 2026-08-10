@@ -28,6 +28,11 @@ dex-data/
   lib/                     shared helpers for the snapshot layer
   epochs-astroport.js      TRANSITIONAL fold: legacy astroport-snapshot ported
   epochs-skeletonswap.js   TRANSITIONAL fold: legacy skeletonswap-lp_data ported
+  history.js               PERMANENT forward emitters (strip step 4a): gauge
+                           pool-status daily (1%-rule ported from legacy
+                           tla-snapshot; everything else org-native); APR leg
+                           deliberately absent pending CHANGES_PENDING 4b
+                           sourcing decisions. Kill-switch HISTORY=0.
   mock-run.js              snapshot-layer mock gate
 ```
 
