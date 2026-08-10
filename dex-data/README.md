@@ -17,6 +17,42 @@ via `lib/bucket-truth.js` — never from staked-balance membership (retired
 Mock gate: `node mock-run.js` (31 assertions, stubbed network) — re-run after
 any main-loop change.
 
+## Repo layout & placement law (read before adding ANY file here)
+
+```
+dex-data/
+  index.js                 orchestrator — snapshot layer + fold tail hooks
+  dexes/                   PERMANENT architecture: snapshot adapters ONLY.
+                           Every file here conforms to _contract.js and plugs
+                           into the index.js registry. Nothing else may live here.
+  lib/                     shared helpers for the snapshot layer
+  epochs-astroport.js      TRANSITIONAL fold: legacy astroport-snapshot ported
+  epochs-skeletonswap.js   TRANSITIONAL fold: legacy skeletonswap-lp_data ported
+  mock-run.js              snapshot-layer mock gate
+```
+
+**Two layers, two rules:**
+1. **Snapshot layer** (`dexes/` + `lib/` + `index.js`) — org-native forward
+   capture. JSON products under `dex-data/<dex>/snapshots/`. Permanent.
+2. **Fold layer** (`epochs-*.js` at root) — whole legacy crons ported 1:1,
+   publishing the CSV series the site reads today (`daily-csv/`, `rolling/`,
+   `weekly-avg/`, `monthly/`). Kept as single root-level drop-in files ON
+   PURPOSE during the parallel-run window: findable as exact legacy mirrors,
+   diffable against the dying repo, each with its own kill-switch
+   (`EPOCHS_ASTROPORT=0` / `EPOCHS_SKELETONSWAP=0`) and isolated try/catch in
+   the index.js tail. The `epochs-` prefix = "ported legacy producer, not
+   permanent architecture."
+
+**Placement law:** a new snapshot adapter goes in `dexes/` and must pass
+`_contract.js`. A new legacy port goes at root as `epochs-<name>.js` + a
+kill-switched tail hook. Nothing else gets added to this folder without a
+stated home in this section (update it in the same paste).
+
+**Endpoint (deliberate deferral):** when the org migration completes, the fold
+layer gets a consolidation decision — either the CSV series are re-derived
+from the snapshot layer (folds die) or promoted to permanent per-DEX modules.
+That decision belongs to the post-migration audit, not mid-strip.
+
 ## Per-DEX separation (by design)
 
 Each DEX is a **self-contained, independently pluggable** adapter in `dexes/`.
