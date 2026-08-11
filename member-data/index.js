@@ -230,13 +230,36 @@ async function orchestrate() {
     console.log(`(census skipped — runs at ${String(censusHour).padStart(2, '0')}:xx UTC; this run is ${String(hour).padStart(2, '0')}:xx)`);
   }
   if (process.env.TLA_SNAPSHOT === '0') return;
+  let snapshotOk = false;
   try {
     console.log('\n=== tla-snapshot (folded module) ===');
     await require('./tla-snapshot.js').main();
+    snapshotOk = true;
     console.log('=== tla-snapshot done ===');
   } catch (e) {
     console.error('tla-snapshot failed (isolated):', e.message);
     process.exitCode = 1;
+  }
+
+  // Rollups read the DAILY ARCHIVE, which the snapshot fold only writes at
+  // 23:xx UTC — so they only have new input once a day. Run them after the
+  // archive write (or when forced); each isolated from the other.
+  const wroteDailyArchive = new Date().getUTCHours() === 23;
+  if (process.env.ROLLUPS === '0') return;
+  if (!wroteDailyArchive && process.env.FORCE_ROLLUPS !== '1') {
+    console.log('(rollups skipped — daily archive is written at 23:xx UTC; no new input)');
+    return;
+  }
+  if (!snapshotOk) { console.log('(rollups skipped — snapshot failed this run)'); return; }
+  for (const mod of ['./apr-history-rollup.js', './pool-status-history-rollup.js']) {
+    try {
+      console.log(`\n=== ${mod} (folded rollup) ===`);
+      await require(mod).main();
+      console.log(`=== ${mod} done ===`);
+    } catch (e) {
+      console.error(`${mod} failed (isolated):`, e.message);
+      process.exitCode = 1;
+    }
   }
 }
 orchestrate().catch((e) => { console.error('fatal:', e); process.exit(1); });
