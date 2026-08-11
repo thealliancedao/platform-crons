@@ -363,18 +363,18 @@ async function run() {
         console.log(`  Saved locally (current.json ${(partContent.length/1024).toFixed(1)} KB)`);
     } else {
         await publishFile('member-data/participants/current.json', partContent, `participants epoch ${epochInfo.number} (${valid.length})`);
-        console.log('  ✓ data/current.json');
+        console.log('  ✓ member-data/participants/current.json');
         await publishFile('member-data/participants/participants.json', lightContent, `participants list epoch ${epochInfo.number}`);
-        console.log('  ✓ data/participants.json');
+        console.log('  ✓ member-data/participants/participants.json');
         await publishFile('member-data/participants/heartbeat.json', hbContent, `heartbeat ${status} epoch ${epochInfo.number}`);
-        console.log('  ✓ data/heartbeat.json');
+        console.log('  ✓ member-data/participants/heartbeat.json');
 
         // Daily archive — one snapshot per calendar day (same-day overwrite). The
         // full electorate's position history feeds Portfolio Tracker + Vote
         // Intelligence. Was live-only; this starts the time-series accumulation.
         const dateStr = startedAt.toISOString().slice(0, 10);
-        await publishFile(`data/daily/${dateStr}.json`, partContent, `📸 participants daily snapshot — ${dateStr} (${valid.length})`);
-        console.log(`  ✓ data/daily/${dateStr}.json`);
+        await publishFile(`member-data/participants/daily/${dateStr}.json`, partContent, `📸 participants daily snapshot — ${dateStr} (${valid.length})`);
+        console.log(`  ✓ member-data/participants/daily/${dateStr}.json`);
     }
 
     console.log(`\n✅ Done — status ${status} — ${valid.length} participants captured\n`);

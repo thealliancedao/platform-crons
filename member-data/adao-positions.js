@@ -694,9 +694,9 @@ async function captureSnapshot() {
         const archivePath = `member-data/positions/weekly/epoch-${epochInfo.number}.json`;
 
         await publishFile('member-data/positions/members.json', membersContent, `members refresh epoch ${epochInfo.number}`);
-        console.log(`  ✓ Published data/members.json`);
+        console.log(`  ✓ Published member-data/positions/members.json`);
         await publishFile('member-data/positions/current.json', portfoliosContent, `positions epoch ${epochInfo.number}`);
-        console.log(`  ✓ Published data/current.json`);
+        console.log(`  ✓ Published member-data/positions/current.json`);
         await publishFile(archivePath, portfoliosRetainedContent, `archive epoch ${epochInfo.number} (registered-only history)`);
         console.log(`  ✓ Published ${archivePath} (registered-only)`);
 
@@ -778,7 +778,7 @@ async function captureSnapshot() {
         };
         await publishFile('member-data/positions/heartbeat.json', JSON.stringify(heartbeat, null, 2),
             `📍 aDAO positions heartbeat — epoch ${epochInfo.number}`);
-        console.log(`  ✓ Published data/heartbeat.json`);
+        console.log(`  ✓ Published member-data/positions/heartbeat.json`);
     }
 
     const elapsed = (Date.now() - startedAt.getTime()) / 1000;
