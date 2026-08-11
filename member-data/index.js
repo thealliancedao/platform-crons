@@ -241,6 +241,24 @@ async function orchestrate() {
     process.exitCode = 1;
   }
 
+  // P1 FOLDS (2026-08-11): the two portfolio producers whose legacy jobs were
+  // FAILING and whose products froze 2026-08-09 while six live site files read
+  // them. Each isolated; disable with ADAO_POSITIONS=0 / TLA_PARTICIPANTS=0.
+  for (const [env, mod, label] of [
+    ['TLA_PARTICIPANTS', './tla-participants.js', 'tla-participants'],
+    ['ADAO_POSITIONS', './adao-positions.js', 'adao-positions'],
+  ]) {
+    if (process.env[env] === '0') continue;
+    try {
+      console.log(`\n=== ${label} (folded module) ===`);
+      await require(mod).main();
+      console.log(`=== ${label} done ===`);
+    } catch (e) {
+      console.error(`${label} failed (isolated):`, e.message);
+      process.exitCode = 1;
+    }
+  }
+
   // Rollups read the DAILY ARCHIVE, which the snapshot fold only writes at
   // 23:xx UTC — so they only have new input once a day. Run them after the
   // archive write (or when forced); each isolated from the other.
