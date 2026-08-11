@@ -212,4 +212,31 @@ async function run() {
   if (status !== 'ok' && !ok1) process.exit(1);
 }
 
-run().catch((e) => { console.error('fatal:', e); process.exit(1); });
+// =============================================================================
+// ORCHESTRATION (2026-08-10, strip 4b): this job now runs HOURLY on Render.
+// The tla-snapshot fold runs EVERY invocation; the daily census runs only at
+// its hour (self-escalating single-cron doctrine — one job, clock-gated
+// modes). MEMBER_CENSUS_HOUR = the UTC hour the old daily schedule fired
+// (set on Render when switching the schedule to hourly). Census failures and
+// fold failures are isolated from each other.
+// =============================================================================
+async function orchestrate() {
+  const hour = new Date().getUTCHours();
+  const censusHour = parseInt(process.env.MEMBER_CENSUS_HOUR || '2', 10);
+  if (hour === censusHour || process.env.FORCE_CENSUS === '1') {
+    try { await run(); }
+    catch (e) { console.error('census failed (isolated):', e.message); }
+  } else {
+    console.log(`(census skipped — runs at ${String(censusHour).padStart(2, '0')}:xx UTC; this run is ${String(hour).padStart(2, '0')}:xx)`);
+  }
+  if (process.env.TLA_SNAPSHOT === '0') return;
+  try {
+    console.log('\n=== tla-snapshot (folded module) ===');
+    await require('./tla-snapshot.js').main();
+    console.log('=== tla-snapshot done ===');
+  } catch (e) {
+    console.error('tla-snapshot failed (isolated):', e.message);
+    process.exitCode = 1;
+  }
+}
+orchestrate().catch((e) => { console.error('fatal:', e); process.exit(1); });
