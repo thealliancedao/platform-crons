@@ -30,8 +30,10 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH = process.env.NFT_PATH || 'nfts/adao/snapshots';
 
 // Canonical rarity metadata (token_id -> grade 1-40, object trait, percentile).
+// ORG 2026-08-11: defipatriot/nft-metadata is DELETED (404). Rarity is a
+// per-collection artifact and lives in the NFT tenant repo.
 const RARITY_URL = process.env.RARITY_URL ||
-  'https://raw.githubusercontent.com/defipatriot/nft-metadata/main/adao-rarity-intended.json';
+  'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/adao/rarity/adao-rarity-intended.json';
 
 // Min samples before we publish a floor/median (else null — no fake floors).
 const MIN_LISTINGS_FOR_FLOOR = 2;
@@ -67,10 +69,12 @@ async function main() {
   console.log(`${VERSION} — collection analytics`);
 
   // 1) Load inputs: rarity map, the cron's nfts.json, and sales history.
-  const [rarityDoc, nftsDoc, salesDoc] = await Promise.all([
+  const [rarityDoc, nftsDoc, salesDoc, enrichedDoc] = await Promise.all([
     fetchJson(bust(RARITY_URL)),
     fetchJson(bust(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${NFT_PATH}/nfts.json`)),
     fetchJson(bust(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${NFT_PATH}/sales-history.json`)).catch(() => null),
+    // Per-sale enriched ledger — powers the EXPLORER analytics block below.
+    fetchJson(bust(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${NFT_PATH}/sales-enriched.json`)).catch(() => null),
   ]);
 
   const rarity = rarityDoc.records || rarityDoc;
@@ -184,6 +188,123 @@ async function main() {
   };
 
   await publish(`${NFT_PATH}/analytics.json`, out, 'nft-analytics: collection metrics');
+
+  // ===========================================================================
+  // EXPLORER BLOCK (added 2026-08-11) — nft-analytics.json
+  // ---------------------------------------------------------------------------
+  // nft-explorer-app.js REQUIRES a feed with volume/leaderboards/monthly/
+  // royalties/flips/hold_time_days/denom_split/sale_number_distribution (it
+  // throws without volume+leaderboards). Its legacy producer no longer exists
+  // in any repo. Every field is derivable from sales-enriched.json, which the
+  // org NFT cron already writes — so this is a JOIN, not new capture, and it
+  // ships inside the same job rather than as another cron.
+  // ===========================================================================
+  const esales = (enrichedDoc && Array.isArray(enrichedDoc.sales)) ? enrichedDoc.sales : [];
+  if (esales.length) {
+    const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+    const sorted = [...esales].sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+
+    const volume = {
+      sales_count: esales.length,
+      luna_equiv_total: Number(esales.reduce((s, x) => s + num(x.luna_equiv), 0).toFixed(2)),
+      usd_at_sale: Number(esales.reduce((s, x) => s + num(x.notional_usd), 0).toFixed(2)),
+      value_today_usd: Number(esales.reduce((s, x) => s + num(x.value_today_usd), 0).toFixed(2)),
+      spot_luna_usd: enrichedDoc.spot_luna_usd ?? null,
+      tokens: new Set(esales.map(x => x.token_id)).size,
+      note: 'derived from sales-enriched.json (org NFT layer)',
+    };
+
+    const tally = (keyFn, valFn) => {
+      const m = new Map();
+      for (const x of esales) {
+        const k = keyFn(x); if (k == null || k === '') continue;
+        const e = m.get(k) || { count: 0, luna: 0, usd: 0 };
+        e.count++; e.luna += num(x.luna_equiv); e.usd += num(valFn ? valFn(x) : x.notional_usd);
+        m.set(k, e);
+      }
+      return m;
+    };
+    const rank = (m, keyName) => [...m.entries()]
+      .sort((a, b) => b[1].luna - a[1].luna).slice(0, 20)
+      .map(([k, v]) => ({ [keyName]: k, sales: v.count, luna: Number(v.luna.toFixed(2)), usd: Number(v.usd.toFixed(2)) }));
+
+    const leaderboards = {
+      top_buyers: rank(tally(x => x.buyer), 'address'),
+      top_sellers: rank(tally(x => x.seller), 'address'),
+      most_traded_tokens: [...tally(x => x.token_id).entries()]
+        .sort((a, b) => b[1].count - a[1].count).slice(0, 20)
+        .map(([token_id, v]) => ({ token_id, sales: v.count, luna: Number(v.luna.toFixed(2)) })),
+    };
+
+    const monthlyMap = new Map();
+    for (const x of esales) {
+      const mk = String(x.timestamp || '').slice(0, 7); if (mk.length !== 7) continue;
+      const e = monthlyMap.get(mk) || { month: mk, sales: 0, luna: 0, usd: 0 };
+      e.sales++; e.luna += num(x.luna_equiv); e.usd += num(x.notional_usd);
+      monthlyMap.set(mk, e);
+    }
+    const monthly = [...monthlyMap.values()].sort((a, b) => a.month.localeCompare(b.month))
+      .map(m => ({ ...m, luna: Number(m.luna.toFixed(2)), usd: Number(m.usd.toFixed(2)) }));
+
+    const denom_split = {};
+    for (const x of esales) {
+      const d = x.denom_symbol || x.denom || 'unknown';
+      denom_split[d] = denom_split[d] || { count: 0, luna: 0 };
+      denom_split[d].count++; denom_split[d].luna = Number((denom_split[d].luna + num(x.luna_equiv)).toFixed(2));
+    }
+
+    const sale_number_distribution = {};
+    for (const x of esales) {
+      const n = x.sale_number; if (n == null) continue;
+      const k = String(n);
+      sale_number_distribution[k] = (sale_number_distribution[k] || 0) + 1;
+    }
+
+    const holds = esales.map(x => num(x.hold_days)).filter(h => h > 0).sort((a, b) => a - b);
+    const hold_time_days = holds.length ? {
+      count: holds.length,
+      min: holds[0], max: holds[holds.length - 1],
+      median: holds[Math.floor(holds.length / 2)],
+      avg: Number((holds.reduce((s, h) => s + h, 0) / holds.length).toFixed(1)),
+    } : {};
+
+    // A "flip" = a sale whose hold_days is short. Threshold declared, not hidden.
+    const FLIP_DAYS = 30;
+    const flipSales = esales.filter(x => num(x.hold_days) > 0 && num(x.hold_days) <= FLIP_DAYS);
+    const flips = {
+      threshold_days: FLIP_DAYS,
+      count: flipSales.length,
+      pct_of_sales: esales.length ? Number((flipSales.length / esales.length * 100).toFixed(1)) : 0,
+      luna: Number(flipSales.reduce((s, x) => s + num(x.luna_equiv), 0).toFixed(2)),
+    };
+
+    const royaltySales = esales.filter(x => num(x.royalty_fee) > 0);
+    const royalties = {
+      sales_with_royalty: royaltySales.length,
+      total_royalty_luna: Number(royaltySales.reduce((s, x) => s + num(x.royalty_fee), 0).toFixed(6)),
+      recipients: [...new Set(royaltySales.map(x => x.royalty_recipient).filter(Boolean))],
+    };
+
+    const explorer = {
+      schemaVersion: 2,
+      collection: enrichedDoc.collection ?? out.meta?.collection ?? 'adao',
+      builtAt: new Date().toISOString(),
+      source: 'org nfts/adao analytics.js — derived from sales-enriched.json',
+      volume, leaderboards, monthly, denom_split, sale_number_distribution,
+      hold_time_days, flips, royalties,
+      first_sale: sorted.length ? { token_id: sorted[sorted.length - 1].token_id, date: sorted[sorted.length - 1].timestamp, notional_usd: sorted[sorted.length - 1].notional_usd } : null,
+      last_sale: sorted.length ? { token_id: sorted[0].token_id, date: sorted[0].timestamp, notional_usd: sorted[0].notional_usd } : null,
+      // Declared-absent rather than faked: the legacy feed carried bLUNA oracle
+      // curves from a producer that no longer exists. Null until an org source does.
+      bluna_pricing: null,
+      bluna_ratio_curve: null,
+      oracle_span: null,
+    };
+    await publish(`${NFT_PATH}/nft-analytics.json`, explorer, 'nft-analytics: explorer feed (from sales-enriched)');
+    console.log(`  explorer feed: ${volume.sales_count} sales, ${monthly.length} months, ${leaderboards.top_buyers.length} buyers ranked`);
+  } else {
+    console.log('  explorer feed SKIPPED — sales-enriched.json unavailable (honest skip, no fabricated feed)');
+  }
   await publish(`${NFT_PATH}/analytics-heartbeat.json`, {
     version: VERSION, generated_at: new Date().toISOString(), status: 'ok',
     all_time_sales: allTimeCount, all_time_volume_luna: out.all_time.total_volume_luna,
@@ -220,4 +341,5 @@ async function publish(filepath, obj, message, maxAttempts = 5) {
   return false;
 }
 
-main().catch(e => { console.error('fatal:', e); process.exit(1); });
+module.exports = { main };
+if (require.main === module) main().catch(e => { console.error('fatal:', e); process.exit(1); });

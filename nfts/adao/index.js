@@ -2265,8 +2265,41 @@ async function captureSnapshot() {
 // ENTRY POINT
 // -----------------------------------------------------------------------------
 
+// =============================================================================
+// ANALYTICS TAIL (2026-08-11) — one job for everything aDAO-NFT.
+// -----------------------------------------------------------------------------
+// analytics.js is a pure JOIN over files this cron just wrote (nfts.json,
+// sales-history.json, sales-enriched.json) plus the rarity map — no chain calls,
+// no new capture. Running it here removes the need for a separate Render job
+// and guarantees it always reads THIS run's outputs rather than a stale set.
+// Isolated: analytics failure never fails the inventory capture.
+// Cadence guard: analytics only needs rebuilding when the inventory actually
+// changed, so it runs on warm/full runs (and on hot runs only if forced).
+// Disable with NFT_ANALYTICS=0; force on every run with NFT_ANALYTICS=always.
+// =============================================================================
+async function runWithAnalytics() {
+    const result = await captureSnapshot();
+    const mode = String(process.env.NFT_ANALYTICS || '').toLowerCase();
+    if (mode === '0') return result;
+    const runMode = (result && result.runMode) || process.env.RUN_MODE || '';
+    const shouldRun = mode === 'always' || runMode === 'warm' || runMode === 'full';
+    if (!shouldRun) {
+        console.log(`(analytics skipped — runMode=${runMode || 'hot'}; runs on warm/full or NFT_ANALYTICS=always)`);
+        return result;
+    }
+    try {
+        console.log('\n=== analytics (same job) ===');
+        await require('./analytics.js').main();
+        console.log('=== analytics done ===');
+    } catch (e) {
+        console.error('analytics failed (isolated, inventory unaffected):', e.message);
+        process.exitCode = 1;
+    }
+    return result;
+}
+
 if (require.main === module) {
-    captureSnapshot().catch(e => {
+    runWithAnalytics().catch(e => {
         console.error(`❌ FATAL: ${e.message}`);
         console.error(e.stack);
         process.exit(1);
@@ -2275,6 +2308,7 @@ if (require.main === module) {
 
 module.exports = {
     captureSnapshot,
+    runWithAnalytics,
     // Phase exports for testing
     enumerateAllTokens,
     fetchAllNftInfo,
