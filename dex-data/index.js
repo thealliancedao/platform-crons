@@ -245,16 +245,5 @@ main()
     } catch (e) {
       console.error('epochs-skeletonswap failed (isolated, core snapshots unaffected):', e.message);
     }
-    // FORWARD EMITTERS (2026-08-10, strip step 4a): history.js — pool-status
-    // daily via the gauge 1%-rule (APR leg pending sourcing decisions, see
-    // CHANGES_PENDING 4b). Isolated; disable via HISTORY=0.
-    if (process.env.HISTORY === '0') return;
-    try {
-      console.log('\n=== history (folded module) ===');
-      await require('./history.js').main();
-      console.log('=== history done ===');
-    } catch (e) {
-      console.error('history failed (isolated, core snapshots unaffected):', e.message);
-    }
   })
   .catch((e) => { console.error('fatal:', e); process.exit(1); });
