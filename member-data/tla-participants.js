@@ -243,16 +243,35 @@ function githubApiRequest(method, apiPath, body = null) {
     });
 }
 
-async function publishFile(filePath, content, message) {
+// BRANCH-RACE RETRY (2026-08-11): twelve org jobs now write to tla-core, so
+// main can advance between our sha read and the PUT — this cron died on a 409
+// mid-run ("is at <sha> but expected <sha>"). Re-fetch the sha on EVERY attempt
+// and back off with jitter; a stale sha is never reused. Same pattern already
+// proven in the dex folds, the relabel one-off and the daily-archive bank.
+async function publishFile(filePath, content, message, maxAttempts = 5) {
     const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
-    let sha = null;
-    try {
-        const existing = await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`);
-        sha = existing.sha;
-    } catch (e) { /* file doesn't exist yet */ }
-    const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
-    if (sha) body.sha = sha;
-    return githubApiRequest('PUT', apiPath, body);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        let sha = null;
+        try {
+            const existing = await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`);
+            sha = existing.sha;
+        } catch (e) { /* file doesn't exist yet — create */ }
+        const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
+        if (sha) body.sha = sha;
+        try {
+            return await githubApiRequest('PUT', apiPath, body);
+        } catch (e) {
+            lastErr = e;
+            const msg = String(e && e.message || '');
+            const racey = msg.includes(' 409 ') || msg.includes(' 422 ') || / 5\d\d /.test(msg);
+            if (!racey || attempt === maxAttempts) throw e;
+            const wait = 400 * attempt + Math.floor(Math.random() * 400);
+            console.log(`  ↻ publish retry ${attempt}/${maxAttempts - 1} after race (${msg.slice(0, 60)}…) — waiting ${wait}ms`);
+            await new Promise(r => setTimeout(r, wait));
+        }
+    }
+    throw lastErr;
 }
 
 // -----------------------------------------------------------------------------

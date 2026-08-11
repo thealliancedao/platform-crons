@@ -1482,17 +1482,30 @@ function githubApiRequest(method, apiPath, body = null) {
     });
 }
 
-async function pushToGithub(filepath, content, message) {
+// BRANCH-RACE RETRY (2026-08-11): was single-shot AND silently returned false
+// on a 409, so a lost write looked like a successful run. Now retries with a
+// fresh sha per attempt and reports honestly when it truly fails.
+async function pushToGithub(filepath, content, message, maxAttempts = 5) {
     const apiPath = `/repos/${GITHUB_REPO}/contents/${filepath}`;
-    const existing = await githubApiRequest('GET', apiPath);
-    const sha = existing.data?.sha;
-    const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH, ...(sha ? { sha } : {}) };
-    const result = await githubApiRequest('PUT', apiPath, body);
-    if (result.status === 200 || result.status === 201) {
-        console.log(`  ✅ ${filepath}`);
-        return true;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const existing = await githubApiRequest('GET', apiPath);
+        const sha = existing.data?.sha;
+        const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH, ...(sha ? { sha } : {}) };
+        const result = await githubApiRequest('PUT', apiPath, body);
+        if (result.status === 200 || result.status === 201) {
+            console.log(`  ✅ ${filepath}`);
+            return true;
+        }
+        const racey = result.status === 409 || result.status === 422 || result.status >= 500;
+        if (racey && attempt < maxAttempts) {
+            const wait = 400 * attempt + Math.floor(Math.random() * 400);
+            console.log(`  ↻ push retry ${attempt} (HTTP ${result.status}) ${filepath} — waiting ${wait}ms`);
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+        }
+        console.error(`  ❌ Push failed (HTTP ${result.status}): ${result.data?.message || '<no message>'}`);
+        return false;
     }
-    console.error(`  ❌ Push failed (HTTP ${result.status}): ${result.data?.message || '<no message>'}`);
     return false;
 }
 

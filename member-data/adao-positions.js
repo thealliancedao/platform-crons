@@ -382,22 +382,39 @@ function githubApiRequest(method, apiPath, body = null) {
     });
 }
 
-async function publishFile(filePath, content, message) {
+// BRANCH-RACE RETRY (2026-08-11): twelve org jobs write to tla-core, so main
+// can advance between our sha read and the PUT. Re-fetch the sha on EVERY
+// attempt; never reuse a stale one. (tla-participants died on exactly this.)
+async function publishFile(filePath, content, message, maxAttempts = 5) {
     const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
-    let sha = null;
-    try {
-        const existing = await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`);
-        sha = existing.sha;
-    } catch (e) {
-        // File doesn't exist yet — that's fine
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        let sha = null;
+        try {
+            const existing = await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`);
+            sha = existing.sha;
+        } catch (e) {
+            // File doesn't exist yet — that's fine
+        }
+        const body = {
+            message,
+            content: Buffer.from(content).toString('base64'),
+            branch: GITHUB_BRANCH,
+        };
+        if (sha) body.sha = sha;
+        try {
+            return await githubApiRequest('PUT', apiPath, body);
+        } catch (e) {
+            lastErr = e;
+            const msg = String(e && e.message || '');
+            const racey = msg.includes(' 409 ') || msg.includes(' 422 ') || / 5\d\d /.test(msg);
+            if (!racey || attempt === maxAttempts) throw e;
+            const wait = 400 * attempt + Math.floor(Math.random() * 400);
+            console.log(`  ↻ publish retry ${attempt} after race — waiting ${wait}ms`);
+            await new Promise(r => setTimeout(r, wait));
+        }
     }
-    const body = {
-        message,
-        content: Buffer.from(content).toString('base64'),
-        branch: GITHUB_BRANCH,
-    };
-    if (sha) body.sha = sha;
-    return githubApiRequest('PUT', apiPath, body);
+    throw lastErr;
 }
 
 // -----------------------------------------------------------------------------
