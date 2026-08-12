@@ -75,7 +75,7 @@ function computeRunway(head, potsByPeriod, capturedAt) {
     return out;
 }
 
-// Source classes (Camron 2026-07-30: replace the "auto-bribed" pattern-guess
+// Source classes (DeFi_Patriot 2026-07-30: replace the "auto-bribed" pattern-guess
 // with EVIDENCE tags): who funds a pool comes from ATTRIBUTED bribe events
 // whose span reaches the present — never inferred from pot shape. Classes:
 //   dex     — the four staking-bucket/tribute contracts recycling Astroport
