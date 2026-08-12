@@ -134,7 +134,7 @@ module.exports = {
 // E11 (3.0.1): EURE cgId correction. Legacy mapped EURE → 'euroe-stablecoin'
 // (EUROe — an UNRELATED, collapsed euro token, ~$0.51 stale). Terra's EURE is
 // the Noble channel-253 denom = Monerium EUR emoney, CG id 'monerium-eur-money-2'
-// (verified 2026-08-04 on the live CG page API-ID field by Camron; ~$1.15-1.17, agreeing with Astroport; Monerium
+// (verified 2026-08-04 on the live CG page API-ID field by DeFi_Patriot; ~$1.15-1.17, agreeing with Astroport; Monerium
 // lists Noble among its deployment chains). Live impact of the bug: the
 // flagged_mismatch resolver demoted the CORRECT Astroport $1.15 as "stale" and
 // shipped $0.5128 as final. CG migration trap: the OLD Monerium token kept
