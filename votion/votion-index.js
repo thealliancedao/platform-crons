@@ -427,7 +427,7 @@ async function runBranchB(now, vaults, errors) {
 // =============================================================================
 // MAIN
 // =============================================================================
-// ---- Branch C — Votion optimizer capture (Camron 2026-07-31) ---------------
+// ---- Branch C — Votion optimizer capture (DeFi_Patriot 2026-07-31) ---------------
 // First-party Votion API: per-vault PLANNED reallocation for the next epoch
 // (current% \u2192 optimized% per gauge, isWorthChanging, voteBefore deadline).
 // Complements the on-chain vote-shift signal: this is INTENTION (published by
