@@ -1,5 +1,5 @@
 // =============================================================================
-// FOLDED 2026-08-10 into org member-data (strip step 4b — org-pure per Camron:
+// FOLDED 2026-08-10 into org member-data (strip step 4b — org-pure per the owner:
 // no fixes in dying repos). Verbatim legacy tla-snapshot logic; the ONLY edits:
 //   - INPUT SWAPS to org products where the legacy source is dead/dying:
 //       bribes current  → tla-core tla-voting/bribe-state/<YYYY>/<MM>.json
