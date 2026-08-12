@@ -259,6 +259,20 @@ async function orchestrate() {
     }
   }
 
+  // dao-dashboard FOLD (2026-08-11): the last legacy producer. Reads THIS
+  // run's tla-snapshot output, so it must run after it. Isolated; disable
+  // with DAO_DASHBOARD=0.
+  if (process.env.DAO_DASHBOARD !== '0') {
+    try {
+      console.log('\n=== dao-dashboard (folded module) ===');
+      await require('./dao-dashboard.js').main();
+      console.log('=== dao-dashboard done ===');
+    } catch (e) {
+      console.error('dao-dashboard failed (isolated):', e.message);
+      process.exitCode = 1;
+    }
+  }
+
   // Rollups read the DAILY ARCHIVE, which the snapshot fold only writes at
   // 23:xx UTC — so they only have new input once a day. Run them after the
   // archive write (or when forced); each isolated from the other.
