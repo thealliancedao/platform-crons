@@ -285,6 +285,30 @@ async function main() {
       recipients: [...new Set(royaltySales.map(x => x.royalty_recipient).filter(Boolean))],
     };
 
+    // Live listings grouped by marketplace, with each one's own floor. Uses the
+    // inventory doc (complete), not the sales ledger (marketplace mostly null).
+    const listingsByMarketplace = (() => {
+      const out = {};
+      const recs = Array.isArray(nftsDoc?.records) ? nftsDoc.records : Object.values(nftsDoc?.records || {});
+      for (const r of recs) {
+        const l = r && r.listing;
+        if (!l) continue;
+        const mk = l.marketplace || 'Unknown';
+        const e = out[mk] || (out[mk] = { count: 0, floor_usd: null, denoms: {} });
+        e.count++;
+        const usd = Number(l.price_usd);
+        if (Number.isFinite(usd) && usd > 0) {
+          e.floor_usd = e.floor_usd == null ? usd : Math.min(e.floor_usd, usd);
+        }
+        const sym = l.price_token_symbol || l.denom || 'unknown';
+        e.denoms[sym] = (e.denoms[sym] || 0) + 1;
+      }
+      for (const k of Object.keys(out)) {
+        if (out[k].floor_usd != null) out[k].floor_usd = Number(out[k].floor_usd.toFixed(2));
+      }
+      return out;
+    })();
+
     const explorer = {
       schemaVersion: 2,
       collection: enrichedDoc.collection ?? out.meta?.collection ?? 'adao',
@@ -292,6 +316,16 @@ async function main() {
       source: 'org nfts/adao analytics.js — derived from sales-enriched.json',
       volume, leaderboards, monthly, denom_split, sale_number_distribution,
       hold_time_days, flips, royalties,
+      // CURRENT listings by marketplace (added 2026-08-12). Derived from
+      // nfts.json, which carries a complete live listing per token — so this is
+      // exact, not sampled.
+      //
+      // NOTE, deliberately absent: a HISTORICAL sales-by-marketplace breakdown.
+      // sales-enriched carries `marketplace` on only 38 of 1,259 sales (3%),
+      // so any such split would be a guess dressed up as a statistic. If the
+      // sales walker ever resolves marketplace from the tx target reliably,
+      // add it here — until then the honest answer is that we don't know.
+      listings_by_marketplace: listingsByMarketplace,
       first_sale: sorted.length ? { token_id: sorted[sorted.length - 1].token_id, date: sorted[sorted.length - 1].timestamp, notional_usd: sorted[sorted.length - 1].notional_usd } : null,
       last_sale: sorted.length ? { token_id: sorted[0].token_id, date: sorted[0].timestamp, notional_usd: sorted[0].notional_usd } : null,
       // Declared-absent rather than faked: the legacy feed carried bLUNA oracle
