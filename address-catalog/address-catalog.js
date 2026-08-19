@@ -239,13 +239,36 @@ function githubApiRequest(method, apiPath, body = null) {
   });
 }
 
-async function publishFile(filePath, content, message) {
+// PUBLISHER RETRY (2026-08-12). Twelve org jobs write to tla-core, so main
+// advances between our sha read and the PUT — 409 "is at X but expected Y" is
+// routine, not exceptional. GitHub also returns transient 5xx ("No server is
+// currently available"), which is not our fault and not permanent. Both are
+// retried with a FRESH sha per attempt and jittered backoff; a stale sha is
+// never reused. Anything else still throws immediately.
+// This cron died mid-run on 2026-08-18: heartbeat.json hit a 409 AFTER
+// current.json and the daily snapshot had already published, so the run looked
+// "fresh" to the site while the job was actually failing.
+async function publishFile(filePath, content, message, maxAttempts = 5) {
   const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
-  let sha = null;
-  try { sha = (await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch (e) { /* new file */ }
-  const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
-  if (sha) body.sha = sha;
-  return githubApiRequest('PUT', apiPath, body);
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let sha = null;
+    try { sha = (await githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch (e) { /* new file */ }
+    const body = { message, content: Buffer.from(content).toString('base64'), branch: GITHUB_BRANCH };
+    if (sha) body.sha = sha;
+    try {
+      return await githubApiRequest('PUT', apiPath, body);
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || '');
+      const retryable = /\b(409|422|5\d\d)\b/.test(msg);
+      if (!retryable || attempt === maxAttempts) throw e;
+      const wait = 400 * attempt + Math.floor(Math.random() * 400);
+      console.warn(`  ↻ publish retry ${attempt}/${maxAttempts - 1} — ${msg.slice(0, 70)} — waiting ${wait}ms`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
 }
 
 // -----------------------------------------------------------------------------
