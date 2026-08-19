@@ -915,7 +915,10 @@ async function publishFile(filePath, content, message, maxAttempts = 5) {
     const putRes = await githubApiRequest('PUT', apiPath, body);
 
     if (putRes.status >= 200 && putRes.status < 300) return putRes.body; // success
-    if (putRes.status === 409 || putRes.status === 422) {
+    // 2026-08-17: a transient GitHub 503 ("No server is currently available")
+    // killed this run because only 409/422 were retried. GitHub 5xx is not our
+    // fault and not permanent — retry it the same way.
+    if (putRes.status === 409 || putRes.status === 422 || putRes.status >= 500) {
       // sha conflict (another cron committed between our GET and PUT) — back off
       // a touch and retry with a freshly-fetched sha.
       lastErr = new Error(`GitHub PUT ${filePath}: ${putRes.status} (sha conflict, attempt ${attempt}/${maxAttempts})`);
