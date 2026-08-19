@@ -77,6 +77,7 @@
 // =============================================================================
 
 const https = require('https');
+const crypto = require('crypto');
 const fs    = require('fs');
 
 // -----------------------------------------------------------------------------
@@ -1607,6 +1608,77 @@ function githubApiRequest(method, apiPath, body = null) {
     });
 }
 
+// =============================================================================
+// CHAIN-STATE FINGERPRINT (2026-08-12) — bandwidth control.
+// -----------------------------------------------------------------------------
+// nfts.json is ~6.4 MB and the contents API requires it base64-encoded in the
+// request body (+34%), so every publish costs ~8.5 MB OUTBOUND. At the 15-min
+// hot cadence that is ~24 GB/month from this one file — roughly 85% of the
+// platform's entire Render bandwidth bill.
+//
+// Most hot runs change nothing: the hot set is ~1.1k tokens and on a quiet
+// window none of them move. So: hash the CHAIN TRUTH and skip the publish when
+// it is unchanged.
+//
+// What the hash covers: ownership, custody, staking, pending-claim, broken
+// status, and each listing's marketplace / seller / raw price / denom / type.
+// What it EXCLUDES, deliberately: `price_usd` and `price_usd_source`. Those are
+// DERIVED from the live price feed, not from chain — they move every single run
+// as LUNA moves, and including them would make the hash always differ and save
+// nothing. summary.json (0.11 MB) still publishes every run carrying fresh USD
+// and backing, so the headline numbers on the site stay live either way.
+//
+// SAFETY: a FULL run always publishes, regardless of the hash. That guarantees
+// at least one full rewrite per escalation cycle, so the file can never drift
+// stale indefinitely and any corruption self-heals.
+// =============================================================================
+const FINGERPRINT_FIELDS = [
+    'id', 'owner', 'real_owner', 'minted', 'unminted', 'broken',
+    'treasury_held', 'dao', 'dao_wallet_8ywv_held', 'user_held',
+    'daodao', 'daodao_staked', 'daodao_pending_claim',
+    'enterprise', 'enterprise_staked', 'enterprise_dao_broken', 'enterprise_unattributed',
+    'bbl_listed', 'atrium_listed', 'boost_listed',
+];
+const LISTING_FINGERPRINT_FIELDS = [
+    'marketplace', 'seller', 'price_raw', 'denom', 'listing_type',
+    'internal_id', 'end_time', 'bidder',
+];
+
+function chainStateFingerprint(records) {
+    const parts = [];
+    // Sort by id so record ORDER can never change the hash.
+    const sorted = records.slice().sort((a, b) =>
+        String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+    for (const r of sorted) {
+        const row = FINGERPRINT_FIELDS.map(f => {
+            const v = r[f];
+            return v === undefined || v === null ? '' : String(v);
+        });
+        if (r.listing) {
+            row.push('L:' + LISTING_FINGERPRINT_FIELDS.map(f => {
+                const v = r.listing[f];
+                return v === undefined || v === null ? '' : String(v);
+            }).join('~'));
+        }
+        parts.push(row.join('|'));
+    }
+    return crypto.createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 16);
+}
+
+// Previous fingerprint lives in the heartbeat (published every run, ~1 KB).
+async function fetchPreviousFingerprint() {
+    try {
+        const url = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${OUTPUT_PATH}/heartbeat.json?cb=${Date.now()}`;
+        const hb = await fetchJson(url, 'prev-heartbeat');
+        return {
+            fingerprint: hb.chainStateFingerprint || null,
+            lastPublishedAt: hb.nfts_last_published_at || null,
+        };
+    } catch (e) {
+        return { fingerprint: null, lastPublishedAt: null };
+    }
+}
+
 async function pushToGithub(filepath, content, message, maxAttempts = 5) {
     // 409-conflict retry: this cron now shares the tla-core repo with the other
     // crons, so a file's sha can change between our GET and PUT (another cron
@@ -2223,7 +2295,36 @@ async function captureSnapshot() {
     // ── Publish / save ──────────────────────────────────────────────────────
     if (GITHUB_TOKEN) {
         console.log('📤 Publishing to GitHub...');
-        await pushToGithub(`${OUTPUT_PATH}/nfts.json`,      JSON.stringify(nftsDoc),                 `nft inventory — ${records.length} NFTs (${effectiveMode} run)`);
+
+        // ── BANDWIDTH GATE ──────────────────────────────────────────────────
+        // Skip the 8.5 MB nfts.json publish when chain state is unchanged.
+        // Full runs ALWAYS publish (see chainStateFingerprint header).
+        const fp = chainStateFingerprint(records);
+        const prev = await fetchPreviousFingerprint();
+        const unchanged = prev.fingerprint && prev.fingerprint === fp;
+        const forcePublish = effectiveMode === 'full' || process.env.FORCE_PUBLISH === '1';
+        let nftsPublishedAt = prev.lastPublishedAt;
+
+        if (unchanged && !forcePublish) {
+            const savedMb = (Buffer.byteLength(JSON.stringify(nftsDoc)) * 1.34 / 1048576).toFixed(1);
+            console.log(`  ⏭  nfts.json unchanged (chain fingerprint ${fp}) — skipped, saved ~${savedMb} MB`);
+            console.log(`     last written: ${prev.lastPublishedAt || 'unknown'}`);
+        } else {
+            await pushToGithub(`${OUTPUT_PATH}/nfts.json`, JSON.stringify(nftsDoc),
+                `nft inventory — ${records.length} NFTs (${effectiveMode} run)`);
+            nftsPublishedAt = startedAt.toISOString();
+            console.log(`  fingerprint ${fp}${prev.fingerprint ? ` (was ${prev.fingerprint})` : ''}${forcePublish && unchanged ? ' — unchanged but full run always writes' : ''}`);
+        }
+
+        // The heartbeat carries the fingerprint forward AND records when
+        // nfts.json was actually last written — so a consumer can tell "the
+        // cron ran 2 min ago" from "the inventory file is 40 min old" without
+        // guessing. The site's freshness signal is this heartbeat, not
+        // nfts.json's own capturedAt.
+        heartbeatDoc.chainStateFingerprint = fp;
+        heartbeatDoc.nfts_last_published_at = nftsPublishedAt;
+        heartbeatDoc.nfts_published_this_run = !(unchanged && !forcePublish);
+
         await pushToGithub(`${OUTPUT_PATH}/summary.json`,   JSON.stringify(summaryDoc, null, 2),     `nft summary — ${summary.broken_count} broken / ${summary.bbl_listed_count + summary.atrium_listed_count + summary.boost_listed_count} listed`);
         await pushToGithub(`${OUTPUT_PATH}/heartbeat.json`, JSON.stringify(heartbeatDoc, null, 2),   `📍 nft-inventory heartbeat — ${effectiveMode}/${status}`);
         // State-history: monthly rollup (daily state counts, live from chain). On
