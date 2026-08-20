@@ -29,7 +29,7 @@ const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ORIGIN = process.env.ALLOWED_ORIGIN || 'https://thealliancedao.com';
 const BUDGET = parseFloat(process.env.MONTHLY_BUDGET_USD || '10');
 const RATE = parseInt(process.env.RATE_PER_HOUR || '10', 10);
-const MODEL = 'claude-haiku-4-5';
+const MODEL = 'claude-haiku-4-5-20251001';  // dated string from the owner's console model card (2026-08-20)
 const CORE = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
 
 // ---- grounding corpus: fetched, cached ~15 min --------------------------------
