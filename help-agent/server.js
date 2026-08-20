@@ -138,7 +138,14 @@ Hard rules, in priority order:
    of an address THE VISITOR THEMSELVES provided (never go hunting other wallets for them —
    it is public data, but this assistant only investigates on the asker's behalf). Summarize
    what the chain actually returned — actions, amounts, memos — and say plainly when a search
-   only covers sender-side messages. If the node errors, say so; never fill gaps from memory.`;
+   only covers sender-side messages. If the node errors, say so; never fill gaps from memory.
+10. TRUST LINKS — make answers verifiable. Format links as markdown [label](url):
+   - Any data file you used → link its source: https://github.com/thealliancedao/tla-core/blob/main/<path>
+   - Any tx hash → [view tx](https://chainsco.pe/terra2/tx/<HASH>)
+   - Any wallet you discuss → [their portfolio](https://thealliancedao.com/member-portfolio.html?wallet=<addr>) and [on-chain](https://chainsco.pe/terra2/address/<addr>)
+   - Protocol mechanics → the protocol's own docs: https://docs.erisprotocol.com (Eris/vAMP/amplifier), https://docs.astroport.fi (Astroport)
+   - Write addresses and hashes IN FULL (never elide with …) — the interface renders them copyable.
+   One or two links per answer, only where they genuinely let the reader verify — not decoration.`;
 
 // ---- spend + rate guards ------------------------------------------------------
 let spend = { month: new Date().toISOString().slice(0, 7), usd: 0 };
@@ -198,7 +205,11 @@ async function walletExtract(question, explicitWallet) {
 // hash, time, memo, per-msg action summary (wasm actions included), transfers.
 // Bounds: max 3 tool calls per question, 20 txs per search, 8s timeout each.
 const LCD = process.env.LCD_URL || 'https://terra-lcd.publicnode.com';
+const PRODUCT_PREFIXES = ['member-data/','nfts/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/'];
 const CHAIN_TOOLS = [
+  { name: 'read_product',
+    description: 'Fetch a data file from the public tla-core repo (the same files the site renders). Use for questions needing actual records: e.g. nfts/adao/transfers/2026/08.json for NFT transfer/stake/unstake events, nfts/adao/flows/2026/08.json for sales/listings, tla-voting/events/locks/2026/08.json for lock events, member-data/positions/current.json, lp-grades/snapshots/current.json, tla-voting/bribe-state/runway.json. Monthly streams use {yyyy}/{mm}.json. The REPO-CATALOG in your corpus maps everything.',
+    input_schema: { type: 'object', properties: { path: { type: 'string', description: 'repo-relative path, e.g. nfts/adao/transfers/2026/08.json' } }, required: ['path'] } },
   { name: 'get_transaction',
     description: 'Fetch one Terra (phoenix-1) transaction by hash from the public LCD node. Use when the visitor gives a tx hash.',
     input_schema: { type: 'object', properties: { hash: { type: 'string', description: '64-char hex tx hash' } }, required: ['hash'] } },
@@ -241,6 +252,23 @@ async function lcdFetch(path) {
   finally { clearTimeout(to); }
 }
 async function runTool(name, input) {
+  if (name === 'read_product') {
+    const p = String(input.path || '').replace(/\.\./g, '').replace(/^\/+/, '');
+    if (!PRODUCT_PREFIXES.some(pre => p.startsWith(pre))) return { error: 'path not in the public product set' };
+    try {
+      const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } });
+      if (!r.ok) return { error: 'not found (' + r.status + ') — check the path against REPO-CATALOG' };
+      let t = await r.text();
+      if (t.length > 14000) {
+        // arrays: keep shape + head/tail so recent events survive truncation
+        try { const j = JSON.parse(t);
+          if (Array.isArray(j)) t = JSON.stringify({ _truncated: true, total: j.length, first: j.slice(0, 8), last: j.slice(-30) });
+          else t = t.slice(0, 14000) + '…[truncated]';
+        } catch (e) { t = t.slice(0, 14000) + '…[truncated]'; }
+      }
+      return { path: p, source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p, content: t };
+    } catch (e) { return { error: 'fetch failed: ' + e.message }; }
+  }
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };
