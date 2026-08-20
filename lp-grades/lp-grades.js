@@ -73,7 +73,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const VERSION = 'lp-grades-1.0.0';
+const VERSION = 'lp-grades-1.0.1';
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
@@ -634,7 +634,8 @@ async function main() {
       quality_weights: config.quality_grade.component_weights,
       A_weights: config.trading_quality_A.metric_weights,
       B_weights: config.asset_chain_value_B.sub_weights,
-      grade_boundaries: gb },
+      grade_boundaries: gb,
+      advisor: config.advisor || null },
     sources: {
       token_catalog_at: tokenCatalog.meta && tokenCatalog.meta.generated_at || null,
       snapshot_at: snapshot.capturedAt,

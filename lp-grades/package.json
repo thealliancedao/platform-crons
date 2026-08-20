@@ -1,8 +1,12 @@
 {
   "name": "lp-grades",
-  "version": "1.0.0",
-  "description": "Unified LP grading cron (SPEC-lp-grading.md) — composes org products into the Layer-3 routing oracle. Config-driven rubric from tla-core/docs/curated/grading_config.json.",
+  "version": "1.0.1",
+  "description": "Unified LP grading cron (SPEC-lp-grading.md) \u2014 composes org products into the Layer-3 routing oracle. Config-driven rubric from tla-core/docs/curated/grading_config.json.",
   "main": "lp-grades.js",
-  "scripts": { "start": "node lp-grades.js" },
-  "engines": { "node": ">=18" }
+  "scripts": {
+    "start": "node lp-grades.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
