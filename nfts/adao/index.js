@@ -1580,6 +1580,40 @@ function upsertStateHistory(prior, dateKey, entry, nowIso) {
 }
 
 // -----------------------------------------------------------------------------
+// BACKING-HISTORY DAILY APPENDER (Rev C.5, 2026-08-20)
+// The migration imported the legacy series (rows through 2026-08-10, all
+// stamped source:"migrated:...") but the daily APPEND duty was never ported —
+// the series froze and every tile trend starved past that date. This appends
+// ONE row per UTC day (write-once: existing dates never touched), same shape
+// as the migrated rows, from numbers this cron already computes.
+async function appendBackingHistory(summary, priceData) {
+    try {
+        const bk = summary && summary.backing;
+        if (!bk || bk.ampluna_balance == null || bk.per_nft_ampluna == null) return;
+        const rate = (priceData && priceData.ampluna_usd != null && priceData.luna_usd)
+            ? priceData.ampluna_usd / priceData.luna_usd : null;
+        if (!rate) { console.log('backing-history: no rate today — skipping (honest gap beats a wrong row)'); return; }
+        const date = new Date().toISOString().slice(0, 10);
+        const path = 'nfts/adao/snapshots/backing-history.json';
+        const cur = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${path}?cb=${Date.now()}`, 'backing-history');
+        const rows = (cur && cur.rows) || [];
+        if (rows.some(r => r.date === date)) { console.log('backing-history: today already present'); return; }
+        rows.push({
+            date,
+            ampLunaPerNft: +Number(bk.per_nft_ampluna).toFixed(6),
+            ampLunaRate:   +rate.toFixed(6),
+            backingInLuna: +(bk.per_nft_ampluna * rate).toFixed(6),
+            capturedAt: new Date().toISOString(),
+            source: 'org-nft-daily',
+        });
+        rows.sort((a, b) => a.date.localeCompare(b.date));
+        const out = Object.assign({}, cur || {}, { rows, updated_at: new Date().toISOString() });
+        await pushToGithub(path, JSON.stringify(out, null, 1), `backing-history: append ${date}`);
+        console.log(`backing-history: appended ${date} (${rows.length} rows total)`);
+    } catch (e) { console.log('backing-history append failed (non-fatal):', e.message); }
+}
+
+// -----------------------------------------------------------------------------
 // GITHUB PUBLISH
 // -----------------------------------------------------------------------------
 
@@ -2234,6 +2268,7 @@ async function captureSnapshot() {
             unique_holders: summary.unique_holders,
             ampluna_balance: summary.backing?.ampluna_balance ?? null,
             per_nft_ampluna: summary.backing?.per_nft_ampluna ?? null,
+            backing_history_appender: 'C.5',
             daodao_pending_claim: pending.block.count,
             daodao_pending_claim_records: summary.daodao_pending_claim_count,
             staker_resolution_errors: stakerErrors.length,
@@ -2341,6 +2376,7 @@ async function captureSnapshot() {
         }
         if (floorHistoryDoc) {
             await pushToGithub(FLOOR_HISTORY_PATH, JSON.stringify(floorHistoryDoc, null, 2), `floor-history — ${floorHistoryDoc.row_count} rows`);
+            await appendBackingHistory(summary, priceData);
             await pushToGithub(FIRST_SEEN_PATH, JSON.stringify(firstSeenDoc, null, 2), `listing-first-seen — ${firstSeenDoc.count} live listings`);
         }
     } else {
