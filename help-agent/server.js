@@ -26,7 +26,13 @@
 const http = require('http');
 
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const ORIGIN = process.env.ALLOWED_ORIGIN || 'https://thealliancedao.com';
+// v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
+// browser treats them as different origins, and allowing only the apex
+// blocked every www request at preflight (owner console log). ALLOWED_ORIGIN
+// is now a comma-separated list; the response echoes whichever allowed
+// origin is asking (the header can only carry one value).
+const ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://thealliancedao.com,https://www.thealliancedao.com')
+  .split(',').map(function (x) { return x.trim(); }).filter(Boolean);
 const BUDGET = parseFloat(process.env.MONTHLY_BUDGET_USD || '10');
 const RATE = parseInt(process.env.RATE_PER_HOUR || '10', 10);
 const MODEL = 'claude-haiku-4-5-20251001';  // dated string from the owner's console model card (2026-08-20)
@@ -303,13 +309,15 @@ async function ask(question, explicitWallet, page) {
 }
 
 // ---- http surface -------------------------------------------------------------
-function cors(res) {
-  res.setHeader('Access-Control-Allow-Origin', ORIGIN);
+function cors(req, res) {
+  const o = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', ORIGINS.includes(o) ? o : ORIGINS[0]);
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 const server = http.createServer(async (req, res) => {
-  cors(res);
+  cors(req, res);
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
