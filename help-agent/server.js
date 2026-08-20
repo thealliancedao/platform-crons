@@ -155,8 +155,11 @@ function budgetOk() {
 // so "my portfolio looks off" gets checked against the visitor's real numbers,
 // not answered in generalities. Public-repo data only; nothing is stored.
 let posCache = { at: 0, positions: null, participants: null };
-async function walletExtract(question) {
-  const m = question.match(/terra1[a-z0-9]{38,58}/);
+async function walletExtract(question, explicitWallet) {
+  // v1.3.0: the site's help drawer can pin a wallet (picked from the member
+  // list) — it arrives as its own field and wins over any address in the text.
+  const m = (explicitWallet && /^terra1[a-z0-9]{38,58}$/.test(explicitWallet)) ? [explicitWallet]
+    : question.match(/terra1[a-z0-9]{38,58}/);
   if (!m) return '';
   const addr = m[0];
   try {
@@ -252,9 +255,10 @@ async function runTool(name, input) {
 }
 
 // ---- the ask flow -------------------------------------------------------------
-async function ask(question) {
+async function ask(question, explicitWallet, page) {
   const corpus = await grounding();
-  const walletBlock = await walletExtract(question);
+  const walletBlock = await walletExtract(question, explicitWallet);
+  const pageBlock = page ? `<visitor_context>The visitor is currently viewing: ${String(page).replace(/[^\w\-\/#.?=]/g,'').slice(0,100)} — tailor the answer to what that page shows.</visitor_context>\n` : '';
   const body = {
     model: MODEL,
     max_tokens: 600,
@@ -263,7 +267,7 @@ async function ask(question) {
       // corpus as its own cached block: 90% cheaper on every repeat question
       { type: 'text', text: 'CORPUS:\n' + corpus, cache_control: { type: 'ephemeral' } },
     ],
-    messages: [{ role: 'user', content: (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, 2000) }],
+    messages: [{ role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, 2000) }],
   };
   body.tools = CHAIN_TOOLS;
   const track = (d) => { const u = d.usage || {};
@@ -330,7 +334,7 @@ const server = http.createServer(async (req, res) => {
         }
         const q = (parsed.question || '').trim();
         if (!q) return send(400, { error: 'No question provided.' });
-        const out = await ask(q);
+        const out = await ask(q, parsed.wallet, parsed.page);
         out.rate_used = rl.used; out.rate_limit = RATE;
         send(200, out);
       } catch (e) { send(500, { error: 'Assistant error: ' + e.message }); }
