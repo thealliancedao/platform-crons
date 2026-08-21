@@ -137,8 +137,15 @@ const TOKEN_REGISTRY = {
     CAPA:    { cgId: 'capapult',             astroportAddresses: { 'phoenix-1': 'terra1t4p3u8khpd7f8qzurwyafxt648dya6mp6vur3vaapswt6m24gkuqrfdhar' }, preferChain: 'phoenix-1' },
     // ASTRO: Terra-side price is broken/stale ($0.00776 vs CG $0.00111). Neutron-side
     // matches CG closely ($0.00102 vs $0.00111). Always prefer Neutron for ASTRO.
+    // E12 (2026-08-21, owner-verified): the phoenix-1 address previously pointed
+    // at LEGACY cw20 ASTRO (terra1nsuqsk6…exn26) — the pre-Neutron-migration
+    // token, now a $12K-TVL ghost trading ~21× above real ASTRO. That produced
+    // the 2083% flagged_mismatch vs CoinGecko (astroport-fi is live + correct;
+    // mismatch rule held the right final). Repointed to the CURRENT ibc ASTRO
+    // on Terra (denom from our own astroport cron snapshot — the same token the
+    // TLA LUNA-ASTRO gauge pool holds, verified against the pool contract).
     ASTRO:   { cgId: 'astroport-fi', astroportAddresses: {
-        'phoenix-1': 'terra1nsuqsk6kh58ulczatwev87ttq2z6r3pusulg9r24mfj2fvtzd4uq3exn26',
+        'phoenix-1': 'ibc/8D8A7F7253615E5F76CB6252A1E1BD921D5EDB7BBAAF8913FB1C77FF125D9995',
         'neutron-1': ASTRO_DENOM_NEUTRON,
     }, preferChain: 'neutron-1' },
     xASTRO:  { cgId: null, astroportAddresses: { 'neutron-1': XASTRO_DENOM_NEUTRON }, preferChain: 'neutron-1' },
