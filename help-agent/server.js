@@ -35,7 +35,7 @@ const ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://thealliancedao.com,https
   .split(',').map(function (x) { return x.trim(); }).filter(Boolean);
 const BUDGET = parseFloat(process.env.MONTHLY_BUDGET_USD || '10');
 const RATE = parseInt(process.env.RATE_PER_HOUR || '10', 10);
-const MODEL = 'claude-haiku-4-5-20251001';  // dated string from the owner's console model card (2026-08-20)
+const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';  // env-overridable: set MODEL=claude-sonnet-4-6 in Render to tier up (~3x cost/answer), no code change needed
 const CORE = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
 
 // ---- grounding corpus: fetched, cached ~15 min --------------------------------
@@ -47,6 +47,7 @@ const CORE = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
 const CORPUS_SOURCES = [
   ['README',            `${CORE}/README.md`],
   ['repo-catalog',      `${CORE}/docs/REPO-CATALOG.md`],
+  ['data-map',          `${CORE}/docs/agent/DATA-MAP.md`],
   ['known-contracts',   `${CORE}/docs/curated/known_contracts.json`],
   ['grading-config',    `${CORE}/docs/curated/grading_config.json`],
   ['pricing-doctrine',  `${CORE}/docs/ecosystem-knowledge/PRICING-DOCTRINE.md`],
@@ -145,7 +146,33 @@ Hard rules, in priority order:
    - Any wallet you discuss → [their portfolio](https://thealliancedao.com/member-portfolio.html?wallet=<addr>) and [on-chain](https://chainsco.pe/terra2/address/<addr>)
    - Protocol mechanics → the protocol's own docs: https://docs.erisprotocol.com (Eris/vAMP/amplifier), https://docs.astroport.fi (Astroport)
    - Write addresses and hashes IN FULL (never elide with …) — the interface renders them copyable.
-   One or two links per answer, only where they genuinely let the reader verify — not decoration.`;
+   One or two links per answer, only where they genuinely let the reader verify — not decoration.
+11. COMPARATIVE DISCIPLINE — rankings are claims, not color. Never write "largest",
+   "second-largest", "biggest", "after X", "more than Y" or any ranking/superlative unless
+   EITHER the corpus states it in so many words, OR you show the arithmetic from numbers
+   present in your context ("6.73M vs aDAO's 0.84M — roughly 8x larger"). If the numbers you
+   have CONTRADICT a ranking you were about to write, the numbers win and the ranking dies.
+   A grounded figure with an invented comparison attached is still a fabrication — the
+   owner caught exactly this ("second-largest after aDAO" beside numbers proving otherwise),
+   and it is the most credibility-destroying error this assistant can make.
+12. HISTORICAL DATA MAP — before saying "I can't find historical data", check these products
+   (all readable via read_product):
+   - member-data/tla-snapshot/apr-history.json — per-POOL APR per EPOCH (apr_pct_avg), 16 epochs.
+     THE source for "why did pool X's APR change" questions.
+     ALWAYS pass key:"<pool name>" (e.g. key:"xASTRO") to read_product for these files —
+     it extracts just that pool's per-epoch series; without key, truncation can cut the
+     pool out of the middle. Decompose an APR move by reading the SAME pool from BOTH
+     matrices: APR series (apr-history) + staked_usd & vp_human series (pool-status) —
+     then say which moved: the denominator (staked), the allocation (vp), or both.
+   - member-data/tla-snapshot/pool-status-history.json — per-pool per-epoch staked_usd, vp_human,
+     bucket_pct, active status. APR moves decompose here: denominator (staked) vs allocation (vp).
+   - member-data/tla-snapshot/epoch-band-history.json — TLA-wide per-epoch pools/TVL/luna price.
+   - nfts/adao/snapshots/state-history/ — daily staked/held counts to 2025-01.
+   - tla-voting/distributions/history.json — gauge payouts per period (NOT under events/).
+   WRONG-OBJECT caution: single-asset sink pools (xASTRO, ampCAPA, ampROAR) are NOT the same as
+   their trading pairs (LUNA-ASTRO etc). Evidence about a pair says nothing about the sink.
+   APR-BASIS caution: our apr_pct_avg uses the platform basis; Eris UI shows a different
+   convention — absolute levels differ, trend shapes agree. Say so when comparing to Eris numbers.`;
 
 // ---- spend + rate guards ------------------------------------------------------
 let spend = { month: new Date().toISOString().slice(0, 7), usd: 0 };
@@ -207,7 +234,7 @@ async function walletExtract(question, explicitWallet) {
 const LCD = process.env.LCD_URL || 'https://terra-lcd.publicnode.com';
 const PRODUCT_PREFIXES = ['member-data/','nfts/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/'];
 const CHAIN_TOOLS = [
-  { name: 'read_product',
+  { name: 'read_product', /* input.key: pool/token name for surgical extraction from big keyed files (apr-history, pool-status-history, token-catalog…) — ALWAYS use key for per-pool questions */
     description: 'Fetch a data file from the public tla-core repo (the same files the site renders). Use for questions needing actual records: e.g. nfts/adao/transfers/2026/08.json for NFT transfer/stake/unstake events, nfts/adao/flows/2026/08.json for sales/listings, tla-voting/events/locks/2026/08.json for lock events, member-data/positions/current.json, lp-grades/snapshots/current.json, tla-voting/bribe-state/runway.json. Monthly streams use {yyyy}/{mm}.json. The REPO-CATALOG in your corpus maps everything.',
     input_schema: { type: 'object', properties: { path: { type: 'string', description: 'repo-relative path, e.g. nfts/adao/transfers/2026/08.json' } }, required: ['path'] } },
   { name: 'get_transaction',
@@ -259,6 +286,32 @@ async function runTool(name, input) {
       const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } });
       if (!r.ok) return { error: 'not found (' + r.status + ') — check the path against REPO-CATALOG' };
       let t = await r.text();
+      // Surgical extraction: `key` pulls one pool/token/entry from big keyed files,
+      // so the middle of a matrix is reachable (truncation used to cut it out).
+      const key = String(input.key || '').trim();
+      if (key && t.length > 4000) {
+        try {
+          const j = JSON.parse(t);
+          const kl = key.toLowerCase();
+          const hit = (arr) => arr.find(x => String(x.name || x.symbol || x.canonical || '').toLowerCase() === kl)
+                   || arr.find(x => String(x.name || x.symbol || x.denom || '').toLowerCase().includes(kl));
+          let found = null, where = null;
+          for (const field of ['pools', 'tokens', 'epochs', 'entries', 'vaults', 'members']) {
+            if (Array.isArray(j[field])) { const h = hit(j[field]); if (h) { found = h; where = field; break; } }
+            if (j[field] && typeof j[field] === 'object' && j[field][key]) { found = j[field][key]; where = field; break; }
+          }
+          if (!found && j[key]) { found = j[key]; where = 'root'; }
+          if (found) {
+            return { path: p, extracted_key: key, from: where,
+              meta: { epochs: j.epochs, generatedAt: j.generatedAt || (j.meta && j.meta.generated_at) },
+              source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p,
+              content: JSON.stringify(found).slice(0, 13000) };
+          }
+          const names = [];
+          for (const field of ['pools', 'tokens']) if (Array.isArray(j[field])) for (const x of j[field]) names.push(x.name || x.symbol || (x.denom || '').slice(0, 20));
+          if (names.length) return { path: p, error: 'key "' + key + '" not found', available: names.slice(0, 60) };
+        } catch (e) { /* fall through to normal read */ }
+      }
       if (t.length > 14000) {
         // arrays: keep shape + head/tail so recent events survive truncation
         try { const j = JSON.parse(t);

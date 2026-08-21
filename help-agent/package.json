@@ -1,6 +1,6 @@
 {
   "name": "tla-help-agent",
-  "version": "1.2.1",
+  "version": "1.6.0",
   "private": true,
   "description": "Grounded Q&A + triage service for thealliancedao.com — see README.md and SPEC-site-help-agent.md",
   "main": "server.js",
