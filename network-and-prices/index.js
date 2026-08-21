@@ -112,6 +112,13 @@ const TOKEN_REGISTRY = {
     // EURE: ueure native, channel-253 from Noble
     EURE:    { cgId: 'monerium-eur-money-2', astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },   // 3.0.1: was 'euroe-stablecoin' (wrong coin) — see E11
     INJ:     { cgId: 'injective-protocol',   astroportAddresses: {}, preferChain: null },
+    // F2-forward (owner-sourced 2026-08-21): FUEL is priced ONLY on Astroport's
+    // DEX metrics (no CoinGecko listing we trust) — thin pool (~$22K TVL) but
+    // it is the only market that exists; source label stays astroport.
+    FUEL:    { cgId: null,                   astroportAddresses: { 'phoenix-1': 'ibc/4B44179AC2F0BEE50C16A673B3B886398988692885B2848A1C8AEF27148B3961' }, preferChain: 'phoenix-1' },
+    // dATOM = Drop staked ATOM; CG id owner-verified (coingecko.com/en/coins/drop-staked-atom).
+    // WHALE is intentionally ABSENT: abandoned project per owner — stays an honest null.
+    DATOM:   { cgId: 'drop-staked-atom',     astroportAddresses: { 'phoenix-1': 'ibc/223FF539430381ADAB3A66AC4822E253C3F845E9841F17FEEC207B3AA9F8D915' }, preferChain: 'phoenix-1' },
     ATOM:    { cgId: 'cosmos',               astroportAddresses: { 'phoenix-1': 'ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2' }, preferChain: 'phoenix-1' },
     ETH:     { cgId: 'ethereum',             astroportAddresses: { 'phoenix-1': 'ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B' }, preferChain: 'phoenix-1' },
     WETH:    { cgId: 'ethereum',             astroportAddresses: {}, preferChain: null },
