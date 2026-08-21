@@ -1032,7 +1032,10 @@ class PriceResolver {
     // open item) — an honest blank beats a manufactured price.
     registerPoolReserves(poolName, asset0, asset1, poolType) {
         if (poolType !== 'xyk') {
-            this.blockedRegistrations.push({ pool: poolName, type: poolType || 'unknown' });
+            const t = poolType || 'unknown';
+            if (!this.blockedRegistrations.some(b => b.pool === poolName && b.type === t)) {
+                this.blockedRegistrations.push({ pool: poolName, type: t });
+            }
             return;
         }
         if (!asset0 || !asset1 || !asset0.symbol || !asset1.symbol) return;
@@ -1687,7 +1690,7 @@ async function captureTlaSnapshot() {
     // tokens whose only source was the pool they live in (e.g. FUEL via LUNA-FUEL).
     // We clear priceResolver's cache so the new pool-derived path is consulted.
     priceResolver.cache.clear();
-    priceResolver.stats = { direct: 0, lst: 0, pool_derived: 0, failed: 0 };
+    priceResolver.stats = { direct: 0, lst: 0, pool_derived: 0, prev_daily: 0, failed: 0 };
 
     // Find pools that had at least one null-priced asset OR null TVL — those need re-run
     const needsRefresh = pools.filter(p => {
