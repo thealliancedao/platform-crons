@@ -55,6 +55,16 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.8.0 foundations intake (2026-08-21): sourced chapters from the
+  // primary-source mega-read — the bot answers from receipts, not vibes.
+  ['skeletonswap',      `${CORE}/docs/ecosystem-knowledge/skeletonswap.md`],
+  ['solid-protocol',    `${CORE}/docs/ecosystem-knowledge/solid-protocol.md`],
+  ['votion',            `${CORE}/docs/ecosystem-knowledge/votion.md`],
+  ['phoenix-directive', `${CORE}/docs/ecosystem-knowledge/phoenix-directive.md`],
+  ['terra-tla',         `${CORE}/docs/ecosystem-knowledge/terra-liquidity-alliance.md`],
+  ['depeg-and-fork',    `${CORE}/docs/ecosystem-knowledge/terra-depeg-and-fork.md`],
+  ['audits-registry',   `${CORE}/docs/ecosystem-knowledge/AUDITS.md`],
+  ['foundations-index', `${CORE}/docs/ecosystem-knowledge/FOUNDATIONS-SOURCES.md`],
   ['tla-changelog',     `${CORE}/docs/changelogs/tla-log.md`],
   ['index-changelog',   `${CORE}/docs/changelogs/index-log.md`],
   ['portfolio-changelog',`${CORE}/docs/changelogs/portfolio-log.md`],
