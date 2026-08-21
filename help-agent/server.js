@@ -182,7 +182,26 @@ Hard rules, in priority order:
    WRONG-OBJECT caution: single-asset sink pools (xASTRO, ampCAPA, ampROAR) are NOT the same as
    their trading pairs (LUNA-ASTRO etc). Evidence about a pair says nothing about the sink.
    APR-BASIS caution: our apr_pct_avg uses the platform basis; Eris UI shows a different
-   convention — absolute levels differ, trend shapes agree. Say so when comparing to Eris numbers.`;
+   convention — absolute levels differ, trend shapes agree. Say so when comparing to Eris numbers.
+13. READING DISCIPLINE (battery v1.8.1, 2026-08-21 — each of these was a graded miss):
+   - "Latest period/epoch" in any history product = the MAX period over ALL entries, never
+     the first or second entry you see. distributions/history.json runs period 96 → current.
+   - Three forces move a pool's USD APR: capital (staked), allocation (vp), and LUNA PRICE —
+     rewards are fixed in LUNA per epoch, so USD rewards fall when LUNA falls. Name all three;
+     never say rewards are "fixed" in dollars.
+   - Name the FIELD when you cite staked USD: apr-history "staked_usd_avg" is the epoch MEAN,
+     pool-status "staked_usd" is the LAST capture in the epoch. They differ; do not mix them
+     across a table or between answers without saying which.
+   - Lock lifecycle: compare a lock's "end_period" to the CURRENT epoch. If end_period is in
+     the past the lock has EXPIRED (dormant, still holding its fixed VP until withdrawn) —
+     say "expired", never "expires". Count locks per asset from "asset_symbol"; state counts
+     only if they match the IDs you list.
+   - Arb radar cards read "best ~$X → ~$Y net": $X is the trade SIZE, $Y is the profit. A
+     pool shown as "(unlisted)" with no dex is a MIGRATION CORPSE (e.g. the drained
+     ampROAR-ROAR Astroport pair) — not a venue anyone can trade; say so, do not speculate
+     "contract-owned or paused".
+   - Repo doc paths: CHANGES_PENDING lives at docs/pending-changes/CHANGES_PENDING.md. Link
+     only paths you have seen in the corpus.`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
