@@ -989,6 +989,38 @@ function computeDataFingerprint(snapshot) {
 }
 
 // Fetch our previous heartbeat from GitHub raw — graceful failure (returns null).
+// F1 (AUDIT-price-artifact-2026-08): prior published snapshot, for
+// carry-forward when a feed outage would otherwise null a token's final.
+async function fetchPreviousCurrent() {
+    return fetchJsonRaw(`${OUT_BASE}/current.json`);
+}
+
+// On CoinGecko/Astroport outage days, cg_only/astroport_only tokens land with
+// final_price_usd null — downstream that null silently invited Stage-3
+// pool-derivation phantoms (Class A of the audit). Instead: carry the prior
+// run's final forward, LOUDLY flagged stale, capped at MAX_CARRY_DAYS; past
+// the cap the token goes honestly null.
+const MAX_CARRY_DAYS = 7;
+function applyCarryForward(tokenPrices, prevSnap, nowIso) {
+    const prevTp = prevSnap?.token_prices || {};
+    const nowMs = Date.parse(nowIso);
+    let carried = 0, expired = 0;
+    for (const [sym, t] of Object.entries(tokenPrices || {})) {
+        if (t.final_price_usd != null) continue;
+        const prev = prevTp[sym];
+        if (!prev || prev.final_price_usd == null) continue;
+        const staleSince = prev.stale_since || prevSnap.capturedAt || nowIso;
+        const ageDays = (nowMs - Date.parse(staleSince)) / 86400000;
+        if (!(ageDays <= MAX_CARRY_DAYS)) { expired++; continue; }
+        t.final_price_usd = prev.final_price_usd;
+        t.final_source = `carried_forward(${(prev.final_source || 'unknown').replace(/^carried_forward\((.*)\)$/, '$1')})`;
+        t.stale = true;
+        t.stale_since = staleSince;
+        carried++;
+    }
+    return { carried, expired };
+}
+
 async function fetchPreviousHeartbeat() {
     const org = await fetchJsonRaw(`${OUT_BASE}/heartbeat.json`);
     if (org) return org;
@@ -1051,6 +1083,17 @@ async function captureNetworkAndPrices() {
 
     // Phase 6 (depends on 3, 4, 5)
     const tokenPrices = assemblePriceTable({ astroData, cgData, lstRatios: ratios.ratios });
+
+    // F1: outage carry-forward (see applyCarryForward above).
+    const prevSnapForCarry = await fetchPreviousCurrent();
+    const carry = applyCarryForward(tokenPrices, prevSnapForCarry, startedAt.toISOString());
+    if (carry.carried > 0 || carry.expired > 0) {
+        console.log(`  ⏮ carry-forward: ${carry.carried} token(s) carried stale` +
+                    (carry.expired ? `, ${carry.expired} past ${MAX_CARRY_DAYS}d cap → honest null` : ''));
+        for (const [sym, t] of Object.entries(tokenPrices)) {
+            if (t.stale) console.log(`     ${sym}: $${t.final_price_usd} (${t.final_source}, since ${t.stale_since})`);
+        }
+    }
 
     // Phase 6.5 — price canary (never fails the run; skipped if dex feeds unavailable)
     console.log('\u{1F426} Running price canary (xyk-implied cross-check)...');
