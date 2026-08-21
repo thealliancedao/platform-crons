@@ -174,6 +174,57 @@ Hard rules, in priority order:
    APR-BASIS caution: our apr_pct_avg uses the platform basis; Eris UI shows a different
    convention — absolute levels differ, trend shapes agree. Say so when comparing to Eris numbers.`;
 
+// ---- triage modes (v1.7.0) ----------------------------------------------------
+// The Help page's Report/Request forms now run THROUGH the assistant first:
+// the form submits with mode:'report'|'request', the addendum below rides as a
+// third system block AFTER the cached corpus (so triage never invalidates the
+// prompt cache), and the reply ends with a ---DRAFT--- block the page extracts
+// into a prefilled GitHub issue — the maintainer receives a PRE-INVESTIGATED
+// report, and the visitor learns the constraint instead of shouting into a form.
+const MODE_ADDENDA = {
+  report: `TRIAGE MODE — ISSUE REPORT. The visitor is filing a problem report through the Help
+page form. Do these in order:
+1. VERIFY: check the claim against the live heads in the corpus and, where a data product
+   would show it, read_product the actual record (their wallet block too, if present).
+2. CLASSIFY, and say which plainly: KNOWN CAUSE (documented behavior explains it — nightly
+   cadence, coverage suppression, the VP definition, a changelog entry, a deliberate blank),
+   PLAUSIBLE FAULT (the record disagrees with what the site should show, or you cannot
+   refute the claim), or CANNOT VERIFY (no product covers it).
+3. EXPLAIN what you checked and found, plainly, with the numbers.
+4. DRAFT: end your reply with a filing draft in EXACTLY this format:
+---DRAFT---
+TITLE: [Site report] <page>: <short summary>
+BODY:
+<page · the claim · value seen · what you verified and what it showed · your
+classification and reasoning · repo paths of the exact files checked · timestamp>
+---END DRAFT---
+For KNOWN CAUSE, explain the cause first and note filing is optional — but still include
+the draft with your finding inside, so if they file anyway the triage travels with it.
+Never discourage filing; your triage rides WITH the report, never instead of it.
+The conversational part keeps your normal 2-6 sentences; the draft block is extra.`,
+  request: `TRIAGE MODE — FEATURE REQUEST. The visitor is proposing a feature through the Help
+page form. Do these in order:
+1. CHECK EXISTENCE: search the changelogs and specs in the corpus — if it already exists,
+   name the page/tile that shows it; if already queued, name the spec.
+2. CLASSIFY into the site's triage lanes and say which plainly: ALREADY EXISTS ·
+   ALREADY QUEUED · DATA EXISTS, SMALL BUILD (the products already capture what this needs
+   — name them) · NEEDS NEW CAPTURE (say what would have to be captured, and that history
+   generally cannot be backfilled from before capture starts unless an archive walk covers
+   it) · CONFLICTS WITH DOCTRINE (e.g. anything needing estimated or invented numbers —
+   teach the honest-data rule rather than just refusing).
+3. SHAPE: help sharpen the proposal — what exactly, where it lives, why useful, which data
+   products feed it or are missing.
+4. DRAFT: unless ALREADY EXISTS fully answers them, end with:
+---DRAFT---
+TITLE: [Feature request] <short summary>
+BODY:
+<the request · suggested home · why useful · your triage lane and reasoning · the data
+products involved or the capture that would be needed>
+---END DRAFT---
+The maintainer reads every request; your triage travels with it.
+The conversational part keeps your normal 2-6 sentences; the draft block is extra.`,
+};
+
 // ---- spend + rate guards ------------------------------------------------------
 let spend = { month: new Date().toISOString().slice(0, 7), usd: 0 };
 const hits = new Map(); // ip -> [timestamps]
@@ -342,17 +393,21 @@ async function runTool(name, input) {
 }
 
 // ---- the ask flow -------------------------------------------------------------
-async function ask(question, explicitWallet, page) {
+async function ask(question, explicitWallet, page, mode) {
   const corpus = await grounding();
   const walletBlock = await walletExtract(question, explicitWallet);
   const pageBlock = page ? `<visitor_context>The visitor is currently viewing: ${String(page).replace(/[^\w\-\/#.?=]/g,'').slice(0,100)} — tailor the answer to what that page shows.</visitor_context>\n` : '';
+  const addendum = MODE_ADDENDA[mode] || null;
   const body = {
     model: MODEL,
-    max_tokens: 600,
+    max_tokens: addendum ? 900 : 600,   // triage answers carry a draft block — give them room
     system: [
       { type: 'text', text: SYSTEM_RULES },
-      // corpus as its own cached block: 90% cheaper on every repeat question
+      // corpus as its own cached block: 90% cheaper on every repeat question.
+      // v1.7.0: the mode addendum goes AFTER this block, so triage questions
+      // share the same cached prefix as normal chat instead of invalidating it.
       { type: 'text', text: 'CORPUS:\n' + corpus, cache_control: { type: 'ephemeral' } },
+      ...(addendum ? [{ type: 'text', text: addendum }] : []),
     ],
     messages: [{ role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, 2000) }],
   };
@@ -423,7 +478,8 @@ const server = http.createServer(async (req, res) => {
         }
         const q = (parsed.question || '').trim();
         if (!q) return send(400, { error: 'No question provided.' });
-        const out = await ask(q, parsed.wallet, parsed.page);
+        const mode = (parsed.mode === 'report' || parsed.mode === 'request') ? parsed.mode : null;
+        const out = await ask(q, parsed.wallet, parsed.page, mode);
         out.rate_used = rl.used; out.rate_limit = RATE;
         send(200, out);
       } catch (e) { send(500, { error: 'Assistant error: ' + e.message }); }
