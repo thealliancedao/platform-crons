@@ -1191,14 +1191,19 @@ async function buildLpHealth(poolData, priceResolver, resolver) {
         };
     });
 
-    const totalUsd = assetDetails.reduce((s, a) => s + (a.usd_value || 0), 0);
-    const balanceRatio = assetDetails.map(a => totalUsd > 0 && a.usd_value != null ? (a.usd_value / totalUsd) * 100 : null);
+    // F1.2 (2026-08-21): a pool with ANY unpriced side has NO USD value — not
+    // half of one. Summing only the priced side silently halved total_pool_usd,
+    // which halved staked_in_tla_usd and doubled approx_apr_pct downstream
+    // (AUDIT-price-artifact-2026-08 F2b finding). Honest null beats half-pool.
+    const allPriced = assetDetails.every(a => a.usd_value != null);
+    const totalUsd = allPriced ? assetDetails.reduce((s, a) => s + a.usd_value, 0) : 0;
+    const balanceRatio = assetDetails.map(a => allPriced && totalUsd > 0 ? (a.usd_value / totalUsd) * 100 : null);
 
     return {
         asset_0: assetDetails[0],
         asset_1: assetDetails[1],
         balance_ratio_pct: balanceRatio,
-        total_pool_usd: totalUsd > 0 ? totalUsd : null,
+        total_pool_usd: allPriced && totalUsd > 0 ? totalUsd : null,
         total_share: poolData.total_share,
         _basics: assetBasics,  // expose for pool-derived registration
     };
