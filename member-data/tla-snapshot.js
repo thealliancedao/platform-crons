@@ -148,6 +148,7 @@ const REFRESH_INTERVAL_MS = REFRESH_INTERVAL_HOURS * 60 * 60 * 1000;
 // Data repo URLs (raw.githubusercontent.com)
 const DATA_REPOS = {
     networkPricesUrl:  'https://raw.githubusercontent.com/thealliancedao/tla-core/main/network-and-prices/current.json',
+    prevDailyUrl: (dateStr) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/member-data/tla-snapshot/daily/${dateStr}.json`,
     // org tla-voting products (see header): month file is a LIST of harvests.
     bribeStateMonthUrl: (d) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/bribe-state/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}.json`,
     pdBribesCurrentUrl: 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/pd-bribes/current.json',
@@ -693,7 +694,7 @@ async function enrichPool(entry, ctx) {
                 lpHealth = await buildLpHealth(poolData, ctx.priceResolver, ctx.tokenResolver);
                 // Register reserves so price-derivation can use them for other pools
                 if (lpHealth._basics) {
-                    ctx.priceResolver.registerPoolReserves(name, lpHealth._basics[0], lpHealth._basics[1]);
+                    ctx.priceResolver.registerPoolReserves(name, lpHealth._basics[0], lpHealth._basics[1], dexSubtype);
                     delete lpHealth._basics;  // strip internal field before output
                 }
             }
@@ -997,7 +998,7 @@ class TokenResolver {
 // =============================================================================
 
 class PriceResolver {
-    constructor(tokenPrices, lstRatios) {
+    constructor(tokenPrices, lstRatios, prevDailyPrices) {
         // Build case-insensitive index — TLA tokens come in mixed case
         // (e.g. chain says "stLUNA", network-and-prices stores "STLUNA")
         this.tokenPrices = tokenPrices || {};
@@ -1013,11 +1014,27 @@ class PriceResolver {
         this.derivedFromPool = new Map();
         this.poolReserves = [];
         this.cache = new Map();
-        this.stats = { direct: 0, lst: 0, pool_derived: 0, failed: 0 };
+        this.stats = { direct: 0, lst: 0, pool_derived: 0, prev_daily: 0, failed: 0 };
+        // F1 (AUDIT-price-artifact-2026-08): yesterday's prices, for last-resort
+        // carry when today's feeds fail. Map<symLower,{price,source,date}>.
+        this.prevDaily = prevDailyPrices || new Map();
+        this.blockedRegistrations = [];
     }
 
     // Register a pool's reserves so we can use it for price derivation later.
-    registerPoolReserves(poolName, asset0, asset1) {
+    // F1 GUARD (permanent — the arbLUNA lesson, AUDIT-price-artifact-2026-08):
+    // Concentrated pools amplify liquidity around an internal EMA oracle and
+    // stable pools around a 1:1 target (Astroport's own docs) — their RESERVE
+    // RATIO IS NOT A PRICE by design. Deriving prices from them manufactured
+    // the stLUNA 8×/WBNB $268 phantoms. Only constant-product ('xyk') reserves
+    // may feed Stage-3 derivation. Unknown types (e.g. SkeletonSwap subtype
+    // null) are refused until per-pool types are confirmed (FOUNDATIONS-SOURCES
+    // open item) — an honest blank beats a manufactured price.
+    registerPoolReserves(poolName, asset0, asset1, poolType) {
+        if (poolType !== 'xyk') {
+            this.blockedRegistrations.push({ pool: poolName, type: poolType || 'unknown' });
+            return;
+        }
         if (!asset0 || !asset1 || !asset0.symbol || !asset1.symbol) return;
         if (!asset0.amount_human || !asset1.amount_human) return;
         this.poolReserves.push({
@@ -1099,6 +1116,20 @@ class PriceResolver {
             }
         }
 
+        // Stage 3.5: PREV-DAILY CARRY (F1) — last resort before an honest blank.
+        // Only feed-grade prior sources are carried (direct/coingecko/astroport/
+        // lst_*/carried/prev_daily within age cap); pool_derived priors are NOT
+        // carried — legit xyk derivations recompute fresh, and the tainted
+        // concentrated derivations must never propagate forward.
+        const prev = this.prevDaily.get(symLower);
+        if (prev && prev.price > 0 &&
+            /^(direct|coingecko|astroport|lst_|carried|prev_daily)/.test(prev.source || '')) {
+            result = { price: prev.price, source: `prev_daily:${prev.date}(${prev.source})`, stale: true };
+            this.stats.prev_daily++;
+            this.cache.set(symLower, result);
+            return result;
+        }
+
         result = { price: null, source: 'unknown' };
         this.stats.failed++;
         this.cache.set(symLower, result);
@@ -1107,7 +1138,15 @@ class PriceResolver {
 
     printStats(logger = console.log) {
         const s = this.stats;
-        logger(`  Price resolver: ${s.direct} direct, ${s.lst} via LST ratio, ${s.pool_derived} pool-derived, ${s.failed} failed`);
+        logger(`  Price resolver: ${s.direct} direct, ${s.lst} via LST ratio, ${s.pool_derived} pool-derived, ${s.prev_daily} prev-daily carry, ${s.failed} failed`);
+        if (this.blockedRegistrations.length > 0) {
+            logger(`  ⛔ Stage-3 registration refused for ${this.blockedRegistrations.length} non-xyk pool(s) (reserves≠price guard):`);
+            for (const b of this.blockedRegistrations) logger(`     ${b.pool} [${b.type}]`);
+        }
+        if (s.prev_daily > 0) {
+            const carried = [...this.cache.entries()].filter(([_, v]) => v.source.startsWith('prev_daily'));
+            for (const [sym, info] of carried) logger(`    ⏮ ${sym}: ${info.source} → $${info.price.toFixed(6)}`);
+        }
         if (s.pool_derived > 0) {
             const derived = [...this.cache.entries()].filter(([_, v]) => v.source.startsWith('pool_derived'));
             for (const [sym, info] of derived) {
@@ -1600,7 +1639,27 @@ async function captureTlaSnapshot() {
     // Phase 4-5: enrich each pool
     console.log('💎 Enriching pools with LP health, ampLP info, USD valuations...');
     const tokenResolver = new TokenResolver(queryContract);
-    const priceResolver = new PriceResolver(tokenPrices, lstRatios);
+    // F1: load yesterday's daily (fallback: day-before) as last-resort price
+    // carry — feed-grade sources only, so tainted derivations never propagate.
+    const prevDailyPrices = new Map();
+    for (let back = 1; back <= 2 && prevDailyPrices.size === 0; back++) {
+        const d = new Date(Date.now() - back * 86400000);
+        const ds = d.toISOString().slice(0, 10);
+        const prevDaily = await fetchJson(DATA_REPOS.prevDailyUrl(ds), `prev-daily ${ds}`).catch(() => null);
+        for (const pp of prevDaily?.pools || []) {
+            for (const a of [pp.lp_health?.asset_0, pp.lp_health?.asset_1]) {
+                if (!a?.symbol || !(a.price_usd > 0) || !a.price_source) continue;
+                const key = a.symbol.toLowerCase();
+                const cur = prevDailyPrices.get(key);
+                const isFeedGrade = /^(direct|coingecko|astroport|lst_|carried)/.test(a.price_source);
+                if (!cur || (isFeedGrade && !/^(direct|coingecko|astroport|lst_|carried)/.test(cur.source))) {
+                    prevDailyPrices.set(key, { price: a.price_usd, source: a.price_source, date: ds });
+                }
+            }
+        }
+        if (prevDailyPrices.size > 0) console.log(`  ⏮ prev-daily carry map: ${prevDailyPrices.size} symbols from ${ds}`);
+    }
+    const priceResolver = new PriceResolver(tokenPrices, lstRatios, prevDailyPrices);
     const enrichCtx = {
         astroportByPool: catalog.astroportByPool,
         stakedByAssetKey: catalog.stakedByAssetKey,
