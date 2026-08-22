@@ -1976,7 +1976,28 @@ async function loadPendingState() {
 
 // IO wrapper: query total_power, fetch forward events, fold via applyPendingEvents,
 // and emit operator warnings. Caller persists updatedState in the publish phase.
-async function computePendingClaims(custodyCount, priorState) {
+// Rev C.5 (2026-08-22) — STATE SWEEP: the event tracker can only see unstakes the public
+// LCD still retains (~2–3 weeks). Anything unstaked before the tracker existed, or during
+// a pruned gap, is invisible to it and drifts forever (owner's run: chain 19, tracked 0).
+// The staking contract, however, KEEPS every open claim as state: `nft_claims{address}`
+// → [{token_id, release_at}]. When the fold does not reconcile, sweep that query over
+// every address we know (current stakers + anyone the tracker ever saw) and rebuild the
+// pending set from chain state. What the sweep finds is chain truth; what it cannot
+// attribute stays counted (custody − power) but unattributed — disclosed, never invented.
+async function sweepNftClaims(addresses) {
+    const found = []; let queried = 0, failed = 0;
+    await parallelMap(addresses, async (addr) => {
+        queried++;
+        const res = await queryContractSafe(DAODAO_STAKING_CONTRACT, { nft_claims: { address: addr } }, `daodao nft_claims ${addr.slice(-6)}`);
+        if (res == null) { failed++; return; }
+        for (const c of (res.nft_claims || [])) {
+            const ns = c.release_at && (c.release_at.at_time || c.release_at.time); const ms = ns ? Number(String(ns).slice(0, 13)) : null;
+            found.push({ token_id: Number(c.token_id), address: addr, unstaked_at: ms ? new Date(ms - UNSTAKE_WINDOW_MS).toISOString() : null, release_at: ms ? new Date(ms).toISOString() : null, source: 'chain_state' });
+        }
+    }, STAKE_RESOLVE_CONCURRENCY);
+    return { found, queried, failed };
+}
+async function computePendingClaims(custodyCount, priorState, knownAddresses) {
     const powerRes  = await queryContractSafe(DAODAO_STAKING_CONTRACT, { total_power_at_height: {} }, 'daodao total_power');
     const totalPower = powerRes?.power  != null ? Number(powerRes.power)  : null;
     const tipHeight  = powerRes?.height != null ? Number(powerRes.height) : priorState.lastScannedHeight;
@@ -1995,10 +2016,21 @@ async function computePendingClaims(custodyCount, priorState) {
     } else if (scanFailed) {
         console.warn('  ⚠ pending-claim tx-search failed this run — per-wallet detail may be stale (count is chain-truth)');
     } else if (!block.reconciled) {
-        console.warn(`  ⚠ pending-claim DRIFT: chain says ${block.count}, tracked ${block.tracked} — missed event or NFT sent directly to contract`);
+        console.warn(`  ⚠ pending-claim DRIFT: chain says ${block.count}, tracked ${block.tracked} — sweeping nft_claims state to rebuild`);
+        const addrs = [...new Set([...(knownAddresses || []), ...(priorState.entries || []).map(e => e.address), ...entriesAddresses(updatedState)])].filter(Boolean);
+        const sw = await sweepNftClaims(addrs);
+        const byTok = new Map(sw.found.map(e => [e.token_id, e]));
+        const entries = [...byTok.values()].sort((a, b) => a.token_id - b.token_id);
+        const now = Date.now(); const inWindow = [], claimable = [];
+        for (const e of entries) ((e.release_at && Date.parse(e.release_at) <= now) ? claimable : inWindow).push(e);
+        const unattributed = Math.max(0, block.count - entries.length);
+        Object.assign(block, { tracked: entries.length, reconciled: entries.length === block.count, in_window: inWindow, claimable, unattributed, sweep: { addresses_queried: sw.queried, failed: sw.failed, rebuilt_at: new Date().toISOString() } });
+        updatedState.entries = entries;
+        console.log(`  ✓ nft_claims sweep: ${entries.length} open claims across ${new Set(entries.map(e => e.address)).size} wallets (${sw.queried} addresses queried, ${sw.failed} failed)` + (unattributed ? ` — ${unattributed} still unattributed (unstaker not among known addresses)` : ' — reconciled'));
     }
     return { block, updatedState };
 }
+const entriesAddresses = (st) => (st && st.entries || []).map(e => e.address);
 
 // -----------------------------------------------------------------------------
 // Rev C: tiered-mode helpers (base load, scope derivation, merge)
@@ -2154,7 +2186,7 @@ async function captureSnapshot() {
     console.log('🔁 Reconciling DAODAO pending claims...');
     const daodaoCustodyCount = records.filter(r => r.daodao_staked).length;  // all DAODAO custody (pre-flag)
     const priorPendingState = await loadPendingState();
-    const pending = await computePendingClaims(daodaoCustodyCount, priorPendingState);
+    const pending = await computePendingClaims(daodaoCustodyCount, priorPendingState, [...daodaoStakers.map(s => s.address), ...records.map(r => r.owner).filter(Boolean)]);   // C.5: known addresses for the state sweep
     console.log(`  Pending claims:      ${pending.block.count} chain / ${pending.block.tracked} tracked / reconciled: ${pending.block.reconciled}`);
     if (pending.block.reconciled === false) {
         console.log(`  ℹ Tracker behind by ${pending.block.count - pending.block.tracked} (chain ${pending.block.count} vs tracked ${pending.block.tracked}) — those stay on the contract until the unstake tracker catches up`);
@@ -2526,6 +2558,7 @@ if (require.main === module) {
 
 module.exports = {
     parseClaimTx, captureClaims, CLAIMS_PATH,   // 6b
+    sweepNftClaims,   // C.5
     captureSnapshot,
     runWithAnalytics,
     // Phase exports for testing
