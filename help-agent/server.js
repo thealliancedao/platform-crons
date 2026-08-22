@@ -55,6 +55,7 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.11.0 (2026-08-22): trust_register tier from catalog/trusted/current.json (how each address is known) + Capapult/Terra registries.
   // v1.10.0 (2026-08-22): privacy-preserving question log → tla-core/help-agent/questions/<yyyy-mm>.json (QUESTION_LOG=1 + GITHUB_TOKEN).
   // v1.9.3 (2026-08-22): period/per-period/runway as audit strings (model was recounting inclusively).
   // v1.9.2 (2026-08-22): generic deep walk (+ info/amount and cw20-call token pairing) — nested base64 anywhere, every address/amount resolved, explicit unresolved list the model must print.
@@ -421,16 +422,19 @@ const AUDIT_SRC = {
   wallets: 'docs/curated/wallets.json', snapshot: 'member-data/tla-snapshot/current.json',
   tokens: 'token-catalog/snapshots/current.json', runway: 'tla-voting/bribe-state/runway.json',
   astro: 'dex-data/astroport/snapshots/current.json', prices: 'network-and-prices/current.json',
+  trusted: 'catalog/trusted/current.json',   // v1.11.0: ONE trust product (how each address is known)
 };
-const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions' };
+const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions', 'Capapult': 'capapult', 'Terra': 'terra' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
 let auditCache = { at: 0, reg: null }; let runwayCurrentPeriod = null;
 async function auditRegistries() {
   if (auditCache.reg && Date.now() - auditCache.at < 10 * 60 * 1000) return auditCache.reg;
   const get = async (p) => { try { const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } }); return r.ok ? await r.json() : null; } catch { return null; } };
-  const [cat, known, wallets, snap, tokens, runway, astro, prices] = await Promise.all(Object.values(AUDIT_SRC).map(get));
+  const [cat, known, wallets, snap, tokens, runway, astro, prices, trusted] = await Promise.all(Object.values(AUDIT_SRC).map(get));
   const daoRegs = await Promise.all(Object.entries(DAO_REGISTRIES).map(async ([name, folder]) => { try { const r = await fetch(`${DAO_REPO}/${folder}/governance/registry.json`); return r.ok ? [name, await r.json()] : null; } catch { return null; } }));
-  const reg = { structural: {}, gauge: {}, token: {}, curated: {}, entities: {}, runway: {}, pool: {}, denom: {}, daoreg: {}, loaded: { catalog: !!cat, known: !!known, wallets: !!wallets, snapshot: !!snap, tokens: !!tokens, runway: !!runway, astroport: !!astro, prices: !!prices, dao_registries: daoRegs.filter(Boolean).map(x => x[0]) } };
+  const reg = { structural: {}, gauge: {}, token: {}, curated: {}, entities: {}, runway: {}, pool: {}, denom: {}, daoreg: {}, trusted: {}, loaded: { catalog: !!cat, known: !!known, wallets: !!wallets, snapshot: !!snap, tokens: !!tokens, runway: !!runway, astroport: !!astro, prices: !!prices, trusted: !!trusted, dao_registries: daoRegs.filter(Boolean).map(x => x[0]) } };
+  // v1.11.0: the trust product — every known address with HOW it is known (verified[]).
+  for (const r of (trusted && trusted.addresses) || []) if (r && r.address) reg.trusted[r.address] = { label: r.label, type: r.type, protocol: r.protocol, description: r.description, methods: r.methods || [], verified: r.verified || [], human_only: !!r.human_only };
   // DEX pools (Astroport snapshot) — pool address → pair
   for (const p of (astro && astro.pools) || []) if (p.pool_address) reg.pool[p.pool_address] = { name: p.pool_name, dex: p.dex || 'Astroport', type: p.pool_type || null, tla: !!p.tla_relevant, assets: (p.assets || []).map(a => a.symbol || a.denom) };
   // denom → symbol/decimals: token-catalog chain-registry identity, then network-and-prices astroport addresses; uluna fixed
@@ -484,6 +488,8 @@ function resolveAddr(reg, a) {
   if (reg.curated[a]) out.tiers.push({ tier: 'curated', ...reg.curated[a], evidence: 'owner-curated label (docs/curated/known_contracts.json) — a human label, not chain proof' });
   if (reg.pool[a]) out.tiers.push({ tier: 'dex_pool', ...reg.pool[a], evidence: 'pool listed in the live Astroport snapshot captured by the dex-data cron (chain-verified)' });
   if (reg.daoreg[a]) out.tiers.push({ tier: 'dao_registry', ...reg.daoreg[a], evidence: 'in ' + reg.daoreg[a].dao + '\'s own vetted contract registry (dao-originations) — a human label maintained per DAO, not chain proof' });
+  // v1.11.0: trust product tier — lists each verification (method · ref · by · on · url). Evidence, not a verdict.
+  if (reg.trusted[a]) { const t = reg.trusted[a]; out.tiers.push({ tier: 'trust_register', label: t.label, type: t.type, protocol: t.protocol, methods: t.methods, human_only: t.human_only, verified: t.verified.map(v => ({ method: v.method, ref: v.ref, by: v.by, on: v.on, url: v.url || null })), evidence: t.human_only ? 'known ONLY by human labels (' + t.methods.join(', ') + ') — no chain-level evidence' : 'known by ' + t.methods.join(', ') + ' — see verified[] for each check and its link' }); }
   if (!out.tiers.length) out.tiers.push({ tier: 'unknown', evidence: 'no platform registry knows this address — unverified, not necessarily bad' });
   out.verify = verifyLinks(a, out.tiers);
   return out;
@@ -599,7 +605,7 @@ async function auditProposal(msgs) {
   return {
     summary: { messages: msgs.length, addresses: Object.keys(addresses).length, unknown_addresses: tiers.filter(t => t === 'unknown').length, flags: flags.length },
     registries_loaded: reg.loaded, findings, addresses, flags, unresolved,
-    how_to_read: 'Tiers are evidence, not verdicts. structural/gauge_set/token = chain-verified by live captures; curated = a human label; unknown = unverified. No finding here asserts a proposal is "safe". This site\'s registry is NOT the source of truth — the chain is; every address carries independent `verify` links (explorer, source repo, audit) so the reader can check without trusting this site.',
+    how_to_read: 'Tiers are evidence, not verdicts. structural/gauge_set/token = chain-verified by live captures; trust_register = the platform trust product listing HOW the address is known (methods chain/github/scv_audit/oak_audit are checkable without trusting this site; owner/project_team/dao_registry/docs are human labels; past_prop is precedent) — print its verified[] entries with their links; curated = a human label; unknown = unverified. No finding here asserts a proposal is "safe". This site\'s registry is NOT the source of truth — the chain is; every address carries independent `verify` links (explorer, source repo, audit) so the reader can check without trusting this site.',
   };
 }
 async function runTool(name, input) {
