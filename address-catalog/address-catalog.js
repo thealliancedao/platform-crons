@@ -119,6 +119,10 @@ const GITHUB_TOKEN    = process.env.GITHUB_TOKEN;
 const GITHUB_REPO     = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH   = process.env.GITHUB_BRANCH || 'main';
 const RUN_EVERY_HOURS = Number(process.env.RUN_EVERY_HOURS || 24); // catalog cadence (membership moves slowly)
+// Curated ENTITY register — collective/public wallets (treasuries, multisigs,
+// protocol bribers, DAOs). Owner-edited; this cron publishes it as
+// `entities` so every page/agent reads ONE list (no hardcoded labels in pages).
+const CURATED_WALLETS_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/docs/curated/wallets.json`;
 
 // -----------------------------------------------------------------------------
 // PFPK handle resolution — for ALL methods (incl. locks), not just ally stakers.
@@ -279,6 +283,19 @@ async function run() {
   const epochInfo = currentEpochInfo();
   console.log(`\n🚀 Address-Catalog — ${startedAt.toISOString()} — ${TRACKED.length} tracked entities\n`);
 
+  // ---- curated entities (docs/curated/wallets.json) → published `entities` -----
+  // Fail-soft: a fetch miss publishes entities:{} with a loud log, never a guessed list.
+  let entities = {}, entitiesStatus = 'ok';
+  try {
+    const cur = await fetchJson(CURATED_WALLETS_URL, 'curated-wallets', 15000);
+    for (const [addr, v] of Object.entries(cur?.wallets || {})) {
+      if (!/^terra1[02-9ac-hj-np-z]{38,58}$/.test(addr) || !v?.label) continue;
+      entities[addr] = { label: String(v.label), subtype: v.subtype || null, protocol: v.protocol || null, flags: Array.isArray(v.flags) ? v.flags : [] };
+    }
+    if (!entities[C.DAO_MAIN_WALLET.addr]) { entitiesStatus = 'drift'; console.log(`  ⚠ entities drift: dao_main_wallet ${C.DAO_MAIN_WALLET.addr} is not in docs/curated/wallets.json`); }
+    console.log(`  ✓ ${Object.keys(entities).length} curated entities (docs/curated/wallets.json)`);
+  } catch (e) { entitiesStatus = 'missing'; console.log(`  ✗ curated wallets unavailable: ${e.message.slice(0, 80)} — publishing entities:{}`); }
+
   const slugBlocks = [];
   const addresses = [];   // one row per (address, slug)
 
@@ -358,7 +375,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'address-catalog-1.1.0',
+      version: 'address-catalog-1.2.0',   // 1.2.0: +entities (curated wallets register)
       schemaVersion: 1,
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
@@ -372,6 +389,10 @@ async function run() {
       unique_addresses: Object.keys(byAddress).length,
       by_slug: Object.fromEntries(slugBlocks.map(s => [s.slug, s.kept_count ?? 0])),
     },
+    // Curated entity register (docs/curated/wallets.json) — labels for
+    // collective/public wallets. Pages read THIS; none may hardcode a label.
+    entities,
+    entities_status: entitiesStatus,
     // Structural contracts published for downstream/site convenience. Source of
     // truth is config/contracts.js — this is a generated copy, never hand-edited.
     contracts: {
