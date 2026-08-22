@@ -263,13 +263,47 @@ function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
 // -----------------------------------------------------------------------------
 // CAPTURE
 // -----------------------------------------------------------------------------
-async function findProposalModule(registry) {
-  const candidates = Object.entries(registry.contracts || {})
-    .filter(([, v]) => (v.validActions || []).includes('propose') || /proposal/i.test(v.name || ''));
-  // Self-verifying: the real module answers proposal_count.
-  for (const [addr, meta] of candidates) {
+// 1.1.0 (2026-08-22): CHAIN-FIRST module resolution. The old rule — "first
+// registry contract that answers proposal_count" — silently captured aDAO's
+// proposals into lion-dao/ because that registry carries aDAO's entries first.
+// Now: find THIS DAO's core (registry entry named *Core* whose name matches the
+// folder, or the registry's sole core), ask the core itself which proposal
+// modules it owns ({proposal_modules:{}}), keep the Enabled ones, verify each
+// answers proposal_count. Registry names only route; the chain decides.
+// Fallback (no core found / core query fails): registry candidates whose name
+// matches the folder first, then the rest — never another DAO's module by order.
+function folderTokens(dao) {
+  const t = String(dao || '').toLowerCase().split(/[^a-z]+/).filter(x => x && x !== 'dao');
+  if (t.includes('adao')) t.push('alliance');
+  return t;
+}
+function nameMatches(name, tokens) { const n = String(name || '').toLowerCase(); return tokens.some(t => n.includes(t)); }
+async function findProposalModule(registry, dao) {
+  const tokens = folderTokens(dao);
+  const entries = Object.entries(registry.contracts || {});
+  const cores = entries.filter(([, v]) => /core/i.test(v.name || '') && String(v.type || '').toLowerCase() === 'dao');
+  const myCores = cores.filter(([, v]) => nameMatches(v.name, tokens));
+  const core = (myCores[0] || (cores.length === 1 ? cores[0] : null));
+  if (core) {
+    const pm = await query(core[0], { proposal_modules: {} });
+    const mods = Array.isArray(pm) ? pm : (pm && pm.proposal_modules) || [];
+    for (const m of mods) {
+      const addr = m.address || m.addr || m; const status = String(m.status || 'Enabled');
+      if (!/enabled/i.test(status)) continue;
+      const c = await query(addr, { proposal_count: {} });
+      if (c != null) {
+        const meta = (registry.contracts || {})[addr] || { name: `${core[1].name.replace(/\s*core\s*$/i, '')} Proposal Module (from core)`, type: 'dao' };
+        return { addr, meta, count: num(c), resolvedFrom: 'core:' + core[0], coreModules: mods.length };
+      }
+    }
+    console.log(`  ⚠ core ${core[0].slice(0, 14)}… listed ${mods.length} modules but none answered proposal_count — falling back to registry names`);
+  }
+  const candidates = entries.filter(([, v]) => (v.validActions || []).includes('propose') || /proposal/i.test(v.name || ''));
+  const ordered = candidates.filter(([, v]) => nameMatches(v.name, tokens)).concat(candidates.filter(([, v]) => !nameMatches(v.name, tokens)));
+  for (const [addr, meta] of ordered) {
+    if (!nameMatches(meta.name, tokens) && cores.length) continue;   // never drift into another DAO's module when a core exists
     const c = await query(addr, { proposal_count: {} });
-    if (c != null) return { addr, meta, count: num(c) };
+    if (c != null) return { addr, meta, count: num(c), resolvedFrom: 'registry-name' };
   }
   return null;
 }
@@ -331,9 +365,10 @@ async function captureDao(dao) {
   const regRaw = await readRepoFile(DAO_REPO, `${dao}/governance/registry.json`);
   if (!regRaw) { console.log('  ⚠ no registry.json — skipped (a DAO without a vetted registry cannot be trust-scored)'); return null; }
   const registry = JSON.parse(regRaw);
-  const mod = await findProposalModule(registry);
+  const mod = await findProposalModule(registry, dao);
   if (!mod) { console.log('  ⚠ no proposal module answered proposal_count — skipped'); return null; }
-  console.log(`  proposal module: ${mod.meta.name} (${mod.addr.slice(0, 14)}…) count=${mod.count}`);
+  console.log(`  proposal module: ${mod.meta.name} (${mod.addr.slice(0, 14)}…) count=${mod.count} via ${mod.resolvedFrom}`);
+  if (registry.dao && !nameMatches(registry.dao, folderTokens(dao)) && !nameMatches(dao, folderTokens(registry.dao))) console.log(`  ⚠ registry drift: folder "${dao}" but registry.dao="${registry.dao}" — the name join may label the wrong DAO's members`);
 
   const slug = (registry.dao || dao).toLowerCase().replace(/[^a-z]/g, '');
   const names = await loadNames(slug);
@@ -438,7 +473,7 @@ async function main() {
   return results;
 }
 
-module.exports = { main, _test: { mapProposal, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, setQuery: fn => { query = fn; } } };
+module.exports = { main, _test: { mapProposal, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, findProposalModule, folderTokens, setQuery: fn => { query = fn; } } };
 if (require.main === module) {
   if (process.env.DAO_GOVERNANCE === '0') { console.log('disabled'); process.exit(0); }
   main().then(() => process.exit(0)).catch(e => { console.error('❌', e.message); process.exit(1); });
