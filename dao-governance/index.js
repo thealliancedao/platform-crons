@@ -27,6 +27,23 @@
 //               reproduce. Report-only.
 //   (default) → capture + publish.
 // Kill-switch: DAO_GOVERNANCE=0.
+//
+// 1.2.0 (2026-08-22) — THREE GOVERNANCE SHAPES, ONE OUTPUT. registry.kind:
+//   "daodao"     (default) dao-proposal-single via the DAO core — as before.
+//   "anchor-gov" Anchor-style gov contract (Capapult/CAPA governance:
+//                registry.govAddress; polls / voters / config queries). Same
+//                chain (phoenix-1), same address space — a CosmWasm contract,
+//                not another layer. End is a HEIGHT; we carry the height and an
+//                ESTIMATED end time (current height + measured block time),
+//                flagged `estimated:true`, never presented as chain truth.
+//   "x-gov"      Cosmos SDK x/gov (Terra/LUNA governance) via LCD REST. Tally
+//                from the chain; total power = bonded stake; quorum/threshold
+//                from gov params. Per-voter lists are NOT captured (thousands
+//                of votes; `votersNote` says so) — the tally is the record.
+// Every kind maps to the SAME proposals.json shape the site and the help
+// agent's audit consume. Unverified chain shapes go through PROBE=1 first —
+// the anchor-gov query names follow the Anchor gov contract; the CAPA fork
+// answered {config:{}} on chain (owner HAR 2026-08-22) and carries abstain.
 // =============================================================================
 
 const https = require('https');
@@ -41,6 +58,15 @@ const BRANCH = process.env.GITHUB_BRANCH || 'main';
 const PROBE = process.env.PROBE === '1';
 const VERIFY = process.env.VERIFY === '1';
 const PAGE = 30;
+const VOTERS_CAP = 300;          // anchor-gov per-poll voter capture cap (honest: `votersTruncated`)
+
+// LCD REST GET (x/gov, staking, blocks) — JSON or null, primary then fallback.
+async function lcdGet(path) {
+  for (const base of [LCD, LCD_FALLBACK]) {
+    try { const r = await req(`${base}${path}`); if (r.status === 200) return JSON.parse(r.body); } catch (e) { /* fallback */ }
+  }
+  return null;
+}
 
 // -----------------------------------------------------------------------------
 // HTTP
@@ -51,7 +77,7 @@ function req(url, { method = 'GET', headers = {}, body = null, timeoutMs = 20000
     const r = https.request({
       method, hostname: u.hostname, port: 443, path: u.pathname + (u.search || ''),
       headers: {
-        'User-Agent': 'org-dao-governance/1.0',
+        'User-Agent': 'org-dao-governance/1.2.0',
         ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}),
         ...headers,
       }, timeout: timeoutMs,
@@ -201,6 +227,101 @@ function outcomeReason(status, { turnout, quorumThreshold, yes, decidingBase, pa
   if (status === 'execution_failed') return 'Execution failed';
   if (status === 'open') return 'Voting in progress';
   return `Status: ${status}`;
+}
+
+// -----------------------------------------------------------------------------
+// 1.2.0 — anchor-gov (CAPA) mapping. Poll shape (Anchor gov): {id, creator,
+// status: in_progress|passed|rejected|executed|expired|failed, end_height, title,
+// description, link, deposit_amount, execute_data:[{order,contract,msg(b64)}],
+// yes_votes, no_votes, abstain_votes, staked_amount, total_balance_at_end_poll}.
+// -----------------------------------------------------------------------------
+const ANCHOR_STATUS = { in_progress: 'open', passed: 'passed', rejected: 'rejected', executed: 'executed', expired: 'closed', failed: 'execution_failed' };
+function anchorMsgsToWasm(executeData) {
+  // Re-express execute_data as wasm.execute msgs so decodeMsgs (registry trust
+  // scoring) and the help agent's deep walk see ONE message dialect.
+  return (executeData || []).map(e => ({ wasm: { execute: { contract_addr: e.contract, msg: e.msg, funds: [] } } }));
+}
+function mapAnchorPoll({ poll, voters, config, state, height, names, registry, daoId, idPrefix, blockTimeSec, now }) {
+  const yes = num(poll.yes_votes), no = num(poll.no_votes), abstain = num(poll.abstain_votes);
+  const total = yes + no + abstain;
+  const status = ANCHOR_STATUS[String(poll.status || '').toLowerCase()] || String(poll.status || '').toLowerCase();
+  // Power base: snapshot at poll end when closed; live staked total while open.
+  const totalPower = status === 'open' ? num(poll.staked_amount) || num(state && state.total_share) : num(poll.total_balance_at_end_poll) || num(poll.staked_amount);
+  const quorumThreshold = config && config.quorum != null ? num(config.quorum) * 100 : null;
+  const passThreshold = config && config.threshold != null ? num(config.threshold) * 100 : null;
+  const turnout = pctOf(total, totalPower);
+  const decidingBase = yes + no;
+  const msgs = anchorMsgsToWasm(poll.execute_data);
+  const { decodedActions, treasuryImpact } = decodeMsgs(msgs, registry);
+  const endH = poll.end_height != null ? Number(poll.end_height) : null;
+  const estEnd = (endH != null && height != null && blockTimeSec) ? new Date((now || Date.now()) + (endH - height) * blockTimeSec * 1000).toISOString() : null;
+  return {
+    id: `${idPrefix}${poll.id}`, daoId,
+    title: poll.title || `Poll ${poll.id}`, description: poll.description || '', link: poll.link || null,
+    status: STATUS_LABEL[status] || (status ? status[0].toUpperCase() + status.slice(1) : 'Unknown'),
+    proposer: poll.creator || null,
+    startHeight: null,
+    expiration: endH != null ? { at_height: endH, ...(estEnd ? { at_time_iso: estEnd, estimated: true, estimate_basis: `height ${height} + ${blockTimeSec.toFixed(2)}s/block` } : {}) } : null,
+    live: status === 'open',
+    votes: { yes, no, abstain, total },
+    voting: { turnout, yesPercent: pctOf(yes, total), noPercent: pctOf(no, total), abstainPercent: pctOf(abstain, total),
+      quorumReached: quorumThreshold == null ? null : turnout >= quorumThreshold,
+      thresholdReached: passThreshold == null ? null : pctOf(yes, decidingBase) >= passThreshold,
+      quorumThreshold, passThreshold },
+    outcome: ['passed', 'executed'].includes(status) ? 'passed' : ['rejected', 'closed', 'execution_failed'].includes(status) ? 'rejected' : status === 'open' ? 'pending' : status,
+    outcomeReason: outcomeReason(status, { turnout, quorumThreshold, yes, decidingBase, passThreshold }),
+    totalPower,
+    voters: (voters || []).map(v => ({ address: v.voter, name: names[v.voter] || 'Unknown Member', vote: String(v.vote || '').toLowerCase(), power: num(v.balance) })).sort((a, b) => b.power - a.power),
+    ...(voters && voters.length >= VOTERS_CAP ? { votersTruncated: true } : {}),
+    decodedActions, treasuryImpact, rawMsgs: msgs,
+    governanceKind: 'anchor-gov',
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+// -----------------------------------------------------------------------------
+// 1.2.0 — x/gov (LUNA) mapping. /cosmos/gov/v1 proposal: {id, messages[@type],
+// status: PROPOSAL_STATUS_*, final_tally_result{yes_count,abstain_count,no_count,
+// no_with_veto_count}, submit_time, voting_start_time, voting_end_time, title,
+// summary, proposer}. Threshold excludes abstain; quorum = voted / bonded.
+// -----------------------------------------------------------------------------
+const XGOV_STATUS = { PROPOSAL_STATUS_VOTING_PERIOD: 'open', PROPOSAL_STATUS_DEPOSIT_PERIOD: 'deposit', PROPOSAL_STATUS_PASSED: 'passed', PROPOSAL_STATUS_REJECTED: 'rejected', PROPOSAL_STATUS_FAILED: 'execution_failed' };
+function mapXGovProposal({ p, tally, bonded, params, registry, daoId, idPrefix }) {
+  const t = tally || p.final_tally_result || {};
+  const yes = num(t.yes_count ?? t.yes), no = num(t.no_count ?? t.no), abstain = num(t.abstain_count ?? t.abstain), veto = num(t.no_with_veto_count ?? t.no_with_veto);
+  const total = yes + no + abstain + veto;
+  const status = XGOV_STATUS[p.status] || String(p.status || '').toLowerCase();
+  const totalPower = num(bonded);
+  const quorumThreshold = params && params.quorum != null ? num(params.quorum) * 100 : null;
+  const passThreshold = params && params.threshold != null ? num(params.threshold) * 100 : null;
+  const vetoThreshold = params && params.veto_threshold != null ? num(params.veto_threshold) * 100 : null;
+  const turnout = pctOf(total, totalPower);
+  const decidingBase = yes + no + veto;
+  const msgs = (p.messages || []).map(m => ({ [m['@type'] || 'unknown']: m }));
+  const decodedActions = (p.messages || []).map(m => ({ type: m['@type'] || 'unknown', trusted: false, verificationStatus: 'not_yet_verified', raw: m }));
+  return {
+    id: `${idPrefix}${p.id}`, daoId,
+    title: p.title || (p.messages && p.messages[0] && p.messages[0].content && p.messages[0].content.title) || `Proposal ${p.id}`,
+    description: p.summary || (p.messages && p.messages[0] && p.messages[0].content && p.messages[0].content.description) || '',
+    status: STATUS_LABEL[status] || (status ? status[0].toUpperCase() + status.slice(1) : 'Unknown'),
+    proposer: p.proposer || null,
+    startHeight: null, submitTime: p.submit_time || null, votingStartTime: p.voting_start_time || null,
+    expiration: p.voting_end_time ? { at_time_iso: new Date(p.voting_end_time).toISOString() } : null,
+    live: status === 'open',
+    votes: { yes, no, abstain, total, noWithVeto: veto },
+    voting: { turnout, yesPercent: pctOf(yes, total), noPercent: pctOf(no, total), abstainPercent: pctOf(abstain, total), vetoPercent: pctOf(veto, total),
+      quorumReached: quorumThreshold == null ? null : turnout >= quorumThreshold,
+      thresholdReached: passThreshold == null ? null : pctOf(yes, decidingBase) >= passThreshold,
+      vetoed: vetoThreshold == null ? null : pctOf(veto, total) >= vetoThreshold,
+      quorumThreshold, passThreshold, vetoThreshold },
+    outcome: status === 'passed' ? 'passed' : ['rejected', 'execution_failed'].includes(status) ? 'rejected' : status === 'open' ? 'pending' : status,
+    outcomeReason: outcomeReason(status, { turnout, quorumThreshold, yes, decidingBase, passThreshold }),
+    totalPower,
+    voters: [], votersNote: 'x/gov: per-voter list not captured (validator + delegator votes run to thousands); the chain tally is the record.',
+    decodedActions, treasuryImpact: null, rawMsgs: msgs,
+    governanceKind: 'x-gov',
+    fetchedAt: new Date().toISOString(),
+  };
 }
 
 function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
@@ -373,11 +494,92 @@ async function loadNames(slug) {
   }
 }
 
+// ---- 1.2.0 anchor-gov fetchers ------------------------------------------------
+async function fetchAnchorPolls(gov) {
+  const out = []; let startAfter = null;
+  for (let guard = 0; guard < 40; guard++) {
+    const res = await query(gov, { polls: { limit: PAGE, order_by: 'desc', ...(startAfter != null ? { start_after: startAfter } : {}) } });
+    const page = res?.polls || [];
+    if (!page.length) break;
+    out.push(...page); startAfter = page[page.length - 1].id;
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+async function fetchAnchorVoters(gov, pollId) {
+  const out = []; let startAfter = null;
+  for (let guard = 0; guard < VOTERS_CAP / PAGE; guard++) {
+    const res = await query(gov, { voters: { poll_id: pollId, limit: PAGE, order_by: 'asc', ...(startAfter ? { start_after: startAfter } : {}) } });
+    const page = res?.voters || [];
+    if (!page.length) break;
+    out.push(...page); startAfter = page[page.length - 1].voter;
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+// Block time measured from the chain (latest vs latest-1000), never assumed.
+async function measureBlockTime() {
+  const latest = await lcdGet('/cosmos/base/tendermint/v1beta1/blocks/latest');
+  const h = latest && latest.block && latest.block.header ? Number(latest.block.header.height) : null;
+  if (!h) return { height: null, blockTimeSec: null };
+  const past = await lcdGet(`/cosmos/base/tendermint/v1beta1/blocks/${h - 1000}`);
+  if (!past || !past.block) return { height: h, blockTimeSec: null };
+  const dt = (new Date(latest.block.header.time) - new Date(past.block.header.time)) / 1000;
+  return { height: h, blockTimeSec: dt > 0 ? dt / 1000 : null, now: new Date(latest.block.header.time).getTime() };
+}
+async function captureAnchorGov(dao, registry) {
+  const gov = registry.govAddress;
+  if (!gov) { console.log('  ⚠ kind=anchor-gov but no registry.govAddress — skipped'); return null; }
+  const [config, state, polls, bt] = await Promise.all([query(gov, { config: {} }), query(gov, { state: {} }), fetchAnchorPolls(gov), measureBlockTime()]);
+  if (!config) { console.log('  ⚠ gov contract did not answer {config:{}} — skipped (the chain decides)'); return null; }
+  console.log(`  anchor-gov ${gov.slice(0, 14)}… polls=${polls.length} quorum=${config.quorum} threshold=${config.threshold} height=${bt.height} blockTime=${bt.blockTimeSec}`);
+  const names = await loadNames((registry.dao || dao).toLowerCase().replace(/[^a-z]/g, ''));
+  if (PROBE) {
+    const probe = { dao, kind: 'anchor-gov', gov, config, state, rawFirst: polls[0] || null, rawVotersFirst: polls[0] ? await fetchAnchorVoters(gov, polls[0].id) : null };
+    probe.mappedFirst = polls[0] ? mapAnchorPoll({ poll: polls[0], voters: probe.rawVotersFirst, config, state, height: bt.height, blockTimeSec: bt.blockTimeSec, now: bt.now, names, registry, daoId: registry.dao, idPrefix: registry.idPrefix || 'c' }) : null;
+    console.log(JSON.stringify(probe, null, 1).slice(0, 4000));
+    return { dao, probe };
+  }
+  const proposals = {}; const idPrefix = registry.idPrefix || 'c';
+  for (const poll of polls) {
+    const voters = await fetchAnchorVoters(gov, poll.id);
+    const m = mapAnchorPoll({ poll, voters, config, state, height: bt.height, blockTimeSec: bt.blockTimeSec, now: bt.now, names, registry, daoId: registry.dao, idPrefix });
+    proposals[m.id] = m;
+  }
+  return { dao, registry, doc: { dao: registry.dao, daoName: registry.daoName || registry.dao, exportedAt: new Date().toISOString(), source: 'org dao-governance cron (chain-derived, anchor-gov)', governanceKind: 'anchor-gov', govAddress: gov, proposalCount: Object.keys(proposals).length, proposals } };
+}
+// ---- 1.2.0 x/gov (LUNA) ----------------------------------------------------------
+async function captureXGov(dao, registry) {
+  const lim = registry.limit || 60;
+  const [list, pool, params] = await Promise.all([
+    lcdGet(`/cosmos/gov/v1/proposals?pagination.limit=${lim}&pagination.reverse=true`),
+    lcdGet('/cosmos/staking/v1beta1/pool'),
+    lcdGet('/cosmos/gov/v1/params?params_type=tallying'),
+  ]);
+  const props = (list && list.proposals) || [];
+  if (!props.length) { console.log('  ⚠ x/gov returned no proposals — skipped'); return null; }
+  const bonded = pool && pool.pool ? pool.pool.bonded_tokens : null;
+  const tp = (params && (params.params || params.tally_params)) || null;
+  console.log(`  x/gov proposals=${props.length} bonded=${bonded} quorum=${tp && tp.quorum} threshold=${tp && tp.threshold}`);
+  const proposals = {}; const idPrefix = registry.idPrefix || 'l';
+  for (const p of props) {
+    const live = p.status === 'PROPOSAL_STATUS_VOTING_PERIOD';
+    const tally = live ? ((await lcdGet(`/cosmos/gov/v1/proposals/${p.id}/tally`)) || {}).tally : null;
+    const m = mapXGovProposal({ p, tally, bonded, params: tp, registry, daoId: registry.dao, idPrefix });
+    proposals[m.id] = m;
+  }
+  if (PROBE) { console.log(JSON.stringify({ dao, kind: 'x-gov', rawFirst: props[0], mappedFirst: proposals[Object.keys(proposals)[0]] }, null, 1).slice(0, 4000)); return { dao, probe: true }; }
+  return { dao, registry, doc: { dao: registry.dao, daoName: registry.daoName || registry.dao, exportedAt: new Date().toISOString(), source: 'org dao-governance cron (chain-derived, x/gov)', governanceKind: 'x-gov', bondedTokens: bonded, window: `newest ${lim}`, proposalCount: Object.keys(proposals).length, proposals } };
+}
+
 async function captureDao(dao) {
   console.log(`\n=== ${dao} ===`);
   const regRaw = await readRepoFile(DAO_REPO, `${dao}/governance/registry.json`);
   if (!regRaw) { console.log('  ⚠ no registry.json — skipped (a DAO without a vetted registry cannot be trust-scored)'); return null; }
   const registry = JSON.parse(regRaw);
+  const kind = String(registry.kind || 'daodao').toLowerCase();
+  if (kind === 'anchor-gov') return captureAnchorGov(dao, registry);
+  if (kind === 'x-gov') return captureXGov(dao, registry);
   const mod = await findProposalModule(registry, dao);
   if (!mod) { console.log('  ⚠ no proposal module answered proposal_count — skipped'); return null; }
   console.log(`  proposal module: ${mod.meta.name} (${mod.addr.slice(0, 14)}…) count=${mod.count} via ${mod.resolvedFrom}`);
@@ -411,6 +613,7 @@ async function captureDao(dao) {
     exportedAt: new Date().toISOString(),
     source: 'org dao-governance cron (chain-derived)',
     proposalModule: mod.addr,
+    governanceKind: 'daodao',
     proposalCount: Object.keys(proposals).length,
     proposals,
   };
@@ -486,7 +689,7 @@ async function main() {
   return results;
 }
 
-module.exports = { main, _test: { mapProposal, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, findProposalModule, folderTokens, setQuery: fn => { query = fn; } } };
+module.exports = { main, _test: { mapProposal, mapAnchorPoll, mapXGovProposal, anchorMsgsToWasm, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, findProposalModule, folderTokens, setQuery: fn => { query = fn; } } };
 if (require.main === module) {
   if (process.env.DAO_GOVERNANCE === '0') { console.log('disabled'); process.exit(0); }
   main().then(() => process.exit(0)).catch(e => { console.error('❌', e.message); process.exit(1); });

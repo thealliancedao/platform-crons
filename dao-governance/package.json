@@ -1,8 +1,14 @@
 {
   "name": "dao-governance",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Chain-derived DAO governance capture for dao-originations tenants",
   "main": "index.js",
-  "scripts": { "start": "node index.js", "gate": "node mock-run.js" },
-  "engines": { "node": ">=18.0.0" }
+  "scripts": {
+    "start": "node index.js",
+    "gate": "node mock-run.js",
+    "gate:kinds": "node mock-run-kinds.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
