@@ -27,7 +27,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.2.0';
+const VERSION       = 'org-votion-1.3.0';   // 1.3.0: optimization product carries per-vault YIELD (reward ÷ vault TVL) — the site shows it, never recomputes
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -512,7 +512,41 @@ async function fetchOptimization(slug) {
     if (!r.ok) throw new Error(`optimization ${slug}: HTTP ${r.status}`);
     return { slug, found: true, data: await r.json() };
 }
-async function runBranchC(now, errors) {
+// 1.3.0 — per-vault yield from data the cron ALREADY holds: Votion's expected reward for the
+// period (Branch C) ÷ the vault's TVL in USD (Branch A state × LUNA × hub rate). Published as
+// `yield` on each vault so every consumer shows the same number. Simple annualisation (×365/7),
+// votion leg only — Votion's own APY adds the LST asset yield and compounds; that formula is
+// unpublished and is not imitated here (it is linked).
+function yieldFor(optDoc, vaultRow, lunaUsd) {
+    const rew = optDoc && optDoc.summary && optDoc.summary.totalExpectedReward;
+    if (typeof rew !== 'number' || !vaultRow) return null;
+    const lstUsd = (vaultRow.hub && lunaUsd != null) ? vaultRow.hub.rate * lunaUsd : null;
+    const tvl = (vaultRow.state && vaultRow.state.staked_lst_human != null && lstUsd != null) ? vaultRow.state.staked_lst_human * lstUsd : null;
+    if (!(tvl > 0)) return { expected_reward_usd: rew, vault_tvl_usd: null, per_period_pct: null, apr_simple_pct: null, basis: 'vault TVL unavailable (no hub rate or LUNA price) — no APR invented' };
+    const pp = rew / tvl;
+    return { expected_reward_usd: Math.round(rew * 100) / 100, vault_tvl_usd: Math.round(tvl * 100) / 100, per_period_pct: Math.round(pp * 10000) / 100, apr_simple_pct: Math.round(pp * 365 / 7 * 10000) / 100,
+        basis: 'expected_reward_usd (Votion API, this period) ÷ vault_tvl_usd (vault staked LST × LUNA USD × LST hub rate) × 365/7. Simple APR, votion leg only; excludes the LST asset yield and compounding that Votion\u2019s displayed APY includes.' };
+}
+// 1.3.0 — REALIZED yield from our own daily captures: the vault exchange rate (vLST per LST)
+// and the LST hub rate, both captured daily in votion/snapshots/daily. Growth over a trailing
+// window, compounded to a year. This is what Votion's "Votion APY" / "Asset APY" track
+// (checked 2026-08-22: ampLUNA Max 7d vault-rate APY 61.8% vs Votion's 58.96%; hub-rate APY
+// 35.0% vs their 35.86%). Ours is measured from chain captures, theirs from their code.
+function realizedYield(nowRow, pastRow, days) {
+    if (!nowRow || !pastRow || !(days > 0)) return null;
+    const out = { window_days: Math.round(days * 10) / 10 };
+    const g = (a, b) => (typeof a === 'number' && typeof b === 'number' && b > 0) ? a / b - 1 : null;
+    const vg = g(nowRow.exchange_rate, pastRow.exchange_rate), hg = g(nowRow.lst_luna_hub_rate, pastRow.lst_luna_hub_rate);
+    const apy = (x) => x == null ? null : Math.round((Math.pow(1 + x, 365 / days) - 1) * 10000) / 100;
+    out.vault_rate_growth_pct = vg == null ? null : Math.round(vg * 10000) / 100;
+    out.vault_apy_pct = apy(vg);                    // Votion leg, realized
+    out.hub_rate_growth_pct = hg == null ? null : Math.round(hg * 10000) / 100;
+    out.asset_apy_pct = apy(hg);                    // LST asset leg, realized (hub rate = Eris hub, never market)
+    out.combined_apy_pct = (vg == null || hg == null) ? null : Math.round((Math.pow((1 + vg) * (1 + hg), 365 / days) - 1) * 10000) / 100;
+    out.basis = 'exchange_rate (vLST/LST) and lst_luna_hub_rate growth between two daily captures, compounded to 365d. Measured, not forecast.';
+    return out;
+}
+async function runBranchC(now, errors, ctx) {
     const vaults = {}; const probes = {};
     for (const slug of VOTION_OPT_SLUGS) {
         try { const r = await fetchOptimization(slug); if (r.found) vaults[slug] = r.data; else { probes[slug] = 'absent'; errors.push({ where: `opt:${slug}`, error: 'configured slug returned 404' }); } }
@@ -564,6 +598,23 @@ async function runBranchC(now, errors) {
     const slugsOk = Object.keys(vaults);
     if (!slugsOk.length) return { status: 'error', slugs: [], probes };
     const anyV = vaults[slugsOk[0]];
+    // 1.3.0: attach yield per vault. Slug 'ampluna-max' ↔ vault label 'max/vampluna'.
+    const byLabel = {}; for (const v of (ctx && ctx.vaultRows) || []) if (v.label) byLabel[v.label.toLowerCase()] = v;
+    const slugToLabel = (slug) => { const m = String(slug).match(/^(amp|arb)luna-(max|\d+)$/i); return m ? `${m[2].toLowerCase()}/v${m[1].toLowerCase()}luna` : null; };
+    const yields = {};
+    // realized windows from our own daily captures (7d and 30d), by vault address
+    const dayFile = async (daysAgo) => { const d = new Date(now.getTime() - daysAgo * 86400e3).toISOString().slice(0, 10); const r = await apiGetJson(`votion/snapshots/daily/${d}.json`); return r.data ? { date: d, doc: r.data } : null; };
+    const nearestPast = async (daysAgo) => { for (let i = 0; i < 4; i++) { const f = await dayFile(daysAgo + i); if (f) return f; } return null; };
+    const [p7, p30] = ctx && ctx.vaultRows ? await Promise.all([nearestPast(7), nearestPast(30)]) : [null, null];
+    const rowIn = (f, addr) => f && f.doc && Array.isArray(f.doc.vaults) ? f.doc.vaults.find(v => v.address === addr) : null;
+    const nowRowFor = (v) => v ? { exchange_rate: v.state && v.state.exchange_rate, lst_luna_hub_rate: v.hub ? v.hub.rate : null } : null;
+    const daysBetween = (f) => f && f.doc && f.doc.meta && f.doc.meta.generated_at ? (now.getTime() - Date.parse(f.doc.meta.generated_at)) / 86400e3 : null;
+    for (const slug of slugsOk) {
+        const lab = slugToLabel(slug); const row = lab ? byLabel[lab] : null;
+        const y = yieldFor(vaults[slug], row, ctx ? ctx.lunaUsd : null) || {};
+        if (row) { y.realized_7d = realizedYield(nowRowFor(row), rowIn(p7, row.address), daysBetween(p7)); y.realized_30d = realizedYield(nowRowFor(row), rowIn(p30, row.address), daysBetween(p30)); y.realized_from = { d7: p7 && p7.date, d30: p30 && p30.date }; }
+        vaults[slug].yield = y; yields[slug] = y; if (!row) probes[`yield:${slug}`] = 'no matching vault row for label ' + lab;
+    }
     const doc = {
         schemaVersion: 1, product: 'votion/optimization', capturedAt: now.toISOString(),
         source: VOTION_OPT_BASE + '/{slug}/optimization (first-party Votion API \u2014 verbatim capture)',
@@ -571,6 +622,7 @@ async function runBranchC(now, errors) {
         period: anyV.period ?? null, voteBefore: anyV.voteBefore ?? null, calculated: anyV.calculated ?? null,
         aggregate: buildAggregate(vaults),
         aggregate_semantics: 'per gauge per pool, summed across captured vaults: current VP vs the VP Votion has ALREADY DECIDED to place (skipped gauges keep current \u2014 matching the \u201cnot worth changing\u201d rows in Votion\u2019s UI). Coverage = the vault slugs captured this run; add slugs to complete it.',
+        yields, yield_semantics: 'per slug — FORWARD: expected_reward_usd ÷ vault_tvl_usd (simple APR, votion leg). REALIZED (realized_7d / realized_30d): vault exchange-rate growth (votion leg) and LST hub-rate growth (asset leg) from our daily captures, compounded; combined = both. Votion\u2019s UI shows a realized-style votion APY plus an asset APY — compare with realized_7d.',
         vaults, probe_results: probes,
     };
     await publishFile('votion/optimization/current.json', doc, `votion: optimization p${doc.period} (${slugsOk.length} vault${slugsOk.length === 1 ? '' : 's'})`);
@@ -603,7 +655,12 @@ async function run() {
 
     // Branch C — optimizer capture (every run: it changes intra-epoch)
     let optC = { status: 'skipped', slugs: [], probes: {} };
-    try { optC = await runBranchC(now, errors); console.log(`  C: optimization ${optC.status} — vaults [${optC.slugs.join(', ')}]`); }
+    try {
+        const catalogForC = await apiGetJson('token-catalog/snapshots/current.json').then(r => r.data).catch(() => null);
+        const lunaC = priceFromCatalog(catalogForC, 'uluna');
+        optC = await runBranchC(now, errors, { vaultRows: vaults, lunaUsd: lunaC.usd });
+        console.log(`  C: optimization ${optC.status} — vaults [${optC.slugs.join(', ')}]`);
+    }
     catch (e) { errors.push({ where: 'optimization', error: e.message }); console.warn(`  C: optimization failed: ${e.message}`); }
 
     const status = vaults.length === 0 ? 'error' : (errors.length ? 'partial' : 'ok');
