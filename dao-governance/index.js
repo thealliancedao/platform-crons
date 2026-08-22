@@ -289,9 +289,14 @@ function nameMatches(name, tokens) { const n = String(name || '').toLowerCase();
 async function findProposalModule(registry, dao) {
   const tokens = folderTokens(dao);
   const entries = Object.entries(registry.contracts || {});
+  // 1.1.1 (2026-08-22): an EXPLICIT registry.coreAddress wins. Name-routing bit us
+  // once more: lion-dao's entry labelled "Lion DAO Core" was the pixeLions α
+  // stewardship msig (45 proposals), and the real DAODAO core was labelled
+  // "Lion DAO Treasury". Labels are human; the core address is the contract.
+  const explicit = registry.coreAddress && /^terra1[02-9ac-hj-np-z]{38,58}$/.test(registry.coreAddress) ? [registry.coreAddress, (registry.contracts || {})[registry.coreAddress] || { name: (registry.daoName || dao) + ' Core', type: 'dao' }] : null;
   const cores = entries.filter(([, v]) => /core/i.test(v.name || '') && String(v.type || '').toLowerCase() === 'dao');
   const myCores = cores.filter(([, v]) => nameMatches(v.name, tokens));
-  const core = (myCores[0] || (cores.length === 1 ? cores[0] : null));
+  const core = explicit || (myCores[0] || (cores.length === 1 ? cores[0] : null));
   if (core) {
     const pm = await query(core[0], { proposal_modules: {} });
     const mods = Array.isArray(pm) ? pm : (pm && pm.proposal_modules) || [];
@@ -301,7 +306,7 @@ async function findProposalModule(registry, dao) {
       const c = await query(addr, { proposal_count: {} });
       if (c != null) {
         const meta = (registry.contracts || {})[addr] || { name: `${core[1].name.replace(/\s*core\s*$/i, '')} Proposal Module (from core)`, type: 'dao' };
-        return { addr, meta, count: num(c), resolvedFrom: 'core:' + core[0], coreModules: mods.length };
+        return { addr, meta, count: num(c), resolvedFrom: (explicit ? 'registry.coreAddress:' : 'core:') + core[0], coreModules: mods.length };
       }
     }
     console.log(`  ⚠ core ${core[0].slice(0, 14)}… listed ${mods.length} modules but none answered proposal_count — falling back to registry names`);
