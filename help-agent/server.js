@@ -55,6 +55,7 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.9.0 proposal audit (2026-08-21): registry-backed, evidence-tiered check of pasted proposal messages.
   // v1.8.0 foundations intake (2026-08-21): sourced chapters from the
   // primary-source mega-read — the bot answers from receipts, not vibes.
   ['skeletonswap',      `${CORE}/docs/ecosystem-knowledge/skeletonswap.md`],
@@ -211,6 +212,31 @@ Hard rules, in priority order:
 // into a prefilled GitHub issue — the maintainer receives a PRE-INVESTIGATED
 // report, and the visitor learns the constraint instead of shouting into a form.
 const MODE_ADDENDA = {
+  audit: `PROPOSAL AUDIT MODE. A <proposal_audit> block (deterministic, registry-backed) is attached.
+Present it; do not re-derive or guess. Rules:
+1. Per message, in order: the action, the contract it is sent to, and for every address
+   its EVIDENCE TIER in these exact words — "chain-verified (structural: queried hourly by
+   our capture engine)", "chain-verified (listed by the TLA gauge controller)", "chain-verified
+   (token seen in live pools)", "curated label (a human label we maintain — not chain proof)",
+   or "UNKNOWN to every registry (unverified — not necessarily bad)". Write addresses in full.
+2. Say what the messages DO in plain words (e.g. "approves the bribe manager to pull 1.75B ROAR,
+   then posts that ROAR as a 10-period linear bribe on LUNA-ROAR (project gauge) from E199").
+3. Show the arithmetic: allowance vs amount, periods, per-period, and the current runway for
+   that pool if present.
+4. FLAGS verbatim, each on its own line. If none: "No flags raised by the registry checks."
+5. What is NOT checked — always state it: this audit does not verify who posted the proposal,
+   does not read the proposal's text, does not check the DAO's treasury balance or that the
+   bribe token is the one the text claims beyond the registry name, and cannot see intent.
+6. NEVER say "safe", "legit", "genuine", or "approved". Say what MATCHES the registries and what
+   does not. Audits: the bribe manager, gauge controller and vAMP minter are covered by the Eris
+   contracts-ve3 SCV audit (see the AUDITS chapter) — cite that only for those contracts.
+7. INDEPENDENT VERIFICATION IS MANDATORY. For every address, print its "verify" links as
+   markdown — at minimum the chain explorer link; for TLA ve3 contracts also the Eris source
+   repo and the SCV audit, plus the "how_to_confirm" sentence. Say explicitly, once: "This
+   site's registry is ours; it is not the source of truth — the chain is. Use the links to
+   check every address without trusting us." Never imply our label alone makes an address good.
+8. End with the one-line standard: "Not financial or voting advice — registry facts only.
+   Verify on chain." Keep the whole answer structured and under ~30 lines.`,
   report: `TRIAGE MODE — ISSUE REPORT. The visitor is filing a problem report through the Help
 page form. Do these in order:
 1. VERIFY: check the claim against the live heads in the corpus and, where a data product
@@ -320,6 +346,9 @@ const CHAIN_TOOLS = [
   { name: 'get_transaction',
     description: 'Fetch one Terra (phoenix-1) transaction by hash from the public LCD node. Use when the visitor gives a tx hash.',
     input_schema: { type: 'object', properties: { hash: { type: 'string', description: '64-char hex tx hash' } }, required: ['hash'] } },
+  { name: 'audit_proposal',
+    description: 'Registry-backed audit of a governance proposal\'s wasm/bank messages: resolves every address against the platform registries with an evidence tier (structural / gauge_set / token / curated / unknown), checks allowance=amount, gauge/bucket match, distribution math, current runway, and flags admin/upgrade actions. Use whenever a visitor pastes proposal messages or asks whether a proposal is genuine.',
+    input_schema: { type: 'object', properties: { messages_json: { type: 'string', description: 'the raw JSON (array of messages) pasted by the visitor' } }, required: ['messages_json'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -358,7 +387,126 @@ async function lcdFetch(path) {
   } catch (e) { return { error: 'LCD unreachable: ' + e.message }; }
   finally { clearTimeout(to); }
 }
+// ---- PROPOSAL AUDIT (v1.9.0) ------------------------------------------------------
+// Deterministic, registry-backed check of a governance proposal's wasm messages.
+// Every address is resolved against the platform's registries and the result is
+// TIERED by how it is known, so the answer can say exactly what is proven and
+// what is not:
+//   structural — in catalog.contracts: the capture engine QUERIES this contract
+//                every hour and gets the expected responses (chain-verified live)
+//   gauge_set  — the gauge controller itself lists this pool (chain-verified live)
+//   token      — a denom the token-catalog cron sees in live pools (chain-verified)
+//   curated    — owner-labelled in docs/curated (a human label, not chain proof)
+//   unknown    — no registry knows it (NOT a verdict of bad — a verdict of unknown)
+// The model never invents a tier; it reports these. Nothing here says "safe".
+const AUDIT_SRC = {
+  catalog: 'catalog/snapshots/current.json', known: 'docs/curated/known_contracts.json',
+  wallets: 'docs/curated/wallets.json', snapshot: 'member-data/tla-snapshot/current.json',
+  tokens: 'token-catalog/snapshots/current.json', runway: 'tla-voting/bribe-state/runway.json',
+};
+let auditCache = { at: 0, reg: null };
+async function auditRegistries() {
+  if (auditCache.reg && Date.now() - auditCache.at < 10 * 60 * 1000) return auditCache.reg;
+  const get = async (p) => { try { const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } }); return r.ok ? await r.json() : null; } catch { return null; } };
+  const [cat, known, wallets, snap, tokens, runway] = await Promise.all(Object.values(AUDIT_SRC).map(get));
+  const reg = { structural: {}, gauge: {}, token: {}, curated: {}, entities: {}, runway: {}, loaded: { catalog: !!cat, known: !!known, wallets: !!wallets, snapshot: !!snap, tokens: !!tokens, runway: !!runway } };
+  for (const [k, v] of Object.entries((cat && cat.contracts) || {})) if (v && v.addr) reg.structural[v.addr] = { key: k, role: v.role || null };
+  for (const p of (snap && snap.pools) || []) { const id = String(p.gauge_pool_id || ''); const addr = id.replace(/^(cw20|native):/, ''); if (addr) reg.gauge[addr] = { name: p.name, dex: p.dex, bucket: p.bucket, status: p.status, gauge_pool_id: id }; if (p.lp_address) reg.gauge[p.lp_address] = reg.gauge[p.lp_address] || { name: p.name, dex: p.dex, bucket: p.bucket, status: p.status, gauge_pool_id: id }; }
+  for (const t of (tokens && tokens.tokens) || []) { const d = String(t.denom || ''); if (d) reg.token[d] = { symbol: t.symbol || null, kind: t.kind || null, pools: (t.found_in_pools || []).length }; }
+  for (const [a, v] of Object.entries((known && known.contracts) || {})) reg.curated[a] = { name: v.name, type: v.type, protocol: v.protocol, audited_note: v.description || null };
+  for (const e of (known && known._meta && known._meta.skipped_token_entries) || []) if (e.address) reg.curated[e.address] = reg.curated[e.address] || { name: e.name, type: e.type, protocol: null };
+  for (const [a, v] of Object.entries((wallets && wallets.wallets) || {})) reg.entities[a] = { label: v.label, subtype: v.subtype, protocol: v.protocol, flags: v.flags || [] };
+  for (const [a, v] of Object.entries((cat && cat.entities) || {})) reg.entities[a] = reg.entities[a] || { label: v.label, subtype: v.subtype, protocol: v.protocol, flags: v.flags || [] };
+  for (const r of (runway && runway.pools) || []) { const addr = String(r.pool || '').replace(/^(cw20|native):/, ''); reg.runway[addr] = { epochs_left: r.epochs_left, funders: (r.funders || []).map(f => f.label || f.briber), denoms: Object.keys(r.by_denom || {}) }; }
+  auditCache = { at: Date.now(), reg }; return reg;
+}
+// INDEPENDENT verification — places that are not this site's registry. The
+// registry tells you what WE think an address is; these let the visitor check
+// without trusting us. Chain explorer for every address; for the TLA ve3
+// contracts the Eris source repo + the SCV audit; Eris docs/UI where they list
+// the contract; Astroport for pools.
+const VE3_REPO = 'https://github.com/erisprotocol/contracts-ve3';
+const VE3_AUDIT = 'https://github.com/SCV-Security/PublicReports/blob/main/Eris%20Protocol/ERIS%20-%20Contracts%20ve3%20-%20Audit%20Report%20v1.0.pdf';
+const ERIS_DOCS = 'https://docs.erisprotocol.com/products/amp-governance/';
+const STRUCTURAL_PROVENANCE = {
+  gauge_controller: { built_by: 'Eris Protocol', source: VE3_REPO, audit: VE3_AUDIT, docs: ERIS_DOCS, how_to_confirm: 'Eris\'s own TLA UI (erisprotocol.com → Amp Governance) transacts with this address; query /cosmwasm/wasm/v1/contract/<addr> on any Terra LCD and compare the code_id\'s checksum with the contracts-ve3 build' },
+  voting_escrow:    { built_by: 'Eris Protocol', source: VE3_REPO, audit: VE3_AUDIT, docs: ERIS_DOCS, how_to_confirm: 'the vAMP lock NFTs in your wallet are minted by this contract — check any lock NFT\'s contract on the explorer' },
+  bribe_manager:    { built_by: 'Eris Protocol', source: VE3_REPO, audit: VE3_AUDIT, docs: ERIS_DOCS, how_to_confirm: 'every existing TLA bribe (tla-voting/bribes history on this site, and the explorer\'s tx list for this address) was posted to this contract; Eris\'s Amp Governance UI claims bribes from it' },
+  compounder:       { built_by: 'Eris Protocol', source: 'https://github.com/erisprotocol/contracts-tokenfactory', audit: 'https://github.com/SCV-Security/PublicReports/blob/main/Eris%20Protocol/Eris%20Protocol%20-%20amp-compounder%20-%20Audit%20Report%20v1.0.pdf', docs: 'https://docs.erisprotocol.com/', how_to_confirm: 'ampLP tokens are minted by this contract' },
+  dao_main_wallet:  { built_by: 'AllianceDAO (DAODAO)', source: 'https://daodao.zone/dao/terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm', audit: null, docs: null, how_to_confirm: 'DAODAO shows this as the AllianceDAO treasury' },
+};
+function verifyLinks(a, tiers) {
+  const links = [{ label: 'Chain explorer (address, code, tx history)', url: 'https://chainsco.pe/terra2/address/' + a }];
+  for (const t of tiers) {
+    if (t.tier === 'structural' && STRUCTURAL_PROVENANCE[t.key]) { const p = STRUCTURAL_PROVENANCE[t.key]; links.push({ label: 'Source code — ' + p.built_by, url: p.source }); if (p.audit) links.push({ label: 'Independent audit (SCV Security)', url: p.audit }); if (p.docs) links.push({ label: 'Protocol docs', url: p.docs }); t.how_to_confirm = p.how_to_confirm; t.built_by = p.built_by; }
+    if (t.tier === 'gauge_set' && t.dex === 'Astroport') links.push({ label: 'Astroport pool', url: 'https://app.astroport.fi/pools' });
+    if (t.tier === 'gauge_set') links.push({ label: 'Eris Amp Governance (gauge list)', url: 'https://www.erisprotocol.com/terra/amp-governance' });
+  }
+  return links;
+}
+function resolveAddr(reg, a) {
+  const out = { address: a, tiers: [] };
+  if (reg.structural[a]) out.tiers.push({ tier: 'structural', ...reg.structural[a], evidence: 'catalog.contracts — queried hourly by the capture engine; responses match the expected contract schema' });
+  if (reg.gauge[a]) out.tiers.push({ tier: 'gauge_set', ...reg.gauge[a], evidence: 'listed by the TLA gauge controller in the live tla-snapshot' });
+  if (reg.token[a]) out.tiers.push({ tier: 'token', ...reg.token[a], evidence: 'denom seen in live DEX pools by the token-catalog cron' });
+  if (reg.entities[a]) out.tiers.push({ tier: 'curated', ...reg.entities[a], evidence: 'owner-curated label (docs/curated/wallets.json) — a human label, not chain proof' });
+  if (reg.curated[a]) out.tiers.push({ tier: 'curated', ...reg.curated[a], evidence: 'owner-curated label (docs/curated/known_contracts.json) — a human label, not chain proof' });
+  if (!out.tiers.length) out.tiers.push({ tier: 'unknown', evidence: 'no platform registry knows this address — unverified, not necessarily bad' });
+  out.verify = verifyLinks(a, out.tiers);
+  return out;
+}
+const GAUGES = ['stable', 'project', 'bluechip', 'single'];
+const RISKY_KEYS = ['migrate', 'update_admin', 'clear_admin', 'set_owner', 'transfer_ownership', 'update_config', 'propose_new_owner', 'instantiate', 'burn', 'mint'];
+function extractMessages(text) {
+  // find the first JSON array/object in the pasted text that looks like cosmos msgs
+  const m = text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/); if (!m) return null;
+  for (const cand of [m[1], m[1].replace(/,\s*([\]}])/g, '$1')]) { try { const j = JSON.parse(cand); return Array.isArray(j) ? j : [j]; } catch {} }
+  return null;
+}
+async function auditProposal(msgs) {
+  const reg = await auditRegistries();
+  const findings = [], addresses = {}, flags = [];
+  const seen = (a) => { if (!addresses[a]) addresses[a] = resolveAddr(reg, a); return addresses[a]; };
+  const allowances = [];
+  msgs.forEach((raw, i) => {
+    const ex = raw && raw.wasm && raw.wasm.execute; const bank = raw && raw.bank; const stake = raw && (raw.staking || raw.distribution || raw.gov);
+    const f = { index: i + 1, kind: ex ? 'wasm.execute' : bank ? 'bank' : Object.keys(raw || {}).join(',') || 'unknown', notes: [] };
+    if (ex) {
+      f.contract = seen(ex.contract_addr); const msg = ex.msg || {}; const action = Object.keys(msg)[0] || '?'; f.action = action; f.funds = ex.funds || [];
+      const body = msg[action] || {};
+      JSON.stringify(body).replace(/terra1[02-9ac-hj-np-z]{38,58}/g, (a) => { seen(a); return a; });
+      if (action === 'increase_allowance') { allowances.push({ token: ex.contract_addr, spender: body.spender, amount: body.amount }); f.spender = seen(body.spender); f.amount = body.amount; }
+      if (action === 'add_bribe') {
+        const b = body.bribe || {}, info = b.info || {}, tok = info.cw20 || info.native, fi = body.for_info || {}, pool = fi.cw20 || fi.native, dist = (body.distribution && body.distribution.func) || {};
+        f.bribe = { token: tok ? seen(tok) : null, amount: b.amount, gauge: body.gauge, pool: pool ? seen(pool) : null, distribution: dist };
+        if (!GAUGES.includes(body.gauge)) flags.push(`msg ${i + 1}: gauge "${body.gauge}" is not one of ${GAUGES.join('/')}`);
+        const g = pool && reg.gauge[pool]; if (g && g.bucket && body.gauge && g.bucket !== body.gauge) flags.push(`msg ${i + 1}: pool ${g.name} is in the ${g.bucket} bucket but the bribe targets gauge "${body.gauge}"`);
+        if (!g) flags.push(`msg ${i + 1}: for_info pool is NOT in the live gauge set — the bribe would target a pool the controller does not list`);
+        const al = allowances.find(x => x.token === tok && x.spender === ex.contract_addr);
+        if (info.cw20) { if (!al) flags.push(`msg ${i + 1}: cw20 bribe with no matching increase_allowance to this contract`); else if (al.amount !== b.amount) flags.push(`msg ${i + 1}: allowance ${al.amount} ≠ bribe amount ${b.amount} (leftover approval)`); else f.notes.push('allowance equals bribe amount — nothing left approved'); }
+        if (dist.start != null && dist.end != null) { const n = Number(dist.end) - Number(dist.start); f.bribe.periods = n; if (b.amount && n > 0) f.bribe.per_period_raw = String(Math.round(Number(b.amount) / n)); f.notes.push(`${dist.func_type || 'linear'} distribution over ${n} period(s), E${dist.start}→E${dist.end}`); }
+        const rw = pool && reg.runway[pool]; if (rw) f.bribe.current_runway = rw;
+        if (!(reg.structural[ex.contract_addr] && reg.structural[ex.contract_addr].key === 'bribe_manager')) flags.push(`msg ${i + 1}: add_bribe is sent to an address that is NOT the registered TLA bribe manager`);
+      }
+      if (RISKY_KEYS.includes(action)) flags.push(`msg ${i + 1}: "${action}" is an administrative/upgrade action — treat as high-scrutiny`);
+      if ((ex.funds || []).some(x => x.denom === 'uluna' && Number(x.amount) > 1e9)) flags.push(`msg ${i + 1}: attaches more than 1,000 LUNA in funds`);
+    } else if (bank) { const send = bank.send || {}; f.to = send.to_address ? seen(send.to_address) : null; f.amount = send.amount; if (f.to && f.to.tiers[0].tier === 'unknown') flags.push(`msg ${i + 1}: bank send to an address no registry knows`); }
+    else if (stake) { f.notes.push('staking/distribution/gov module message — outside TLA gauge mechanics'); }
+    findings.push(f);
+  });
+  const tiers = Object.values(addresses).map(a => a.tiers[0].tier);
+  return {
+    summary: { messages: msgs.length, addresses: Object.keys(addresses).length, unknown_addresses: tiers.filter(t => t === 'unknown').length, flags: flags.length },
+    registries_loaded: reg.loaded, findings, addresses, flags,
+    how_to_read: 'Tiers are evidence, not verdicts. structural/gauge_set/token = chain-verified by live captures; curated = a human label; unknown = unverified. No finding here asserts a proposal is "safe". This site\'s registry is NOT the source of truth — the chain is; every address carries independent `verify` links (explorer, source repo, audit) so the reader can check without trusting this site.',
+  };
+}
 async function runTool(name, input) {
+  if (name === 'audit_proposal') {
+    const msgs = Array.isArray(input.messages) ? input.messages : extractMessages(String(input.messages_json || ''));
+    if (!msgs) return { error: 'could not parse proposal messages — paste the raw JSON array of messages' };
+    return auditProposal(msgs);
+  }
   if (name === 'read_product') {
     const p = String(input.path || '').replace(/\.\./g, '').replace(/^\/+/, '');
     if (!PRODUCT_PREFIXES.some(pre => p.startsWith(pre))) return { error: 'path not in the public product set' };
@@ -426,10 +574,16 @@ async function ask(question, explicitWallet, page, mode) {
   const corpus = await grounding();
   const walletBlock = await walletExtract(question, explicitWallet);
   const pageBlock = page ? `<visitor_context>The visitor is currently viewing: ${String(page).replace(/[^\w\-\/#.?=]/g,'').slice(0,100)} — tailor the answer to what that page shows.</visitor_context>\n` : '';
-  const addendum = MODE_ADDENDA[mode] || null;
+  let addendum = MODE_ADDENDA[mode] || null;
+  // v1.9.0: pasted proposal messages → deterministic audit first, then the model explains it
+  let auditBlock = '';
+  if (/"contract_addr"|"wasm"\s*:|"bank"\s*:\s*\{/.test(question)) {
+    const msgs = extractMessages(question);
+    if (msgs) { try { const a = await auditProposal(msgs); auditBlock = '\n\n<proposal_audit>' + JSON.stringify(a).slice(0, 14000) + '</proposal_audit>'; addendum = (addendum ? addendum + '\n\n' : '') + MODE_ADDENDA.audit; } catch (e) { auditBlock = '\n\n<proposal_audit>{"error":"audit failed: ' + String(e.message).slice(0, 80) + '"}</proposal_audit>'; } }
+  }
   const body = {
     model: MODEL,
-    max_tokens: addendum ? 900 : 600,   // triage answers carry a draft block — give them room
+    max_tokens: auditBlock ? 1100 : addendum ? 900 : 600,   // triage answers carry a draft block; audits carry a per-message table
     system: [
       { type: 'text', text: SYSTEM_RULES },
       // corpus as its own cached block: 90% cheaper on every repeat question.
@@ -438,7 +592,7 @@ async function ask(question, explicitWallet, page, mode) {
       { type: 'text', text: 'CORPUS:\n' + corpus, cache_control: { type: 'ephemeral' } },
       ...(addendum ? [{ type: 'text', text: addendum }] : []),
     ],
-    messages: [{ role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, 2000) }],
+    messages: [{ role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, auditBlock ? 9000 : 2000) + auditBlock }],
   };
   body.tools = CHAIN_TOOLS;
   const track = (d) => { const u = d.usage || {};
