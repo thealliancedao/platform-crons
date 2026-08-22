@@ -26,7 +26,7 @@
 //               proposals are the fixture: titles/statuses/vote tallies must
 //               reproduce. Report-only.
 //   (default) → capture + publish.
-// Kill-switch: DAO_GOVERNANCE=0.
+// Kill-switch: DAO_GOVERNANCE=0. Scope: DAO_ONLY=<folder,folder>.
 //
 // 1.2.0 (2026-08-22) — THREE GOVERNANCE SHAPES, ONE OUTPUT. registry.kind:
 //   "daodao"     (default) dao-proposal-single via the DAO core — as before.
@@ -554,7 +554,8 @@ async function captureXGov(dao, registry) {
   const [list, pool, params] = await Promise.all([
     lcdGet(`/cosmos/gov/v1/proposals?pagination.limit=${lim}&pagination.reverse=true`),
     lcdGet('/cosmos/staking/v1beta1/pool'),
-    lcdGet('/cosmos/gov/v1/params?params_type=tallying'),
+    // PROBE 2026-08-22 showed quorum=null: the v1 route is /params/{type}, not a query arg. v1beta1 fallback for older nodes.
+    (async () => (await lcdGet('/cosmos/gov/v1/params/tallying')) || (await lcdGet('/cosmos/gov/v1beta1/params/tallying')))(),
   ]);
   const props = (list && list.proposals) || [];
   if (!props.length) { console.log('  ⚠ x/gov returned no proposals — skipped'); return null; }
@@ -648,7 +649,9 @@ function verifyAgainst(existingRaw, doc) {
 async function main() {
   console.log(`🏛  dao-governance ${new Date().toISOString()}${PROBE ? ' [PROBE]' : ''}${VERIFY ? ' [VERIFY]' : ''}`);
   const entries = await listRepoDir(DAO_REPO);
-  const daos = entries.filter(e => e.type === 'dir').map(e => e.name);
+  // DAO_ONLY=capapult,terra — restrict a run (PROBE on one DAO without paging through the others' output).
+  const only = String(process.env.DAO_ONLY || '').split(',').map(x => x.trim()).filter(Boolean);
+  const daos = entries.filter(e => e.type === 'dir').map(e => e.name).filter(d => !only.length || only.includes(d));
   console.log(`DAOs discovered in ${DAO_REPO}: ${daos.join(', ') || '(none)'}`);
 
   const results = [];
