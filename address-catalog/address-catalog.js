@@ -123,6 +123,31 @@ const RUN_EVERY_HOURS = Number(process.env.RUN_EVERY_HOURS || 24); // catalog ca
 // protocol bribers, DAOs). Owner-edited; this cron publishes it as
 // `entities` so every page/agent reads ONE list (no hardcoded labels in pages).
 const CURATED_WALLETS_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/docs/curated/wallets.json`;
+// 1.3.0 (2026-08-22): ONE trust product. Merges the explicit trust register with
+// wallets.json, known_contracts.json, every dao-originations registry, the
+// structural config and the live gauge/pool snapshots → catalog/trusted/current.json.
+// See trusted-catalog.js (pure builder, gated on real fixtures).
+const { buildTrusted } = require('./trusted-catalog.js');
+const RAW = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}`;
+const DAO_REPO_RAW = `https://raw.githubusercontent.com/${process.env.DAO_REPO || 'thealliancedao/dao-originations'}/${GITHUB_BRANCH}`;
+const TRUST_SRC = {
+  curated: `${RAW}/docs/curated/trusted-addresses.json`,
+  known: `${RAW}/docs/curated/known_contracts.json`,
+  snapshot: `${RAW}/member-data/tla-snapshot/current.json`,
+  astro: `${RAW}/dex-data/astroport/snapshots/current.json`,
+};
+const DAO_FOLDERS = ['adao', 'lion-dao', 'pixel-lions', 'capapult', 'terra'];
+async function buildTrustedProduct(wallets) {
+  const get = async (u, tag) => { try { return await fetchJson(u, tag, 15000); } catch (e) { console.log(`  ⚠ trusted: ${tag} unavailable (${e.message.slice(0, 60)})`); return null; } };
+  const [curated, known, snapshot, astro] = await Promise.all([get(TRUST_SRC.curated, 'trusted-addresses'), get(TRUST_SRC.known, 'known-contracts'), get(TRUST_SRC.snapshot, 'tla-snapshot'), get(TRUST_SRC.astro, 'astroport')]);
+  const daoRegs = {};
+  for (const d of DAO_FOLDERS) daoRegs[d] = await get(`${DAO_REPO_RAW}/${d}/governance/registry.json`, `registry:${d}`);
+  const contracts = { gauge_controller: C.GAUGE_CONTROLLER, voting_escrow: C.VOTING_ESCROW, bribe_manager: C.BRIBE_MANAGER, compounder: C.COMPOUNDER, zapper: C.ZAPPER, dao_main_wallet: C.DAO_MAIN_WALLET };
+  const out = buildTrusted({ curated, wallets, known, contracts, daoRegs, snapshot, astro, generatedAt: new Date().toISOString() });
+  out.meta.inputs = { curated: !!curated, wallets: !!wallets, known: !!known, snapshot: !!snapshot, astro: !!astro, dao_registries: DAO_FOLDERS.filter(d => daoRegs[d]) };
+  if (!curated) out.meta.status = 'degraded';   // the register is the point; without it the product is only the old labels
+  return out;
+}
 
 // -----------------------------------------------------------------------------
 // PFPK handle resolution — for ALL methods (incl. locks), not just ally stakers.
@@ -285,9 +310,9 @@ async function run() {
 
   // ---- curated entities (docs/curated/wallets.json) → published `entities` -----
   // Fail-soft: a fetch miss publishes entities:{} with a loud log, never a guessed list.
-  let entities = {}, entitiesStatus = 'ok';
+  let entities = {}, entitiesStatus = 'ok', curWallets = null;
   try {
-    const cur = await fetchJson(CURATED_WALLETS_URL, 'curated-wallets', 15000);
+    const cur = await fetchJson(CURATED_WALLETS_URL, 'curated-wallets', 15000); curWallets = cur;
     for (const [addr, v] of Object.entries(cur?.wallets || {})) {
       if (!/^terra1[02-9ac-hj-np-z]{38,58}$/.test(addr) || !v?.label) continue;
       entities[addr] = { label: String(v.label), subtype: v.subtype || null, protocol: v.protocol || null, flags: Array.isArray(v.flags) ? v.flags : [] };
@@ -375,7 +400,7 @@ async function run() {
 
   const catalog = {
     meta: {
-      version: 'address-catalog-1.2.0',   // 1.2.0: +entities (curated wallets register)
+      version: 'address-catalog-1.3.0',   // 1.2.0: +entities (curated wallets register) · 1.3.0: +catalog/trusted product
       schemaVersion: 1,
       generated_at: startedAt.toISOString(),
       epoch: epochInfo?.number ?? null,
@@ -455,6 +480,13 @@ async function run() {
     await publishFile('catalog/snapshots/index.json', idxContent, `catalog index — ${dayStr}`);
     console.log('  ✓ catalog/snapshots/index.json');
     await publishFile('catalog/snapshots/heartbeat.json', hbContent, `heartbeat ${overall}`);
+    // 1.3.0 trust product — after the catalog, never blocks it
+    try {
+      const trusted = await buildTrustedProduct(curWallets);
+      for (const i of trusted.meta.issues) console.log(`  ⚠ trusted-addresses: ${i}`);
+      await publishFile('catalog/trusted/current.json', JSON.stringify(trusted, null, 1), `trusted ${trusted.meta.status} — ${trusted.addresses.length} addresses, ${trusted.meta.counts.human_only} human-only`);
+      console.log(`  ✓ trusted product: ${trusted.addresses.length} addresses (${JSON.stringify(trusted.meta.counts.by_method)})`);
+    } catch (e) { console.log(`  ✗ trusted product failed: ${e.message.slice(0, 120)}`); }
     console.log('  ✓ catalog/snapshots/heartbeat.json');
   } else {
     console.log('  (no GITHUB_TOKEN — wrote local catalog.json + heartbeat.json only)');

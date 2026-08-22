@@ -1,8 +1,11 @@
 {
   "name": "address-catalog",
-  "version": "1.0.0",
-  "description": "Platform-wide member/holder discovery registry — writes tla-core/catalog/",
+  "version": "1.3.0",
+  "description": "Platform-wide member/holder discovery registry \u2014 writes tla-core/catalog/",
   "main": "address-catalog.js",
-  "scripts": { "start": "node address-catalog.js" },
+  "scripts": {
+    "start": "node address-catalog.js",
+    "gate:trusted": "node mock-run-trusted.js"
+  },
   "license": "MIT"
 }
