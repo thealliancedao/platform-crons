@@ -339,7 +339,13 @@ function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
   // reached" on proposals that had in fact executed on chain (gate-proven on
   // 3 abstain-heavy aDAO proposals). Chain truth wins.
   const decidingBase = yes + no;
-  const status = String(p.status || '').toLowerCase();
+  // 1.2.0 (Lion DAO a24, 2026-08-22): dao-proposal-single reports veto_timelock as an
+  // OBJECT {veto_timelock:{expiration:{at_time:…}}}, not a string — 1.1.1 printed
+  // "[object Object]" for status AND outcome. Normalize: object ⇒ its key; keep the
+  // timelock expiration so the site can say when the council window closes.
+  const statusRaw = p.status;
+  const status = typeof statusRaw === 'object' && statusRaw ? String(Object.keys(statusRaw)[0] || '').toLowerCase() : String(statusRaw || '').toLowerCase();
+  const vetoLock = typeof statusRaw === 'object' && statusRaw && statusRaw.veto_timelock ? statusRaw.veto_timelock : null;
   const { decodedActions, treasuryImpact } = decodeMsgs(p.msgs, registry);
   return {
     id: `${idPrefix}${id}`,
@@ -356,6 +362,8 @@ function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
               : p.expiration && p.expiration.at_height != null ? { at_height: Number(p.expiration.at_height) }
               : p.expiration && 'never' in p.expiration ? { never: true } : null,
     live: status === 'open',
+    pending: status === 'veto_timelock',
+    ...(vetoLock && vetoLock.expiration && vetoLock.expiration.at_time ? { vetoLockUntil: new Date(Number(String(vetoLock.expiration.at_time).slice(0, 13))).toISOString() } : {}),
     votes: { yes, no, abstain, total },
     voting: {
       turnout,
@@ -373,7 +381,7 @@ function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
     // a deliberate improvement, flagged in the gate.
     outcome: ['passed', 'executed'].includes(status) ? 'passed'
       : ['rejected', 'vetoed', 'closed', 'execution_failed'].includes(status) ? 'rejected'
-      : status === 'open' ? 'pending' : status,
+      : status === 'open' || status === 'veto_timelock' ? 'pending' : status,
     outcomeReason: outcomeReason(status, { turnout, quorumThreshold, yes, decidingBase, passThreshold }),
     totalPower,
     voters: (votes || []).map(v => ({

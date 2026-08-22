@@ -52,5 +52,12 @@ const src = require('fs').readFileSync(__dirname + '/index.js', 'utf8');
 T('kind switch: anchor-gov and x-gov branch BEFORE findProposalModule', src.indexOf("kind === 'anchor-gov'") < src.indexOf('const mod = await findProposalModule(registry, dao)') && src.indexOf("kind === 'x-gov'") < src.indexOf('const mod = await findProposalModule(registry, dao)'));
 T('daodao output now stamped governanceKind too', /governanceKind: 'daodao'/.test(src));
 T('block time is MEASURED from the chain (latest vs latest-1000), not assumed', /blocks\/\$\{h - 1000\}/.test(src) && !/6\.\d+\s*\*\s*1000/.test(src.replace(/mock/g, '')));
+// K4 (appended 1.2.0b): veto_timelock arrives as an object — Lion DAO a24 regression.
+{
+  const v = m._test.mapProposal({ id: 24, chain: { proposal: { title: 'x', status: { veto_timelock: { expiration: { at_time: '1756000000000000000' } } }, votes: { yes: '5', no: '0', abstain: '0' }, total_power: '10', threshold: { threshold_quorum: { threshold: { percent: '0.5' }, quorum: { percent: '0.1' } } }, msgs: [] } }, votes: [], names: {}, registry: {}, daoId: 'liondao', idPrefix: 'a' });
+  const ok = v.status === 'Veto Timelock' && v.pending === true && v.live === false && v.outcome === 'pending' && v.vetoLockUntil === '2025-08-24T01:46:40.000Z';
+  console.log((ok ? '  ✓ ' : '  ✗ ') + 'veto_timelock object ⇒ status Veto Timelock, pending:true, outcome pending, vetoLockUntil parsed' + (ok ? '' : ' ' + JSON.stringify({ s: v.status, p: v.pending, o: v.outcome, u: v.vetoLockUntil })));
+  ok ? pass++ : fail++;
+}
 console.log(`\n===== KINDS GATE: ${pass}/${pass + fail} =====`);
 process.exit(fail ? 1 : 0);
