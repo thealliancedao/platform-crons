@@ -1623,6 +1623,77 @@ async function appendBackingHistory(summary, priceData) {
 }
 
 // -----------------------------------------------------------------------------
+// PHASE 6b (2026-08-22) — DAILY ALLIANCE CLAIM LEDGER: nfts/adao/claims/history.json
+// -----------------------------------------------------------------------------
+// Eris's bot calls `alliance_claim_rewards` on the NFT contract once a day. One tx
+// carries the whole story as wasm events on the NFT contract:
+//   stake_reward_callback   tokens_to_stake   = LUNA claimed from every alliance validator
+//   erishub/bonded          ustake_minted     = ampLUNA minted for that LUNA
+//   update_rewards_callback rewards_collected = ampLUNA kept as NFT backing (90%)
+//                           treasury_amount   = ampLUNA sent to the DAO treasury (10%)
+// Verified against tx 0D34EE80…20DB (2026-08-22): 2,162.78 LUNA → 947.005 ampLUNA →
+// 852.305 backing + 94.701 treasury. Captured forward via tx_search (public LCDs prune
+// ~2–3 weeks, so this ledger seeds from first run and tracks itself), merged write-once
+// by tx_hash. Amounts are chain units (uluna / ampLUNA micro) converted to human.
+const CLAIMS_PATH = 'nfts/adao/claims/history.json';
+function parseClaimTx(tx) {
+    const res = tx && (tx.tx_response || tx); if (!res || !Array.isArray(res.events)) return null;
+    const attr = (ev, k) => { const a = (ev.attributes || []).find(x => x.key === k); return a ? a.value : null; };
+    let tokensToStake = null, minted = null, rewardsCollected = null, treasuryAmount = null, treasuryTo = null;
+    for (const ev of res.events) {
+        if (ev.type === 'wasm' && attr(ev, '_contract_address') === ADAO_NFT_CONTRACT) {
+            const act = attr(ev, 'action');
+            if (act === 'stake_reward_callback') tokensToStake = attr(ev, 'tokens_to_stake');
+            if (act === 'update_rewards_callback') { rewardsCollected = attr(ev, 'rewards_collected'); treasuryAmount = attr(ev, 'treasury_amount'); }
+        }
+        if (ev.type === 'wasm-erishub/bonded' && attr(ev, 'receiver') === ADAO_NFT_CONTRACT) minted = attr(ev, 'ustake_minted');
+        if (ev.type === 'wasm' && attr(ev, '_contract_address') === AMPLUNA_CW20 && attr(ev, 'action') === 'transfer' && attr(ev, 'from') === ADAO_NFT_CONTRACT) treasuryTo = attr(ev, 'to');
+    }
+    if (rewardsCollected == null && treasuryAmount == null) return null;
+    const h = (v) => v == null ? null : Number(v) / 1e6;
+    return {
+        tx_hash: res.txhash, height: Number(res.height), timestamp: res.timestamp, date: String(res.timestamp || '').slice(0, 10),
+        luna_claimed: h(tokensToStake), ampluna_minted: h(minted), ampluna_to_backing: h(rewardsCollected), ampluna_to_treasury: h(treasuryAmount),
+        treasury_recipient: treasuryTo, take_rate: (minted && treasuryAmount) ? +(Number(treasuryAmount) / Number(minted)).toFixed(4) : null,
+        sender: (res.tx && res.tx.body && res.tx.body.messages && res.tx.body.messages[0] && res.tx.body.messages[0].sender) || null,
+    };
+}
+async function captureClaims() {
+    try {
+        const cur = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${CLAIMS_PATH}?cb=${Date.now()}`, 'claims-history').catch(() => null);
+        const rows = (cur && cur.rows) || []; const seen = new Set(rows.map(r => r.tx_hash));
+        let added = 0;
+        for (const base of [TERRA_LCD_PRIMARY, TERRA_LCD_FALLBACK]) {
+            try {
+                for (let page = 1; page <= 3; page++) {
+                    const url = buildTxSearchUrl(base, ADAO_NFT_CONTRACT, 'update_rewards_callback', 50, page);
+                    const d = await fetchJson(url, 'claims tx_search');
+                    const txs = (d && d.tx_responses) || [];
+                    for (const t of txs) { const c = parseClaimTx(t); if (c && !seen.has(c.tx_hash)) { rows.push(c); seen.add(c.tx_hash); added++; } }
+                    if (txs.length < 50) break;
+                }
+                break;   // one LCD answered
+            } catch (e) { console.log(`claims: ${base} failed (${e.message}) — trying fallback`); }
+        }
+        rows.sort((a, b) => a.height - b.height);
+        const n = rows.length, last = rows[n - 1] || null;
+        const days = (k) => rows.filter(r => r.timestamp && (Date.now() - Date.parse(r.timestamp)) <= k * 86400e3);
+        const sum = (arr, f) => arr.reduce((s, r) => s + (r[f] || 0), 0);
+        const win = (k) => { const a = days(k); return a.length ? { claims: a.length, luna_claimed: +sum(a, 'luna_claimed').toFixed(6), ampluna_to_backing: +sum(a, 'ampluna_to_backing').toFixed(6), ampluna_to_treasury: +sum(a, 'ampluna_to_treasury').toFixed(6), per_day_to_treasury: +(sum(a, 'ampluna_to_treasury') / a.length).toFixed(6), per_day_to_backing: +(sum(a, 'ampluna_to_backing') / a.length).toFixed(6) } : null; };
+        const doc = {
+            schemaVersion: 1, product: 'nfts/adao/claims', updated_at: new Date().toISOString(),
+            semantics: 'One row per daily alliance_claim_rewards tx on the aDAO NFT contract (chain events, write-once by tx_hash). luna_claimed → bonded to Eris → ampluna_minted, split ampluna_to_backing (NFT holders, 90%) + ampluna_to_treasury (aDAO treasury, 10%). Windows are sums of CAPTURED rows only; the ledger starts at first capture (public LCDs prune ~2–3 weeks) — never a projection.',
+            count: n, first_date: rows[0] ? rows[0].date : null, last: last,
+            windows: { d7: win(7), d30: win(30), d90: win(90), all: win(36500) },
+            rows,
+        };
+        if (added || !cur) { await pushToGithub(CLAIMS_PATH, JSON.stringify(doc, null, 1), `claims: +${added} (${n} total, last ${last ? last.date : 'n/a'})`); console.log(`claims: +${added} rows, ${n} total`); }
+        else console.log(`claims: no new claim tx (${n} rows, last ${last ? last.date : 'n/a'})`);
+        return doc;
+    } catch (e) { console.log('claims capture failed (non-fatal):', e.message); return null; }
+}
+
+// -----------------------------------------------------------------------------
 // GITHUB PUBLISH
 // -----------------------------------------------------------------------------
 
@@ -2386,6 +2457,7 @@ async function captureSnapshot() {
         if (floorHistoryDoc) {
             await pushToGithub(FLOOR_HISTORY_PATH, JSON.stringify(floorHistoryDoc, null, 2), `floor-history — ${floorHistoryDoc.row_count} rows`);
             await appendBackingHistory(summary, priceData);
+            await captureClaims();   // 6b: daily claim ledger (write-once by tx_hash)
             await pushToGithub(FIRST_SEEN_PATH, JSON.stringify(firstSeenDoc, null, 2), `listing-first-seen — ${firstSeenDoc.count} live listings`);
         }
     } else {
@@ -2453,6 +2525,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    parseClaimTx, captureClaims, CLAIMS_PATH,   // 6b
     captureSnapshot,
     runWithAnalytics,
     // Phase exports for testing
