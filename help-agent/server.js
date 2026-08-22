@@ -55,6 +55,7 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.10.0 (2026-08-22): privacy-preserving question log → tla-core/help-agent/questions/<yyyy-mm>.json (QUESTION_LOG=1 + GITHUB_TOKEN).
   // v1.9.3 (2026-08-22): period/per-period/runway as audit strings (model was recounting inclusively).
   // v1.9.2 (2026-08-22): generic deep walk (+ info/amount and cw20-call token pairing) — nested base64 anywhere, every address/amount resolved, explicit unresolved list the model must print.
   // v1.9.1 (2026-08-22): audit decodes base64 msgs, converts amounts via registries (never the model), recognises swap routers, resolves DEX pools + per-DAO registries.
@@ -669,6 +670,40 @@ async function runTool(name, input) {
   return { error: 'unknown tool' };
 }
 
+// ---- QUESTION LOG (v1.10.0) ----------------------------------------------------
+// What do people ask? Append a privacy-preserving record per question to
+// tla-core/help-agent/questions/<yyyy-mm>.json (GitHub Contents API, batched).
+// Stored: time, page, mode, the question with every terra1… address and tx
+// hash REDACTED, whether a wallet was pinned (true/false — never the address),
+// answer length, audit flag, cost. Never: IP, wallet, the answer text.
+// Off unless QUESTION_LOG=1 and GITHUB_TOKEN are set on the service.
+const QLOG_ON = process.env.QUESTION_LOG === '1' && !!process.env.GITHUB_TOKEN;
+const QLOG_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
+const QLOG_FLUSH_MS = 10 * 60 * 1000, QLOG_MAX = 25;
+let qlog = [], qlogTimer = null;
+function redact(q) { return String(q).replace(/terra1[02-9ac-hj-np-z]{38,58}/g, '[address]').replace(/\b[0-9A-Fa-f]{64}\b/g, '[txhash]').slice(0, 600); }
+function logQuestion(rec) { if (!QLOG_ON) return; qlog.push(rec); if (qlog.length >= QLOG_MAX) flushQlog(); else if (!qlogTimer) qlogTimer = setTimeout(flushQlog, QLOG_FLUSH_MS); }
+async function flushQlog() {
+  if (qlogTimer) { clearTimeout(qlogTimer); qlogTimer = null; }
+  const batch = qlog.splice(0); if (!batch.length) return;
+  const ym = new Date().toISOString().slice(0, 7), path = `help-agent/questions/${ym}.json`;
+  const api = `https://api.github.com/repos/${QLOG_REPO}/contents/${path}`;
+  const hdrs = { Authorization: 'Bearer ' + process.env.GITHUB_TOKEN, 'User-Agent': 'tla-help-agent', Accept: 'application/vnd.github+json' };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      let sha = null, doc = { schemaVersion: 1, product: 'help-agent questions', month: ym, note: 'privacy-preserving: addresses/tx hashes redacted, no IP, no wallet, no answer text', questions: [] };
+      const g = await fetch(api, { headers: hdrs });
+      if (g.ok) { const j = await g.json(); sha = j.sha; try { doc = JSON.parse(Buffer.from(j.content, 'base64').toString('utf8')); } catch {} }
+      doc.questions = (doc.questions || []).concat(batch); doc.count = doc.questions.length; doc.updatedAt = new Date().toISOString();
+      const body = { message: `help-agent questions ${ym} (+${batch.length})`, content: Buffer.from(JSON.stringify(doc, null, 2)).toString('base64') }; if (sha) body.sha = sha;
+      const put = await fetch(api, { method: 'PUT', headers: { ...hdrs, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (put.ok) return; if (put.status !== 409 && put.status !== 422) { console.log('qlog put failed', put.status); return; }
+    } catch (e) { console.log('qlog error', e.message.slice(0, 80)); }
+    await new Promise(r => setTimeout(r, 400 * attempt + Math.random() * 400));
+  }
+  qlog = batch.concat(qlog);   // keep for the next flush
+}
+
 // ---- the ask flow -------------------------------------------------------------
 async function ask(question, explicitWallet, page, mode) {
   const corpus = await grounding();
@@ -750,7 +785,7 @@ const server = http.createServer(async (req, res) => {
     if (!rl.ok) return send(429, { error: 'Rate limit reached: ' + RATE + ' questions per hour per visitor — it keeps the shared budget available for everyone. The FAQ and docs carry most answers; the report form always works.', rate_used: rl.used, rate_limit: RATE });
     if (!budgetOk()) return send(503, { error: 'The assistant hit its monthly budget cap — deliberately, so it can never surprise anyone with a bill. The report form and docs remain fully available.' });
     let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 10000) req.destroy(); });
+    req.on('data', c => { raw += c; if (raw.length > 20000) req.destroy(); });   // v1.10.0: proposal pastes are long
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(raw || '{}');
@@ -762,9 +797,12 @@ const server = http.createServer(async (req, res) => {
         const q = (parsed.question || '').trim();
         if (!q) return send(400, { error: 'No question provided.' });
         const mode = (parsed.mode === 'report' || parsed.mode === 'request') ? parsed.mode : null;
+        const t0 = Date.now();
         const out = await ask(q, parsed.wallet, parsed.page, mode);
         out.rate_used = rl.used; out.rate_limit = RATE;
         send(200, out);
+        logQuestion({ at: new Date().toISOString(), page: String(parsed.page || '').slice(0, 80) || null, mode: mode || (/"contract_addr"|"wasm"\s*:/.test(q) ? 'audit' : 'chat'),
+          question: redact(q), wallet_pinned: !!parsed.wallet, answer_chars: (out.answer || '').length, chain_queries: out.chain_queries || 0, ms: Date.now() - t0 });
       } catch (e) { send(500, { error: 'Assistant error: ' + e.message }); }
     });
     return;
