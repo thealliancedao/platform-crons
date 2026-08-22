@@ -55,6 +55,7 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.9.3 (2026-08-22): period/per-period/runway as audit strings (model was recounting inclusively).
   // v1.9.2 (2026-08-22): generic deep walk (+ info/amount and cw20-call token pairing) — nested base64 anywhere, every address/amount resolved, explicit unresolved list the model must print.
   // v1.9.1 (2026-08-22): audit decodes base64 msgs, converts amounts via registries (never the model), recognises swap routers, resolves DEX pools + per-DAO registries.
   // v1.9.0 proposal audit (2026-08-21): registry-backed, evidence-tiered check of pasted proposal messages.
@@ -225,8 +226,9 @@ Present it; do not re-derive or guess. Rules:
    not necessarily bad)". Write addresses in full.
 2. Say what the messages DO in plain words (e.g. "approves the bribe manager to pull 1.75B ROAR,
    then posts that ROAR as a 10-period linear bribe on LUNA-ROAR (project gauge) from E199").
-3. Show the arithmetic: allowance vs amount, periods, per-period, and the current runway for
-   that pool if present.
+3. Show the arithmetic EXACTLY as the audit states it: allowance vs amount, "periods_text",
+   "per_period", "amount_human", and "runway_text" — copy these strings; never recount periods
+   (the distribution end is exclusive) and never redo the division.
 4. FLAGS verbatim, each on its own line. If none: "No flags raised by the registry checks."
 5. What is NOT checked — always state it: this audit does not verify who posted the proposal,
    does not read the proposal's text, does not check the DAO's treasury balance or that the
@@ -421,7 +423,7 @@ const AUDIT_SRC = {
 };
 const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
-let auditCache = { at: 0, reg: null };
+let auditCache = { at: 0, reg: null }; let runwayCurrentPeriod = null;
 async function auditRegistries() {
   if (auditCache.reg && Date.now() - auditCache.at < 10 * 60 * 1000) return auditCache.reg;
   const get = async (p) => { try { const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } }); return r.ok ? await r.json() : null; } catch { return null; } };
@@ -444,6 +446,7 @@ async function auditRegistries() {
   for (const e of (known && known._meta && known._meta.skipped_token_entries) || []) if (e.address) reg.curated[e.address] = reg.curated[e.address] || { name: e.name, type: e.type, protocol: null };
   for (const [a, v] of Object.entries((wallets && wallets.wallets) || {})) reg.entities[a] = { label: v.label, subtype: v.subtype, protocol: v.protocol, flags: v.flags || [] };
   for (const [a, v] of Object.entries((cat && cat.entities) || {})) reg.entities[a] = reg.entities[a] || { label: v.label, subtype: v.subtype, protocol: v.protocol, flags: v.flags || [] };
+  runwayCurrentPeriod = runway && runway.current_period != null ? Number(runway.current_period) : null;
   for (const r of (runway && runway.pools) || []) { const addr = String(r.pool || '').replace(/^(cw20|native):/, ''); reg.runway[addr] = { epochs_left: r.epochs_left, funders: (r.funders || []).map(f => f.label || f.briber), denoms: Object.keys(r.by_denom || {}) }; }
   auditCache = { at: Date.now(), reg }; return reg;
 }
@@ -575,8 +578,13 @@ async function auditProposal(msgs) {
         if (!g) flags.push(`msg ${i + 1}: for_info pool is NOT in the live gauge set — the bribe would target a pool the controller does not list`);
         const al = allowances.find(x => x.token === tok && x.spender === ex.contract_addr);
         if (info.cw20) { if (!al) flags.push(`msg ${i + 1}: cw20 bribe with no matching increase_allowance to this contract`); else if (al.amount !== b.amount) flags.push(`msg ${i + 1}: allowance ${al.amount} ≠ bribe amount ${b.amount} (leftover approval)`); else f.notes.push('allowance equals bribe amount — nothing left approved'); }
-        if (dist.start != null && dist.end != null) { const n = Number(dist.end) - Number(dist.start); f.bribe.periods = n; if (b.amount && n > 0) f.bribe.per_period_raw = String(Math.round(Number(b.amount) / n)); f.notes.push(`${dist.func_type || 'linear'} distribution over ${n} period(s), E${dist.start}→E${dist.end}`); }
-        const rw = pool && reg.runway[pool]; if (rw) f.bribe.current_runway = rw;
+        if (dist.start != null && dist.end != null) {
+          const n = Number(dist.end) - Number(dist.start);   // end is exclusive: E199→E209 = 10 periods (E199..E208)
+          f.bribe.periods = n; f.bribe.periods_text = `${n} periods (E${dist.start} through E${Number(dist.end) - 1}; end ${dist.end} is exclusive)`;
+          if (b.amount && n > 0) { const pp = human(reg, tok, String(Math.round(Number(b.amount) / n))); f.bribe.per_period = pp.human || (pp.raw + ' raw'); f.bribe.amount_human = (human(reg, tok, b.amount).human || b.amount + ' raw'); }
+          f.notes.push(`${dist.func_type || 'linear'} distribution: ${f.bribe.periods_text}`);
+        }
+        const rw = pool && reg.runway[pool]; if (rw) { f.bribe.current_runway = rw; const cur = runwayCurrentPeriod; if (cur != null) f.bribe.runway_text = `today's pot is funded for ${rw.epochs_left} more period(s) after the current one (E${cur}) — i.e. through E${cur + rw.epochs_left}; this bribe runs E${dist.start}–E${Number(dist.end) - 1}`; }
         if (!(reg.structural[ex.contract_addr] && reg.structural[ex.contract_addr].key === 'bribe_manager')) flags.push(`msg ${i + 1}: add_bribe is sent to an address that is NOT the registered TLA bribe manager`);
       }
       if (RISKY_KEYS.includes(action)) flags.push(`msg ${i + 1}: "${action}" is an administrative/upgrade action — treat as high-scrutiny`);
