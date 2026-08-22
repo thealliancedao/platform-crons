@@ -55,6 +55,7 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.11.1 (2026-08-22): tool loop never returns a preamble as the answer (final text-only turn); tool throws become tool_result errors.
   // v1.11.0 (2026-08-22): trust_register tier from catalog/trusted/current.json (how each address is known) + Capapult/Terra registries.
   // v1.10.0 (2026-08-22): privacy-preserving question log → tla-core/help-agent/questions/<yyyy-mm>.json (QUESTION_LOG=1 + GITHUB_TOKEN).
   // v1.9.3 (2026-08-22): period/per-period/runway as audit strings (model was recounting inclusively).
@@ -751,17 +752,27 @@ async function ask(question, explicitWallet, page, mode) {
   };
   // tool-use loop: the model may query the chain up to 3 times per question
   let d = await call(), rounds = 0;
-  while (d.stop_reason === 'tool_use' && rounds < 3) {
+  const MAX_ROUNDS = 4;
+  while (d.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
     rounds++;
     const uses = d.content.filter(c => c.type === 'tool_use');
     const results = [];
     for (const u2 of uses) {
-      const out = await runTool(u2.name, u2.input || {});
+      let out; try { out = await runTool(u2.name, u2.input || {}); } catch (e) { out = { error: 'tool failed: ' + String(e.message || e).slice(0, 200) }; }   // v1.11.1: a tool throw must not kill the answer
       results.push({ type: 'tool_result', tool_use_id: u2.id, content: JSON.stringify(out).slice(0, 12000) });
     }
     body.messages.push({ role: 'assistant', content: d.content });
     body.messages.push({ role: 'user', content: results });
     d = await call();
+  }
+  // v1.11.1 (owner report 2026-08-22: reply froze at "I'll decode and audit these messages…"):
+  // when the model still wants a tool after the last round, the old code returned its
+  // preamble text as the answer. Force ONE final text-only turn instead.
+  if (d.stop_reason === 'tool_use') {
+    body.messages.push({ role: 'assistant', content: d.content });
+    body.messages.push({ role: 'user', content: [{ type: 'text', text: 'Tool budget is spent. Answer now, in full, from what you already have; say explicitly what you could not check.' }] });
+    const saved = body.tools; delete body.tools; delete body.tool_choice;
+    try { d = await call(); } finally { if (saved) body.tools = saved; }
   }
   const answer = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n')
     || 'I could not complete the chain lookup — the public node may be busy. Try again, or paste the tx hash directly.';
