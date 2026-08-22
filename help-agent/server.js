@@ -55,6 +55,8 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.9.2 (2026-08-22): generic deep walk (+ info/amount and cw20-call token pairing) — nested base64 anywhere, every address/amount resolved, explicit unresolved list the model must print.
+  // v1.9.1 (2026-08-22): audit decodes base64 msgs, converts amounts via registries (never the model), recognises swap routers, resolves DEX pools + per-DAO registries.
   // v1.9.0 proposal audit (2026-08-21): registry-backed, evidence-tiered check of pasted proposal messages.
   // v1.8.0 foundations intake (2026-08-21): sourced chapters from the
   // primary-source mega-read — the bot answers from receipts, not vibes.
@@ -217,8 +219,10 @@ Present it; do not re-derive or guess. Rules:
 1. Per message, in order: the action, the contract it is sent to, and for every address
    its EVIDENCE TIER in these exact words — "chain-verified (structural: queried hourly by
    our capture engine)", "chain-verified (listed by the TLA gauge controller)", "chain-verified
-   (token seen in live pools)", "curated label (a human label we maintain — not chain proof)",
-   or "UNKNOWN to every registry (unverified — not necessarily bad)". Write addresses in full.
+   (token seen in live pools)", "chain-verified (DEX pool in the live Astroport snapshot)",
+   "curated label (a human label we maintain — not chain proof)", "<DAO>'s own vetted registry (a
+   human label that DAO maintains — not chain proof)", or "UNKNOWN to every registry (unverified —
+   not necessarily bad)". Write addresses in full.
 2. Say what the messages DO in plain words (e.g. "approves the bribe manager to pull 1.75B ROAR,
    then posts that ROAR as a 10-period linear bribe on LUNA-ROAR (project gauge) from E199").
 3. Show the arithmetic: allowance vs amount, periods, per-period, and the current runway for
@@ -235,7 +239,17 @@ Present it; do not re-derive or guess. Rules:
    repo and the SCV audit, plus the "how_to_confirm" sentence. Say explicitly, once: "This
    site's registry is ours; it is not the source of truth — the chain is. Use the links to
    check every address without trusting us." Never imply our label alone makes an address good.
-8. End with the one-line standard: "Not financial or voting advice — registry facts only.
+8. AMOUNTS AND TOKENS: quote amounts ONLY as the audit's "human" strings (e.g. "5,377 LUNA").
+   Never convert raw micro-units yourself and never name a token the audit did not resolve —
+   an unresolved denom is written as "unresolved denom ibc/…" . A swap is described from the
+   audit's "swap" block: amount_in → denom_out, min_out, the pool(s) and their tier, and the
+   destination with its tier. Misnaming a token or a magnitude is the worst error here.
+9. UNRESOLVED IS A SECTION, NOT A GAP. The audit's "unresolved" block lists addresses, token
+   denoms and actions no registry could classify. Print it under "## Unresolved" verbatim. For
+   anything in it, say what the message literally contains and stop — do not infer the token,
+   the counterparty, or the purpose. If "nested_decoded" shows inner messages, describe them
+   from "decoded_msg", never from the base64. Anything not in the audit block is not known.
+10. End with the one-line standard: "Not financial or voting advice — registry facts only.
    Verify on chain." Keep the whole answer structured and under ~30 lines.`,
   report: `TRIAGE MODE — ISSUE REPORT. The visitor is filing a problem report through the Help
 page form. Do these in order:
@@ -403,13 +417,26 @@ const AUDIT_SRC = {
   catalog: 'catalog/snapshots/current.json', known: 'docs/curated/known_contracts.json',
   wallets: 'docs/curated/wallets.json', snapshot: 'member-data/tla-snapshot/current.json',
   tokens: 'token-catalog/snapshots/current.json', runway: 'tla-voting/bribe-state/runway.json',
+  astro: 'dex-data/astroport/snapshots/current.json', prices: 'network-and-prices/current.json',
 };
+const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions' };
+const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
 let auditCache = { at: 0, reg: null };
 async function auditRegistries() {
   if (auditCache.reg && Date.now() - auditCache.at < 10 * 60 * 1000) return auditCache.reg;
   const get = async (p) => { try { const r = await fetch(`${CORE}/${p}`, { headers: { 'User-Agent': 'tla-help-agent' } }); return r.ok ? await r.json() : null; } catch { return null; } };
-  const [cat, known, wallets, snap, tokens, runway] = await Promise.all(Object.values(AUDIT_SRC).map(get));
-  const reg = { structural: {}, gauge: {}, token: {}, curated: {}, entities: {}, runway: {}, loaded: { catalog: !!cat, known: !!known, wallets: !!wallets, snapshot: !!snap, tokens: !!tokens, runway: !!runway } };
+  const [cat, known, wallets, snap, tokens, runway, astro, prices] = await Promise.all(Object.values(AUDIT_SRC).map(get));
+  const daoRegs = await Promise.all(Object.entries(DAO_REGISTRIES).map(async ([name, folder]) => { try { const r = await fetch(`${DAO_REPO}/${folder}/governance/registry.json`); return r.ok ? [name, await r.json()] : null; } catch { return null; } }));
+  const reg = { structural: {}, gauge: {}, token: {}, curated: {}, entities: {}, runway: {}, pool: {}, denom: {}, daoreg: {}, loaded: { catalog: !!cat, known: !!known, wallets: !!wallets, snapshot: !!snap, tokens: !!tokens, runway: !!runway, astroport: !!astro, prices: !!prices, dao_registries: daoRegs.filter(Boolean).map(x => x[0]) } };
+  // DEX pools (Astroport snapshot) — pool address → pair
+  for (const p of (astro && astro.pools) || []) if (p.pool_address) reg.pool[p.pool_address] = { name: p.pool_name, dex: p.dex || 'Astroport', type: p.pool_type || null, tla: !!p.tla_relevant, assets: (p.assets || []).map(a => a.symbol || a.denom) };
+  // denom → symbol/decimals: token-catalog chain-registry identity, then network-and-prices astroport addresses; uluna fixed
+  reg.denom['uluna'] = { symbol: 'LUNA', decimals: 6, source: 'native' };
+  for (const t of (tokens && tokens.tokens) || []) { const cr = t.sources && t.sources.chain_registry; if (t.denom && cr && cr.symbol) reg.denom[t.denom] = { symbol: cr.symbol, decimals: cr.decimals != null ? cr.decimals : 6, source: 'token-catalog chain-registry' }; }
+  for (const [sym, v] of Object.entries((prices && prices.token_prices) || {})) { const a = v && v.prices && v.prices.astroport && v.prices.astroport.address; if (a && !reg.denom[a]) reg.denom[a] = { symbol: sym, decimals: 6, source: 'network-and-prices registry' }; }
+  for (const e of (known && known._meta && known._meta.skipped_token_entries) || []) if (e.address && !reg.denom[e.address]) reg.denom[e.address] = { symbol: String(e.name || '').replace(/\s*token.*$/i, ''), decimals: 6, source: 'known_contracts token list (decimals assumed 6)' };
+  // per-DAO curated registries (dao-originations) — contracts each DAO has vetted
+  for (const x of daoRegs) { if (!x) continue; const [name, r] = x; for (const [a, v] of Object.entries(r.contracts || {})) if (!reg.daoreg[a]) reg.daoreg[a] = { dao: name, name: v.name, type: v.type, protocol: v.protocol || null }; if (r.coreAddress && !reg.daoreg[r.coreAddress]) reg.daoreg[r.coreAddress] = { dao: name, name: name + ' core', type: 'dao' }; }
   for (const [k, v] of Object.entries((cat && cat.contracts) || {})) if (v && v.addr) reg.structural[v.addr] = { key: k, role: v.role || null };
   for (const p of (snap && snap.pools) || []) { const id = String(p.gauge_pool_id || ''); const addr = id.replace(/^(cw20|native):/, ''); if (addr) reg.gauge[addr] = { name: p.name, dex: p.dex, bucket: p.bucket, status: p.status, gauge_pool_id: id }; if (p.lp_address) reg.gauge[p.lp_address] = reg.gauge[p.lp_address] || { name: p.name, dex: p.dex, bucket: p.bucket, status: p.status, gauge_pool_id: id }; }
   for (const t of (tokens && tokens.tokens) || []) { const d = String(t.denom || ''); if (d) reg.token[d] = { symbol: t.symbol || null, kind: t.kind || null, pools: (t.found_in_pools || []).length }; }
@@ -451,11 +478,56 @@ function resolveAddr(reg, a) {
   if (reg.token[a]) out.tiers.push({ tier: 'token', ...reg.token[a], evidence: 'denom seen in live DEX pools by the token-catalog cron' });
   if (reg.entities[a]) out.tiers.push({ tier: 'curated', ...reg.entities[a], evidence: 'owner-curated label (docs/curated/wallets.json) — a human label, not chain proof' });
   if (reg.curated[a]) out.tiers.push({ tier: 'curated', ...reg.curated[a], evidence: 'owner-curated label (docs/curated/known_contracts.json) — a human label, not chain proof' });
+  if (reg.pool[a]) out.tiers.push({ tier: 'dex_pool', ...reg.pool[a], evidence: 'pool listed in the live Astroport snapshot captured by the dex-data cron (chain-verified)' });
+  if (reg.daoreg[a]) out.tiers.push({ tier: 'dao_registry', ...reg.daoreg[a], evidence: 'in ' + reg.daoreg[a].dao + '\'s own vetted contract registry (dao-originations) — a human label maintained per DAO, not chain proof' });
   if (!out.tiers.length) out.tiers.push({ tier: 'unknown', evidence: 'no platform registry knows this address — unverified, not necessarily bad' });
   out.verify = verifyLinks(a, out.tiers);
   return out;
 }
 const GAUGES = ['stable', 'project', 'bluechip', 'single'];
+function decodeMsg(m) {
+  // wasm.execute.msg may be an object or a base64 JSON string (DAODAO exports both)
+  if (m && typeof m === 'object') return { msg: m, encoded: false };
+  if (typeof m === 'string') { try { return { msg: JSON.parse(Buffer.from(m, 'base64').toString('utf8')), encoded: true }; } catch {} try { return { msg: JSON.parse(m), encoded: false }; } catch {} }
+  return { msg: {}, encoded: false, undecodable: true };
+}
+// GENERIC WALK (v1.9.2): the audit must not depend on recognising a message shape.
+// Walk the decoded message recursively; at every node: a base64 string that decodes
+// to JSON (cw20 `send` hooks, router sub-msgs, DAODAO wrappers) is decoded and
+// walked; every terra1… address is resolved; every {denom, amount} pair is
+// denominated; every amount-like field whose token cannot be determined is listed
+// as unresolved. Whatever is left unresolved is reported AS unresolved — the model
+// presents that list verbatim instead of filling the blanks.
+function walkMsg(reg, node, path, acc, depth) {
+  if (depth > 12 || node == null) return;
+  if (typeof node === 'string') {
+    if (/^terra1[02-9ac-hj-np-z]{38,58}$/.test(node)) { acc.addresses.add(node); return; }
+    if (node.length > 16 && /^[A-Za-z0-9+/=]+$/.test(node)) { try { const j = JSON.parse(Buffer.from(node, 'base64').toString('utf8')); if (j && typeof j === 'object') { acc.decoded.push({ path, keys: Object.keys(j).slice(0, 6) }); walkMsg(reg, j, path + '(b64)', acc, depth + 1); return; } } catch {} }
+    if (/^\d{7,}$/.test(node)) acc.big_numbers.push({ path, value: node, note: 'large integer with no denom context — not converted' });
+    return;
+  }
+  if (Array.isArray(node)) { node.forEach((x, i) => walkMsg(reg, x, path + '[' + i + ']', acc, depth + 1)); return; }
+  if (typeof node === 'object') {
+    if (typeof node.denom === 'string' && node.amount != null) { const h = human(reg, node.denom, node.amount); acc.amounts.push({ path, ...h }); if (!h.symbol) acc.unresolved_denoms.add(node.denom); }
+    // token-at-a-different-depth shapes: Astroport {info:{native_token:{denom}}|{token:{contract_addr}}, amount},
+    // cw20 {info:{cw20:addr}}, Skip {native:{denom,amount}} (caught above), and any {asset_info|info|token, amount}
+    if (node.amount != null && typeof node.denom !== 'string' && !node.cw20) {
+      const info = node.info || node.asset_info || node.token_info || null;
+      const tokenId = info && (((info.native_token || {}).denom) || ((info.token || {}).contract_addr) || info.cw20 || info.native || (typeof info === 'string' ? info : null));
+      if (tokenId) { const h = human(reg, tokenId, node.amount); acc.amounts.push({ path, ...h, shape: 'info+amount' }); if (!h.symbol) acc.unresolved_denoms.add(tokenId); }
+      else if (acc.tokenContext) { const h = human(reg, acc.tokenContext, node.amount); acc.amounts.push({ path, ...h, shape: 'cw20 call on token contract' }); if (!h.symbol) acc.unresolved_denoms.add(acc.tokenContext); }
+      else if (/^\d{7,}$/.test(String(node.amount))) acc.big_numbers.push({ path: path + '.amount', value: String(node.amount), note: 'amount with no token context — not converted' });
+    }
+    if (node.cw20 && typeof node.cw20 === 'string' && node.amount != null) { const d = reg.denom[node.cw20]; acc.amounts.push({ path, raw: String(node.amount), denom: node.cw20, symbol: d ? d.symbol : null, human: d ? (Number(node.amount) / Math.pow(10, d.decimals)).toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' ' + d.symbol : null, note: d ? undefined : 'cw20 not in any registry — amount left raw' }); if (!d) acc.unresolved_denoms.add(node.cw20); }
+    for (const [k, v] of Object.entries(node)) { if (k === 'denom' || k === 'amount') continue; walkMsg(reg, v, path ? path + '.' + k : k, acc, depth + 1); }
+  }
+}
+function human(reg, denom, raw) {
+  const d = reg.denom[denom]; const n = Number(raw);
+  if (!d) return { raw: String(raw), denom, symbol: null, human: null, note: 'denom not in any registry — amount left raw, NOT converted' };
+  const v = n / Math.pow(10, d.decimals);
+  return { raw: String(raw), denom, symbol: d.symbol, decimals: d.decimals, human: v.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' ' + d.symbol, source: d.source };
+}
 const RISKY_KEYS = ['migrate', 'update_admin', 'clear_admin', 'set_owner', 'transfer_ownership', 'update_config', 'propose_new_owner', 'instantiate', 'burn', 'mint'];
 function extractMessages(text) {
   // find the first JSON array/object in the pasted text that looks like cosmos msgs
@@ -472,8 +544,27 @@ async function auditProposal(msgs) {
     const ex = raw && raw.wasm && raw.wasm.execute; const bank = raw && raw.bank; const stake = raw && (raw.staking || raw.distribution || raw.gov);
     const f = { index: i + 1, kind: ex ? 'wasm.execute' : bank ? 'bank' : Object.keys(raw || {}).join(',') || 'unknown', notes: [] };
     if (ex) {
-      f.contract = seen(ex.contract_addr); const msg = ex.msg || {}; const action = Object.keys(msg)[0] || '?'; f.action = action; f.funds = ex.funds || [];
+      f.contract = seen(ex.contract_addr); const dec = decodeMsg(ex.msg); const msg = dec.msg || {}; const action = Object.keys(msg)[0] || '?'; f.action = action; f.msg_was_base64 = !!dec.encoded; if (dec.undecodable) flags.push(`msg ${i + 1}: execute msg could not be decoded`);
+      f.funds = (ex.funds || []).map(x => human(reg, x.denom, x.amount));
       const body = msg[action] || {};
+      f.decoded_msg = JSON.stringify(msg).slice(0, 2000);
+      const acc = { addresses: new Set(), amounts: [], decoded: [], big_numbers: [], unresolved_denoms: new Set(), tokenContext: reg.denom[ex.contract_addr] ? ex.contract_addr : null };
+      walkMsg(reg, msg, action, acc, 0);
+      acc.addresses.forEach(a => seen(a));
+      f.nested_decoded = acc.decoded; f.amounts_found = acc.amounts; f.unresolved = { denoms: [...acc.unresolved_denoms], raw_numbers_without_token: acc.big_numbers, addresses: [...acc.addresses].filter(a => resolveAddr(reg, a).tiers[0].tier === 'unknown') };
+      if (acc.unresolved_denoms.size) flags.push(`msg ${i + 1}: ${acc.unresolved_denoms.size} token denom(s) unknown to every registry — amounts left raw`);
+      // swap routers (Skip Go / Astroport router): swap_and_action / execute_swap_operations
+      const sa = action === 'swap_and_action' ? body : null;
+      if (sa) {
+        const ops = (((sa.user_swap || {}).swap_exact_asset_in || {}).operations) || [];
+        const first = ops[0] || {}, last = ops[ops.length - 1] || {};
+        const min = sa.min_asset && sa.min_asset.native ? human(reg, sa.min_asset.native.denom, sa.min_asset.native.amount) : null;
+        const dest = sa.post_swap_action && sa.post_swap_action.transfer && sa.post_swap_action.transfer.to_address;
+        f.swap = { venue: ((sa.user_swap || {}).swap_exact_asset_in || {}).swap_venue_name || null, denom_in: reg.denom[first.denom_in] ? reg.denom[first.denom_in].symbol : first.denom_in || null, denom_out: reg.denom[last.denom_out] ? reg.denom[last.denom_out].symbol : last.denom_out || null,
+          amount_in: f.funds[0] || null, min_out: min, pools: ops.map(o => { const r = seen(o.pool); return { address: o.pool, known_as: r.tiers[0].name || null, tier: r.tiers[0].tier }; }), destination: dest ? seen(dest) : null, destination_is_sender: false };
+        if (dest && !reg.entities[dest] && !reg.daoreg[dest] && !reg.structural[dest]) flags.push(`msg ${i + 1}: swap proceeds are sent to an address no registry knows (${dest})`);
+        if (!min) flags.push(`msg ${i + 1}: swap has no minimum-output guard`);
+      }
       JSON.stringify(body).replace(/terra1[02-9ac-hj-np-z]{38,58}/g, (a) => { seen(a); return a; });
       if (action === 'increase_allowance') { allowances.push({ token: ex.contract_addr, spender: body.spender, amount: body.amount }); f.spender = seen(body.spender); f.amount = body.amount; }
       if (action === 'add_bribe') {
@@ -489,15 +580,16 @@ async function auditProposal(msgs) {
         if (!(reg.structural[ex.contract_addr] && reg.structural[ex.contract_addr].key === 'bribe_manager')) flags.push(`msg ${i + 1}: add_bribe is sent to an address that is NOT the registered TLA bribe manager`);
       }
       if (RISKY_KEYS.includes(action)) flags.push(`msg ${i + 1}: "${action}" is an administrative/upgrade action — treat as high-scrutiny`);
-      if ((ex.funds || []).some(x => x.denom === 'uluna' && Number(x.amount) > 1e9)) flags.push(`msg ${i + 1}: attaches more than 1,000 LUNA in funds`);
+      if ((ex.funds || []).some(x => x.denom === 'uluna' && Number(x.amount) > 1e9)) flags.push(`msg ${i + 1}: attaches ${human(reg, 'uluna', (ex.funds || []).find(x => x.denom === 'uluna').amount).human} in funds (over 1,000 LUNA)`);
     } else if (bank) { const send = bank.send || {}; f.to = send.to_address ? seen(send.to_address) : null; f.amount = send.amount; if (f.to && f.to.tiers[0].tier === 'unknown') flags.push(`msg ${i + 1}: bank send to an address no registry knows`); }
     else if (stake) { f.notes.push('staking/distribution/gov module message — outside TLA gauge mechanics'); }
     findings.push(f);
   });
   const tiers = Object.values(addresses).map(a => a.tiers[0].tier);
+  const unresolved = { addresses: Object.values(addresses).filter(a => a.tiers[0].tier === 'unknown').map(a => a.address), denoms: [...new Set(findings.flatMap(f => (f.unresolved && f.unresolved.denoms) || []))], actions: findings.filter(f => f.kind === 'wasm.execute' && !/^(increase_allowance|add_bribe|swap_and_action|transfer|send|execute|propose|vote|claim|stake|unstake|withdraw|deposit|update_config|migrate|update_admin|mint|burn)$/.test(f.action)).map(f => `msg ${f.index}: ${f.action}`) };
   return {
     summary: { messages: msgs.length, addresses: Object.keys(addresses).length, unknown_addresses: tiers.filter(t => t === 'unknown').length, flags: flags.length },
-    registries_loaded: reg.loaded, findings, addresses, flags,
+    registries_loaded: reg.loaded, findings, addresses, flags, unresolved,
     how_to_read: 'Tiers are evidence, not verdicts. structural/gauge_set/token = chain-verified by live captures; curated = a human label; unknown = unverified. No finding here asserts a proposal is "safe". This site\'s registry is NOT the source of truth — the chain is; every address carries independent `verify` links (explorer, source repo, audit) so the reader can check without trusting this site.',
   };
 }
