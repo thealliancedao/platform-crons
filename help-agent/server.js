@@ -471,7 +471,7 @@ const STRUCTURAL_PROVENANCE = {
   dao_main_wallet:  { built_by: 'AllianceDAO (DAODAO)', source: 'https://daodao.zone/dao/terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm', audit: null, docs: null, how_to_confirm: 'DAODAO shows this as the AllianceDAO treasury' },
 };
 function verifyLinks(a, tiers) {
-  const links = [{ label: 'Chain explorer (address, code, tx history)', url: 'https://chainsco.pe/terra2/address/' + a }];
+  const links = [{ label: 'Chain explorer (address, code, tx history)', url: 'https://chainsco.pe/terra2/address/' + a }, { label: 'Address catalog — how this site knows it', url: 'https://thealliancedao.com/address-catalog.html?q=' + a }];
   for (const t of tiers) {
     if (t.tier === 'structural' && STRUCTURAL_PROVENANCE[t.key]) { const p = STRUCTURAL_PROVENANCE[t.key]; links.push({ label: 'Source code — ' + p.built_by, url: p.source }); if (p.audit) links.push({ label: 'Independent audit (SCV Security)', url: p.audit }); if (p.docs) links.push({ label: 'Protocol docs', url: p.docs }); t.how_to_confirm = p.how_to_confirm; t.built_by = p.built_by; }
     if (t.tier === 'gauge_set' && t.dex === 'Astroport') links.push({ label: 'Astroport pool', url: 'https://app.astroport.fi/pools' });
