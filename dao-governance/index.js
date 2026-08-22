@@ -227,6 +227,14 @@ function mapProposal({ id, chain, votes, names, registry, daoId, idPrefix }) {
     description: p.description || '',
     status: STATUS_LABEL[status] || (status ? status[0].toUpperCase() + status.slice(1) : 'Unknown'),
     proposer: p.proposer || null,
+    // 1.1.0: timing straight from the chain object (DAODAO single-choice):
+    // start_height + expiration {at_time: nanos | at_height | never}. Lets the
+    // site merge several DAOs' proposals chronologically and show time left.
+    startHeight: p.start_height != null ? Number(p.start_height) : null,
+    expiration: p.expiration && p.expiration.at_time ? { at_time_iso: new Date(Number(String(p.expiration.at_time).slice(0, 13))).toISOString() }
+              : p.expiration && p.expiration.at_height != null ? { at_height: Number(p.expiration.at_height) }
+              : p.expiration && 'never' in p.expiration ? { never: true } : null,
+    live: status === 'open',
     votes: { yes, no, abstain, total },
     voting: {
       turnout,
