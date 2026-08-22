@@ -1580,7 +1580,7 @@ function upsertStateHistory(prior, dateKey, entry, nowIso) {
 }
 
 // -----------------------------------------------------------------------------
-// BACKING-HISTORY DAILY APPENDER (Rev C.5, 2026-08-20)
+// BACKING-HISTORY DAILY APPENDER (Rev C.5, 2026-08-20; C.6 2026-08-22 hub rate)
 // The migration imported the legacy series (rows through 2026-08-10, all
 // stamped source:"migrated:...") but the daily APPEND duty was never ported —
 // the series froze and every tile trend starved past that date. This appends
@@ -1590,9 +1590,18 @@ async function appendBackingHistory(summary, priceData) {
     try {
         const bk = summary && summary.backing;
         if (!bk || bk.ampluna_balance == null || bk.per_nft_ampluna == null) return;
-        const rate = (priceData && priceData.ampluna_usd != null && priceData.luna_usd)
-            ? priceData.ampluna_usd / priceData.luna_usd : null;
-        if (!rate) { console.log('backing-history: no rate today — skipping (honest gap beats a wrong row)'); return; }
+        // Rev C.6 (2026-08-22): the rate is the Eris HUB exchange rate — chain-exact, can only
+        // rise — read from network-and-prices lst_ratios (the same number the site's tiles use).
+        // C.5 used ampLUNA_usd / LUNA_usd, a MARKET ratio that wobbles, which produced rows
+        // (2026-08-20/21) where backingInLuna FELL while ampLunaPerNft rose — a negative
+        // "avg daily gain" the owner spotted. Market prices are not hub rates (PRICING-DOCTRINE).
+        let rate = null;
+        try {
+            const np = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/network-and-prices/current.json?cb=${Date.now()}`, 'network-and-prices');
+            const r = np && np.lst_ratios && np.lst_ratios.ampLUNA && Number(np.lst_ratios.ampLUNA.ratio);
+            if (r && r > 1 && r < 10) rate = r;
+        } catch (e) { /* fall through */ }
+        if (!rate) { console.log('backing-history: no HUB rate today — skipping (honest gap beats a market-ratio row)'); return; }
         const date = new Date().toISOString().slice(0, 10);
         const path = 'nfts/adao/snapshots/backing-history.json';
         const cur = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${path}?cb=${Date.now()}`, 'backing-history');
