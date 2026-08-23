@@ -31,14 +31,19 @@ const BUCKETS = ['unminted','daodao_staked','treasury_held','dao_wallet_8ywv_hel
   'daodao_custody_unattributed','user_held'];
 const bucketSum = (recs) => recs.filter(r => BUCKETS.some(k => r[k])).length;
 const noBucket = (recs) => recs.filter(r => !BUCKETS.some(k => r[k]));
-const stranded = base.filter(r => r.owner === DAODAO && !r.daodao_staked && !r.daodao_pending_claim);
+// The 19 in DAODAO custody but not actively staked. The COMMITTED base evolves:
+// pre-fix (poisoned) they carry no bucket at all; post-fix (healed by C.6) they
+// split pending/unattributed. The gate asserts the LAWS on either shape.
+const stranded = base.filter(r => r.owner === DAODAO && !r.daodao_staked);
 const LEGACY4 = ['1319','3605','6847','7123'];
 let fails = 0;
 const check = (name, ok, detail) => { console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ' — ' + detail : ''}`); if (!ok) fails++; };
 
-console.log(`fixture: ${base.length} records · capturedAt ${doc.capturedAt} · stranded-in-base ${stranded.length}`);
-check('fixture is the poisoned base', stranded.length === 19 && noBucket(base).length === 19, `${stranded.length} stranded, ${noBucket(base).length} no-bucket`);
-check('legacy 4 among the stranded', LEGACY4.every(id => stranded.some(r => String(r.id) === id)));
+const nb = noBucket(base).length;
+const shape = nb === 0 ? 'healed (post-C.6)' : 'poisoned (pre-fix)';
+console.log(`fixture: ${base.length} records · capturedAt ${doc.capturedAt} · custody-not-active ${stranded.length} · shape: ${shape}`);
+check('fixture: 19 custody-not-active, base fully bucketed OR poisoned-19', stranded.length === 19 && (nb === 0 || nb === 19), `${stranded.length} custody-not-active, ${nb} no-bucket`);
+check('legacy 4 among the custody-not-active', LEGACY4.every(id => stranded.some(r => String(r.id) === id)));
 
 // --- H: hot-carry — RAW custody count on the poisoned base -------------------
 {

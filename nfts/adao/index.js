@@ -2570,6 +2570,19 @@ async function runWithAnalytics() {
         console.error('analytics failed (isolated, inventory unaffected):', e.message);
         process.exitCode = 1;
     }
+    // market-history: forward maintenance of sales-enriched / listing-history /
+    // luna+bluna daily (the duty the retired data-repo Action used to own).
+    // Runs AFTER analytics on purpose: this run's appends land for the NEXT
+    // analytics pass — analytics re-derives from committed inputs, never from
+    // in-flight state. Isolated like analytics: a failure never taints inventory.
+    try {
+        console.log('\n=== market-history (same job) ===');
+        await require('./market-history.js').main();
+        console.log('=== market-history done ===');
+    } catch (e) {
+        console.error('market-history failed (isolated, inventory unaffected):', e.message);
+        process.exitCode = 1;
+    }
     return result;
 }
 

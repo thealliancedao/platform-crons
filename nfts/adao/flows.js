@@ -263,8 +263,44 @@ function summarizeDay(doc) {
   };
 }
 
+// delisting → sale upgrade (the "future sales feed" the diff comment promised):
+// the tla-flows walker now writes classifyNftTx v2 sale records (chain-truth
+// payment legs) into nfts/adao/transfers/YYYY/MM.json. At rollup, any delisting
+// whose token has a same-day v2 sale record was a SALE, not a cancel — retype it
+// and carry the price. Chain truth wins over the listings-diff guess; the
+// upgrade is labeled, never silent.
+async function upgradeDelistingsToSales(doc) {
+  const ev = doc.events || [];
+  if (!ev.some(e => e.type === 'delisting')) return { upgraded: 0 };
+  const [y, m] = doc.date.split('-');
+  let month = null;
+  try { month = await httpGetJson(RAW(`nfts/adao/transfers/${y}/${m}.json`)); } catch { /* absent = nothing to join */ }
+  if (!Array.isArray(month)) return { upgraded: 0 };
+  const sales = month.filter(r => Number(r.schemaVersion) >= 2 && r.action === 'sale'
+    && String(r.timestamp || '').slice(0, 10) === doc.date && r.resolution !== 'ambiguous');
+  if (!sales.length) return { upgraded: 0 };
+  const byTok = new Map(sales.map(r => [String(r.token_id), r]));
+  let upgraded = 0;
+  for (const e of ev) {
+    if (e.type !== 'delisting') continue;
+    const s = byTok.get(String(e.token_id));
+    if (!s) continue;
+    e.type = 'sale';
+    e.upgraded_from = 'delisting';
+    e.sale_tx = s.txhash;
+    e.buyer = s.buyer || null;
+    e.seller = s.seller || e.seller || null;
+    e.gross_amount = s.gross_amount || null;
+    e.sale_denom = s.denom || e.denom || null;
+    upgraded++;
+  }
+  if (upgraded) console.log(`  ⬆ ${upgraded} delisting(s) upgraded to sale (v2 transfer records, chain truth)`);
+  return { upgraded };
+}
+
 async function runRollup(doc) {
   const dateStr = doc.date;
+  await upgradeDelistingsToSales(doc);
   const summary = summarizeDay(doc);
   const dayEntry = { events: doc.events || [], summary, rolled_up_at: nowIso() };
 
@@ -364,4 +400,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL', e); process.exit(1); });
 }
-module.exports = { run };
+module.exports = { run, upgradeDelistingsToSales, summarizeDay };

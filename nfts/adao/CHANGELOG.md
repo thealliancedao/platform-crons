@@ -1,5 +1,32 @@
 # nfts/adao — changelog
 
+## market-history 1.0.0 — 2026-08-23 — the ported duty (Analytics tab un-frozen)
+
+- **NEW module market-history.js** — forward maintenance of sales-enriched.json,
+  listing-history.json, luna-usd-daily.json, bluna-usd-daily.json (frozen since
+  June when the data-repo Action retired without the duty being ported). Inputs:
+  classifyNftTx v2 records (nfts/adao/transfers) + org price-history. Merges INTO
+  the same org paths — deeper history, never a side file. Laws enforced in code:
+  entry-keyed prior rows byte-verbatim, never-shrink (throws, refuses publish),
+  ambiguous v2 sales NEVER enriched (warned for a human), missing price days left
+  blank (no carry-forward fabrication), repairs labeled (repair field).
+- **Wired into the warm/full pass** after analytics, isolated like analytics
+  (a failure never taints inventory). Analytics re-derives from committed inputs
+  next pass — never from in-flight state.
+- **flows.js: delisting→sale upgrade at rollup** — the "future sales feed" the
+  diff comment promised. A delisting whose token has a same-day non-ambiguous v2
+  sale record retypes to sale (upgraded_from:'delisting', chain price carried).
+- **Gate (permanent): mock-run-market-history.js** — real committed products +
+  the 64 REAL batch-settle sales (self-derived from the FCD archive via the
+  same-repo live classifier). G1/G2 daily fills (prior-verbatim, no fabricated
+  days, idempotent), G3 the 64 (labeled, priced day-of, legs sum to gross, prior
+  1,259 byte-verbatim, re-feed adds 0, ambiguous refused), G4 listing lifecycle
+  (open/close/unmatched, all-ever-seen dedupe — a closed listing can never be
+  phantom-reopened by scan-window overlap), G5 flows upgrade.
+- One-off recovery of the 64 lives in tla-core (.github/scripts/nft-market-history)
+  per repo-placement law — runs the LIVE classifier + enricher, idempotent.
+
+
 ## C.6 — 2026-08-23 — raw-custody count + daodao_custody_unattributed bucket (the 9981 fix)
 
 - **Root cause of classification sum 9981**: `daodaoCustodyCount` filtered on the
