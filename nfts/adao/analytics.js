@@ -278,10 +278,30 @@ async function main() {
       luna: Number(flipSales.reduce((s, x) => s + num(x.luna_equiv), 0).toFixed(2)),
     };
 
+    const spotLunaUsd = enrichedDoc && enrichedDoc.spot_luna_usd != null ? Number(enrichedDoc.spot_luna_usd) : null;
     const royaltySales = esales.filter(x => num(x.royalty_fee) > 0);
+    // Denom-correct royalty totals. The old total_royalty_luna summed RAW
+    // royalty_fee micro-units ACROSS denoms (uluna + ubLUNA + ...) — a unit-
+    // mixing number no display could use honestly. Each sale's royalty share
+    // is priced through that sale's own day pricing instead:
+    //   royalty_luna  = Σ luna_equiv    × (royalty_fee / gross)
+    //   royalty_usd_at_sale = Σ notional_usd × (royalty_fee / gross)
+    const royShare = (x, base) => {
+      const g = num(x.gross_amount); const r = num(x.royalty_fee);
+      return (g > 0 && r > 0 && num(base) > 0) ? num(base) * (r / g) : 0;
+    };
+    const royaltyByDenom = {};
+    for (const x of royaltySales) {
+      const k = x.denom_symbol || x.denom || 'unknown';
+      royaltyByDenom[k] = Number(((royaltyByDenom[k] || 0) + num(x.royalty_fee) / 1e6).toFixed(6));
+    }
+    const royaltyLuna = Number(royaltySales.reduce((s, x) => s + royShare(x, x.luna_equiv), 0).toFixed(6));
     const royalties = {
       sales_with_royalty: royaltySales.length,
-      total_royalty_luna: Number(royaltySales.reduce((s, x) => s + num(x.royalty_fee), 0).toFixed(6)),
+      royalty_by_denom: royaltyByDenom,            // token units per payment denom
+      royalty_luna: royaltyLuna,                   // LUNA-equiv, via each sale's day pricing
+      royalty_usd_at_sale: Number(royaltySales.reduce((s, x) => s + royShare(x, x.notional_usd), 0).toFixed(2)),
+      royalty_usd_today: spotLunaUsd != null ? Number((royaltyLuna * spotLunaUsd).toFixed(2)) : null,
       recipients: [...new Set(royaltySales.map(x => x.royalty_recipient).filter(Boolean))],
     };
 
