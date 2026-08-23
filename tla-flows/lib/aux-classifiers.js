@@ -169,9 +169,14 @@ function classifyNftTx(txr, contracts, markets = {}) {
   // the full raw attrs for a later derive.
   const marketAddrs = Object.keys(markets || {});
   if (!marketAddrs.length) return out;
-  const SALE_VERBS   = new Set(['settle']);                              // BBL; extend per fixture
+  const SALE_VERBS   = new Set(['settle', 'buy_nft']);                    // BBL settle; Atrium buy_nft (fixture-locked 2026-08-21 tx 995038E5…)
   const CANCEL_VERBS = new Set(['cancel_auction', 'admin_cancel_auction']);
   const LIST_VERBS   = new Set(['create_auction']);
+  // Atrium's buy_nft speaks price/listing_id where BBL's settle speaks
+  // amount/auction_id — normalize so downstream reads one vocabulary.
+  const normAttrs = (a) => a && ({ ...a,
+    amount: a.amount ?? a.price ?? null,
+    auction_id: a.auction_id ?? a.listing_id ?? null });
   const asCoin = (s) => { const m = /^(\d+)(.+)$/.exec(String(s || '').split(',')[0].trim()); return m ? { amount: m[1], denom: m[2] } : null; };
   for (const M of marketAddrs) {
     const meta = markets[M] || {};
@@ -215,7 +220,7 @@ function classifyNftTx(txr, contracts, markets = {}) {
     }
     // ordered marketplace anchors for segmentation: settle events and NFT exits
     const settleSeqs = [];
-    for (const e of mwasm) { const a = axAttrs(e); if (SALE_VERBS.has(a.action)) settleSeqs.push({ seq: seqOf.get(e), attrs: a }); }
+    for (const e of mwasm) { const a = axAttrs(e); if (SALE_VERBS.has(a.action)) settleSeqs.push({ seq: seqOf.get(e), attrs: normAttrs(a) }); }
     const exitSeqOf = new Map();             // token_id → stream position of its exit
     for (const e of events) {
       const a = axAttrs(e);
@@ -231,7 +236,7 @@ function classifyNftTx(txr, contracts, markets = {}) {
     const rawAttrs = mwasm.map(axAttrsAll);
     const attrsFor = (verbs, tokenId) => {                 // marketplace attrs for THIS token when carried
       const hits = mwasm.map(axAttrs).filter(a => verbs.has(a.action));
-      return hits.find(a => tokenId != null && a.token_id === tokenId) || (hits.length === 1 ? hits[0] : null);
+      return normAttrs(hits.find(a => tokenId != null && a.token_id === tokenId) || (hits.length === 1 ? hits[0] : null));
     };
     const roleOf = (to) => to === (meta.fee_wallet || null) ? 'marketplace_fee'
       : (meta.royalty_recipients || []).includes(to) ? 'royalty' : 'other';
