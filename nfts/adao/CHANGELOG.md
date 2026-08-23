@@ -1,5 +1,25 @@
 # nfts/adao — changelog
 
+## C.6 — 2026-08-23 — raw-custody count + daodao_custody_unattributed bucket (the 9981 fix)
+
+- **Root cause of classification sum 9981**: `daodaoCustodyCount` filtered on the
+  `daodao_staked` FLAG, which prior resolution had already flipped to false for
+  the 19 stranded tokens — so custody read 1631, chain count = 1631−1631 = 0,
+  the tracker looked reconciled, and the C.5 sweep never re-fired. Custody now
+  counts RAW chain ownership (`owner == staking contract`): 1650 in every mode.
+- **New bucket `daodao_custody_unattributed`**: the third custody state the old
+  "custody = active + pending; no third state" model denied — unstaked long ago,
+  claim window expired, never claimed (includes legacy 1319/3605/6847/7123).
+  Resolution strands land here; the chain claims tracker promotes attributable
+  ones to `daodao_pending_claim` (with real unstaker as real_owner); tokens that
+  leave custody clear entirely. A held token is never no-bucket.
+- Summary/heartbeat/console carry the new count; classification-sum guard
+  includes it (expects 10,000 again).
+- **Gate (permanent): `mock-run-custody.js`** — real committed nfts.json (the
+  poisoned 19-token base), four scenarios: warm-fresh, hot-carry, tracker-sweep,
+  tracker-empty. All must sum to 10,000 with the 19 bucketed and never phantom.
+
+
 ## 1.0.0 — 2026-06-29 — org migration + analytics + blueprint
 
 - **Inventory cron**: migrated proven Rev C.4 into the org. Plumbing only

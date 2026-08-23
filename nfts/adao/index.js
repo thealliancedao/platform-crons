@@ -394,6 +394,12 @@ function classifyOwner(owner, broken) {
         // Set later by applyStakerResolution() — true for an Enterprise stake whose
         // staker can't be enumerated (abandoned contract). Explorer label: "Enterprise (legacy)".
         enterprise_unattributed: false,
+
+        // Set later by applyStakerResolution() / applyPendingClaimFlags(): in DAODAO
+        // custody (owner == staking contract) but neither actively staked nor an
+        // attributable pending claim. The third custody state the original model
+        // denied: unstaked long ago, claim window expired, never claimed.
+        daodao_custody_unattributed: false,
     };
     // user_held = everything else (individual wallet, not in any known custody)
     const knownCustody = (
@@ -1017,11 +1023,13 @@ function applyStakerResolution(records, daodaoMap, enterpriseMap, warnings) {
             const staker = daodaoMap[tid];
             if (staker) { r.real_owner = staker; resolved++; }
             else {
-                // In DAODAO custody but absent from every active staked_nfts list ⇒ definitionally
-                // in the unstaking claim queue (custody = active + pending; no third state). The tx
-                // tracker hasn't captured this one yet, so we know it IS pending but not WHO unstaked
-                // it — classify as pending, leave real_owner = contract (no fabricated address), warn.
-                r.daodao_pending_claim = true;
+                // In DAODAO custody but absent from every active staked_nfts list. Custody =
+                // active + pending + unattributed (the old "no third state" model was wrong:
+                // legacy unstakes with expired windows sit unclaimed for years). The claims
+                // tracker — chain nft_claims state — decides which of these are attributable
+                // pending claims; until it does, the honest bucket is custody-unattributed.
+                // real_owner stays = contract (no fabricated address), warn.
+                r.daodao_custody_unattributed = true;
                 r.daodao_staked = false;
                 r.real_owner = r.owner;
                 warnings.push({ scope: 'daodao', token_id: tid, reason: 'pending_untracked' });
@@ -1038,7 +1046,7 @@ function applyStakerResolution(records, daodaoMap, enterpriseMap, warnings) {
             }
         }
     }
-    console.log(`  ✓ Staker resolution: ${resolved} → real staker | ${daodaoStranded} DAODAO stranded (tracker lag) | ${enterpriseStranded} Enterprise legacy-unattributed`);
+    console.log(`  ✓ Staker resolution: ${resolved} → real staker | ${daodaoStranded} DAODAO custody-unattributed (claims tracker decides pending) | ${enterpriseStranded} Enterprise legacy-unattributed`);
     return { resolved, daodaoStranded, enterpriseStranded };
 }
 
@@ -1056,10 +1064,16 @@ function applyPendingClaimFlags(records, pendingBlock) {
         if (addr) {
             r.daodao_pending_claim = true;
             r.daodao_staked = false;
+            r.daodao_custody_unattributed = false;   // attributed: the claim names its unstaker
             r.real_owner = addr;
             flagged++;
-        } else if (r.daodao_pending_claim) {
-            r.daodao_pending_claim = false;          // stale flag carried from base (claimed/restaked since)
+        } else if (r.daodao_pending_claim || r.daodao_custody_unattributed) {
+            // Not in the tracked claim set. If the token has LEFT contract custody it was
+            // claimed/restaked — clear everything. If it's STILL in custody, it stays a
+            // real token in a real place: downgrade to custody-unattributed, never to
+            // no-bucket (blank beats phantom, but a held token is not blank).
+            r.daodao_pending_claim = false;
+            r.daodao_custody_unattributed = (r.owner === DAODAO_STAKING_CONTRACT && !r.daodao_staked);
         }
     }
     console.log(`  ✓ Pending-claim flags: ${flagged} tokens marked daodao_pending_claim (excluded from staked)`);
@@ -1299,6 +1313,7 @@ function aggregate(records, daodaoStakers, enterpriseStakers, marketplaces, back
         enterprise_dao_broken: 0,
         daodao_staked: 0,
         daodao_pending_claim: 0,   // unstaked, in 7-day claim queue — counted separately from daodao_staked
+        daodao_custody_unattributed: 0,  // in DAODAO custody, not staked, claim not attributable (legacy/expired)
         bbl_listed: 0,
         atrium_listed: 0,
         boost_listed: 0,
@@ -2184,7 +2199,12 @@ async function captureSnapshot() {
     // Flag pending tokens first so they carry daodao_staked=false and aren't mistaken
     // for unresolved active stakes by the resolver below.
     console.log('🔁 Reconciling DAODAO pending claims...');
-    const daodaoCustodyCount = records.filter(r => r.daodao_staked).length;  // all DAODAO custody (pre-flag)
+    // RAW chain custody (owner == contract), NOT the daodao_staked flag: on hot/warm
+    // runs the flags carry from base, where prior resolution already flipped
+    // unattributed tokens to staked=false — filtering on the flag undercounts
+    // custody by exactly those tokens, makes count = custody − power read 0, and
+    // the tracker looks reconciled while 19 tokens sit unbucketed (the 9981 bug).
+    const daodaoCustodyCount = records.filter(r => r.owner === DAODAO_STAKING_CONTRACT).length;
     const priorPendingState = await loadPendingState();
     const pending = await computePendingClaims(daodaoCustodyCount, priorPendingState, [...daodaoStakers.map(s => s.address), ...records.map(r => r.owner).filter(Boolean)]);   // C.5: known addresses for the state sweep
     console.log(`  Pending claims:      ${pending.block.count} chain / ${pending.block.tracked} tracked / reconciled: ${pending.block.reconciled}`);
@@ -2228,6 +2248,7 @@ async function captureSnapshot() {
     console.log(`  Enterprise DAO:      ${summary.enterprise_dao_broken_count.toLocaleString()} (DAO-controlled broken)`);
     console.log(`  DAODAO staked:       ${summary.daodao_staked_count.toLocaleString()} (of which ${summary.daodao_staked_broken_count} broken, kept for VP)`);
     console.log(`  DAODAO pending claim:${summary.daodao_pending_claim_count.toLocaleString()} (unstaked, in 7-day queue)`);
+    console.log(`  DAODAO unattributed: ${summary.daodao_custody_unattributed_count.toLocaleString()} (in custody, claim not attributable — legacy/expired)`);
     console.log(`  BBL listed:          ${summary.bbl_listed_count.toLocaleString()}`);
     console.log(`  Atrium listed:       ${summary.atrium_listed_count.toLocaleString()}`);
     console.log(`  Boost listed:        ${summary.boost_listed_count.toLocaleString()}`);
@@ -2255,6 +2276,7 @@ async function captureSnapshot() {
         summary.unminted_count + summary.treasury_held_count + summary.dao_wallet_8ywv_held_count +
         summary.enterprise_staked_count + summary.enterprise_dao_broken_count +
         summary.daodao_staked_count + summary.daodao_pending_claim_count +
+        summary.daodao_custody_unattributed_count +
         summary.bbl_listed_count + summary.atrium_listed_count +
         summary.boost_listed_count + summary.user_held_count
     );
@@ -2383,6 +2405,7 @@ async function captureSnapshot() {
             backing_history_appender: 'C.5',
             daodao_pending_claim: pending.block.count,
             daodao_pending_claim_records: summary.daodao_pending_claim_count,
+            daodao_custody_unattributed_records: summary.daodao_custody_unattributed_count,
             staker_resolution_errors: stakerErrors.length,
             staker_resolution_warnings: stakerWarnings.length,
             listing_resolver_warnings: (marketplaces.listingWarnings || []).length,
@@ -2417,6 +2440,8 @@ async function captureSnapshot() {
         enterprise_dao_broken_count: summary.enterprise_dao_broken_count,
         daodao_staked_count: summary.daodao_staked_count,
         daodao_staked_broken_count: summary.daodao_staked_broken_count,
+        daodao_pending_claim_count: summary.daodao_pending_claim_count,
+        daodao_custody_unattributed_count: summary.daodao_custody_unattributed_count,
         bbl_listed_count: summary.bbl_listed_count,
         atrium_listed_count: summary.atrium_listed_count,
         boost_listed_count: summary.boost_listed_count,
@@ -2570,6 +2595,9 @@ module.exports = {
     fetchBackingData,
     fetchPriceData,
     aggregate,
+    classifyOwner,
+    applyStakerResolution,
+    applyPendingClaimFlags,
     // Pending-claim tracking (Rev B.3)
     parseUnstakeTxs,
     parseClaimTxs,
