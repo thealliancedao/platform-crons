@@ -2583,6 +2583,16 @@ async function runWithAnalytics() {
         console.error('market-history failed (isolated, inventory unaffected):', e.message);
         process.exitCode = 1;
     }
+    // compact-bundle: the explorer's first-paint product (437KB vs the 16MB the
+    // page loads today). Runs LAST — it's a derived view of everything above.
+    try {
+        console.log('\n=== compact-bundle (same job) ===');
+        await require('./compact-bundle.js').main();
+        console.log('=== compact-bundle done ===');
+    } catch (e) {
+        console.error('compact-bundle failed (isolated, inventory unaffected):', e.message);
+        process.exitCode = 1;
+    }
     return result;
 }
 

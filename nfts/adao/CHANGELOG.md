@@ -1,5 +1,21 @@
 # nfts/adao — changelog
 
+## compact-bundle 1.0.0 — 2026-08-23 — the first-paint product (explorer perf)
+
+- NEW compact-bundle.js in the warm/full pass (runs last — a derived view of
+  everything above): dict-encoded traits + grade + both ranks + status bitmask
+  + listing USD for all 10,000 tokens in ONE 437KB product
+  (nfts/adao/snapshots/explorer-bundle.json) vs the 16.3MB the page loads
+  today. Rebuilt whole each pass, never merged, no history of its own.
+- REFUSES to publish on any count mismatch vs summary.json (a fast wrong
+  bundle is worse than a slow right page). Metadata-join floor 9,990/10,000.
+- Gate: mock-run-compact-bundle.js on the real committed inputs — 10,000 rows
+  id-sorted, 437KB, #6192 trait round-trip, flags reconcile (1,631 staked,
+  17+2 custody, 5,828 unminted), ranks match rarity records, refusal proven.
+- Page consumption (boot swap + background hydrate + lazy BBL detail) is the
+  next explorer delivery — the product must land and verify first.
+
+
 ## market-history 1.1.0 — 2026-08-23 — unresolved-exit sentinel (the "never again" invariant)
 
 - Every marketplace exit is a sale or a delist — no third thing. The sentinel
