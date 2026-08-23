@@ -141,9 +141,10 @@ function samplesToRecords(swapSamples) {
 
 // ----------------------------------------------------------------------------- NFT transfers (cw721 — ADAO collection + vAMP lock NFTs)
 // contracts: obj address → label
-function classifyNftTx(txr, contracts) {
+function classifyNftTx(txr, contracts, markets = {}) {
   if (Number(txr.code || 0) !== 0) return [];
-  const events = axEventsOf(txr).filter(e => e.type === 'wasm');
+  const allEvents = axEventsOf(txr);
+  const events = allEvents.filter(e => e.type === 'wasm');
   const out = []; let idx = 0;
   const ACTIONS = new Set(['transfer_nft', 'send_nft', 'mint', 'burn']);
   for (const e of events) {
@@ -156,6 +157,166 @@ function classifyNftTx(txr, contracts) {
       token_id: a.token_id ?? null,
       from: a.sender || a.owner || null, to: a.recipient || a.owner || null,
       minter: a.minter || null });
+  }
+
+  // --- v2: marketplace lifecycle (SPEC classifyNftTx v2 — sale/list/cancel/bid) ---
+  // markets: { address → { label, fee_wallet, royalty_recipients[] } } from the
+  // capture-registry `nft_marketplace` stream. Doctrine: capture truth, derive
+  // later. Sale vs cancel is decided by MONEY MOVEMENT (payout legs from the
+  // marketplace + NFT exit), refined by the marketplace's own wasm attrs where
+  // the vocabulary is fixture-locked (BBL). Nothing guessed: when neither legs
+  // nor attrs decide, the record says so (resolution:'ambiguous') and carries
+  // the full raw attrs for a later derive.
+  const marketAddrs = Object.keys(markets || {});
+  if (!marketAddrs.length) return out;
+  const SALE_VERBS   = new Set(['settle']);                              // BBL; extend per fixture
+  const CANCEL_VERBS = new Set(['cancel_auction', 'admin_cancel_auction']);
+  const LIST_VERBS   = new Set(['create_auction']);
+  const asCoin = (s) => { const m = /^(\d+)(.+)$/.exec(String(s || '').split(',')[0].trim()); return m ? { amount: m[1], denom: m[2] } : null; };
+  for (const M of marketAddrs) {
+    const meta = markets[M] || {};
+    const mwasm = events.filter(e => axAttrs(e)._contract_address === M);
+    // NFT moves on WATCHED collections touching M (exit = sale/cancel, entry = list)
+    const exits = [], entries = [];
+    for (const e of events) {
+      const a = axAttrs(e);
+      if (!contracts[a._contract_address]) continue;
+      if (a.action !== 'transfer_nft' && a.action !== 'send_nft') continue;
+      if (a.sender === M) exits.push({ token_id: a.token_id ?? null, to: a.recipient || null, nft_contract: a._contract_address });
+      if (a.recipient === M || a.contract === M) entries.push({ token_id: a.token_id ?? null, from: a.sender || a.owner || null, nft_contract: a._contract_address });
+    }
+    if (!mwasm.length && !exits.length && !entries.length) continue;
+    // money legs (standard families — shape-independent): payouts FROM M, payments TO M.
+    // Each leg keeps its POSITION in the event stream (`seq`) — batch-settle txs
+    // are segmented by order (each settle's legs follow it), never by pooling.
+    const payouts = [], payments = [];
+    let seq = 0;
+    const seqOf = new Map();                 // event object → stream position
+    for (const e of allEvents) { seqOf.set(e, seq++); }
+    for (const e of allEvents) {
+      const at = seqOf.get(e);
+      if (e.type === 'transfer') {           // bank
+        const a = axAttrsAll(e);             // bank transfer events can batch (parallel key lists)
+        const n = Math.max((a.recipient || []).length, (a.sender || []).length, (a.amount || []).length);
+        for (let i = 0; i < n; i++) {
+          const coin = asCoin((a.amount || [])[i]); if (!coin) continue;
+          const rec = { to: (a.recipient || [])[i] || null, from: (a.sender || [])[i] || null, ...coin, seq: at };
+          if (rec.from === M) payouts.push(rec);
+          if (rec.to === M) payments.push(rec);
+        }
+      } else if (e.type === 'wasm') {        // cw20
+        const a = axAttrs(e);
+        if (a.action !== 'transfer' && a.action !== 'send' && a.action !== 'transfer_from') continue;
+        if (!a.amount || (!a.from && !a.to)) continue;
+        const rec = { to: a.to || null, from: a.from || null, amount: String(a.amount), denom: a._contract_address, seq: at };
+        if (rec.from === M) payouts.push(rec);
+        if (rec.to === M) payments.push(rec);
+      }
+    }
+    // ordered marketplace anchors for segmentation: settle events and NFT exits
+    const settleSeqs = [];
+    for (const e of mwasm) { const a = axAttrs(e); if (SALE_VERBS.has(a.action)) settleSeqs.push({ seq: seqOf.get(e), attrs: a }); }
+    const exitSeqOf = new Map();             // token_id → stream position of its exit
+    for (const e of events) {
+      const a = axAttrs(e);
+      if (contracts[a._contract_address] && (a.action === 'transfer_nft' || a.action === 'send_nft') && a.sender === M)
+        exitSeqOf.set(a.token_id ?? null, seqOf.get(e));
+    }
+    // legs for a settle at position s: payouts between s and the next settle
+    const legsForSettle = (s) => {
+      const next = settleSeqs.map(x => x.seq).filter(x => x > s).sort((a, b) => a - b)[0] ?? Infinity;
+      return payouts.filter(p => p.seq > s && p.seq < next);
+    };
+    const actions = [...new Set(mwasm.map(e => axAttrs(e).action).filter(Boolean))];
+    const rawAttrs = mwasm.map(axAttrsAll);
+    const attrsFor = (verbs, tokenId) => {                 // marketplace attrs for THIS token when carried
+      const hits = mwasm.map(axAttrs).filter(a => verbs.has(a.action));
+      return hits.find(a => tokenId != null && a.token_id === tokenId) || (hits.length === 1 ? hits[0] : null);
+    };
+    const roleOf = (to) => to === (meta.fee_wallet || null) ? 'marketplace_fee'
+      : (meta.royalty_recipients || []).includes(to) ? 'royalty' : 'other';
+    const base = (kind, token_id) => ({ schemaVersion: 2,
+      k: `${txr.txhash}|${M}|${kind}|${token_id ?? idx}|${idx++}`,
+      txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
+      contract: M, contract_label: meta.label || null, action: kind, token_id,
+      market_actions: actions, raw_market_attrs: rawAttrs });
+    for (const x of exits) {
+      const settle = attrsFor(SALE_VERBS, x.token_id);
+      const cancel = attrsFor(CANCEL_VERBS, x.token_id);
+      // legs: segmented by order when a settle anchors this exit (its legs sit
+      // between it and the next settle); pooled only in the single-exit case.
+      const xSeq = exitSeqOf.get(x.token_id) ?? Infinity;
+      const mySettle = settleSeqs.length
+        ? settleSeqs.filter(s => s.seq < xSeq).sort((a, b) => b.seq - a.seq)[0]   // nearest settle BEFORE this exit
+          || settleSeqs.find(s => s.attrs.token_id === x.token_id) || null
+        : null;
+      const sAttr = (mySettle && mySettle.attrs) || settle || null;
+      // decision order: settle vocabulary → sale; cancel vocabulary → cancel;
+      // then money movement; ambiguous ONLY when payouts exist, exits are
+      // multiple, and no vocabulary decides (refuse to guess attribution).
+      if (!sAttr && !cancel && exits.length > 1 && payouts.length > 0) {
+        out.push({ ...base('sale', x.token_id), nft_contract: x.nft_contract, buyer: x.to,
+          seller: null, denom: null, gross_amount: null, legs: payouts.map(p => ({ ...p, role: roleOf(p.to) })),
+          payments_in: payments, resolution: 'ambiguous' });
+        continue;
+      }
+      const rawLegs = mySettle ? legsForSettle(mySettle.seq) : payouts;
+      // exclude buyer-directed legs ONLY when they carry no role — a role-tagged
+      // leg to the buyer is real (e.g. the fee wallet buying an NFT still pays
+      // itself the fee); a role-less leg to the buyer is refund/change.
+      const outLegs = rawLegs.map(p => ({ ...p, role: roleOf(p.to) }))
+        .filter(p => p.to !== x.to || p.role !== 'other');
+      const isSale = sAttr ? true : cancel ? false : outLegs.length > 0 ? true : false;
+      if (isSale) {
+        const grossFromLegs = outLegs.reduce((s, p) => s + Number(p.amount), 0);
+        // net leg: anchored to the settle's seller when the attr names one
+        // (an outbid-refund leg can be larger than the net — size alone lies)
+        const otherLegs = outLegs.filter(p => p.role === 'other');
+        const sellerLeg = (sAttr && sAttr.seller ? otherLegs.filter(p => p.to === sAttr.seller) : otherLegs)
+          .sort((a, b) => Number(b.amount) - Number(a.amount))[0]
+          || otherLegs.sort((a, b) => Number(b.amount) - Number(a.amount))[0] || null;
+        const gross = (sAttr && sAttr.amount) || (grossFromLegs ? String(grossFromLegs) : null);
+        out.push({ ...base('sale', x.token_id), nft_contract: x.nft_contract,
+          buyer: x.to,
+          seller: (sAttr && sAttr.seller) || (sellerLeg && sellerLeg.to) || null,
+          denom: (sAttr && sAttr.denom) || (sellerLeg && sellerLeg.denom) || (outLegs[0] && outLegs[0].denom) || null,
+          gross_amount: gross,
+          seller_net: sellerLeg ? sellerLeg.amount : null,
+          marketplace_fee: (outLegs.find(p => p.role === 'marketplace_fee') || {}).amount || null,
+          royalty_fee: (outLegs.find(p => p.role === 'royalty') || {}).amount || null,
+          royalty_recipient: (outLegs.find(p => p.role === 'royalty') || {}).to || null,
+          auction_id: (sAttr && sAttr.auction_id) || (cancel && cancel.auction_id) || null,
+          legs: outLegs, payments_in: payments,
+          // honesty flag: when all three legs are measured, they must sum to gross
+          legs_consistent: (gross != null && outLegs.length)
+            ? String(outLegs.reduce((s, p) => s + Number(p.amount), 0)) === String(gross) : null,
+          resolution: sAttr ? 'attrs' : 'legs' });
+      } else {
+        out.push({ ...base('cancel', x.token_id), nft_contract: x.nft_contract,
+          returned_to: x.to,
+          auction_id: (cancel && cancel.auction_id) || null,
+          refund_legs: payouts.filter(p => p.to === x.to || !cancel).map(p => ({ ...p, role: roleOf(p.to) })),
+          resolution: cancel ? 'attrs' : 'no_payout' });
+      }
+    }
+    for (const x of entries) {
+      const cr = attrsFor(LIST_VERBS, x.token_id);
+      out.push({ ...base('list', x.token_id), nft_contract: x.nft_contract,
+        seller: x.from,
+        auction_id: (cr && cr.auction_id) || null,
+        listing_type: (cr && cr.auction_type) || null,
+        denom: (cr && cr.denom) || null,
+        reserve_price: (cr && (cr.reserve || cr.reserve_price)) || null,
+        resolution: cr ? 'attrs' : 'entry_only' });
+    }
+    // bid without an NFT exit in the same tx (deferred auction bid — money enters, NFT stays)
+    if (!exits.length) {
+      for (const a of mwasm.map(axAttrs).filter(a => a.action === 'place_bid')) {
+        out.push({ ...base('bid', a.token_id ?? null),
+          bidder: a.bidder || null, bid_amount: a.bid_amount || null,
+          auction_id: a.auction_id || null, resolution: 'attrs' });
+      }
+    }
   }
   return out;
 }
