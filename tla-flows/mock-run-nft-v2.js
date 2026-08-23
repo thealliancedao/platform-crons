@@ -91,6 +91,36 @@ console.log(`G2 bad sales: ${badSale.length}`, badSale.slice(0, 3));
 console.log(`G3 crossed: ${crossed.length}`, crossed.slice(0, 3));
 console.log(`G4 create==list: ${createEv} == ${lists} → ${createEv === lists}`);
 
+// G6 — REAL Atrium fixture: tx 995038E56D407FAEDEDD49188C5E9E108B5425E896E3F03B8CF5B0DA5720E994
+// (block 22478346, 2026-08-21): buy_nft listing 549, #6192, 49.99 SOLID, royalty 0, fee 0.
+// Events reconstructed verbatim from the chain explorer dump (owner-supplied fixture).
+{
+  const ATR = 'terra15du229lqcxkn939pmjgklqunftf604q4wz87kt5awj6reghec5jqs0w0kj';
+  const SOLID = 'terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst';
+  const BUYER = 'terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw';
+  const SELLER = 'terra1eykdj5xp2tgcauryaj65dc0d7dnu0ze2gt72wy';
+  const W = (c, kvs) => ({ type: 'wasm', attributes: Object.entries(kvs).reduce((a, [k, v]) => (a.push({ key: k, value: String(v) }), a), [{ key: '_contract_address', value: c }]) });
+  const tx = { txhash: '995038E56D407FAEDEDD49188C5E9E108B5425E896E3F03B8CF5B0DA5720E994',
+    height: 22478346, timestamp: '2026-08-21T18:48:42Z', code: 0, events: [
+      W(SOLID, { action: 'send', from: BUYER, to: ATR, amount: '49990000' }),
+      W(ATR, { action: 'buy_nft', buyer: BUYER, effective_fee_bps: '0', fee: '0', listing_id: '549',
+        nft_contract: NFT, price: '49990000', royalty: '0', seller: SELLER, seller_receives: '49990000', token_id: '6192' }),
+      W(SOLID, { action: 'transfer', amount: '49990000', from: ATR, to: SELLER }),
+      W(NFT, { action: 'transfer_nft', recipient: BUYER, sender: ATR, token_id: '6192' }),
+    ] };
+  const MK2 = { ...MARKETS, [ATR]: { label: 'Atrium marketplace', fee_wallet: null, royalty_recipients: MARKETS[BBL].royalty_recipients } };
+  const recs = AX.classifyNftTx(tx, { [NFT]: 'ADAO' }, MK2);
+  const s = recs.filter(r => r.action === 'sale');
+  const g6ok = s.length === 1 && s[0].resolution === 'attrs'
+    && s[0].buyer === BUYER && s[0].seller === SELLER
+    && s[0].gross_amount === '49990000' && s[0].denom === SOLID
+    && s[0].auction_id === '549' && s[0].token_id === '6192'
+    && s[0].seller_net === '49990000' && s[0].legs_consistent === true
+    && s[0].royalty_fee == null && (s[0].marketplace_fee == null || s[0].marketplace_fee === '0');
+  console.log(`G6 Atrium buy_nft fixture: ${g6ok ? 'PASS' : 'FAIL ' + JSON.stringify(s[0] || recs).slice(0, 400)}`);
+  if (!g6ok) { console.log('\nGATE FAIL'); process.exit(1); }
+}
+
 // G5 reconcile to sales-enriched
 const enr = JSON.parse(fs.readFileSync(CORE + '/nfts/adao/snapshots/sales-enriched.json'));
 const byKey = new Map(sales.map(s => [`${s.txhash}|${s.token_id}`, s]));

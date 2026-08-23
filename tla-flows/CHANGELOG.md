@@ -4,6 +4,21 @@ Module changelog for the block-walker (index.js, lib/aux-classifiers.js) and its
 gates. Page-facing changelogs live in tla-core/docs/changelogs/ — this file is
 for capture-layer changes only.
 
+## 2026-08-23 (later) — Atrium vocabulary fixture-locked; Jun-12→v2-deploy exits resolved
+
+The owner supplied a REAL Atrium sale (tx 995038E5…, 2026-08-21, #6192, 49.99
+SOLID, listing 549) — which corrected the record ("no sales since June 12" was a
+BBL-only-filter error in the audit) and locked Atrium's shape: `buy_nft` joins
+SALE_VERBS with attr normalization (price/listing_id → amount/auction_id). Gate
+G6 asserts the fixture end-to-end (buyer/seller/gross/denom/auction, legs
+consistent, fee 0 / royalty 0 as the chain says). Zero regression on the
+11,582-tx FCD suite. Companion one-off in tla-core
+(`nft-resolve-market-exits`) fetches every marketplace-exit tx since the last
+enriched sale from the LCD, archives the raw responses, and merges v2 records
+into the transfers months — the next warm's market-history pass appends the
+sales. Chain fact flagged: the Atrium sale paid ZERO royalty to the DAO (BBL
+enforces 5%) — a governance question, recorded in the registry note.
+
 ## 2026-08-23 — classifyNftTx v2: marketplace sales ride the walk (gated)
 
 **The Analytics tab's inputs had no maintainer.** `sales-enriched.json` (last sale
