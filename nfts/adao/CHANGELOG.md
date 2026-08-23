@@ -1,5 +1,22 @@
 # nfts/adao — changelog
 
+## market-history 1.1.0 — 2026-08-23 — unresolved-exit sentinel (the "never again" invariant)
+
+- Every marketplace exit is a sale or a delist — no third thing. The sentinel
+  (warm/full, trailing 60d, `SENTINEL_WINDOW_DAYS` overridable) flags every v1
+  exit record with no v2 sale/cancel record for the same tx: loud log lines +
+  `stats.unresolved_exits` and the tx list in market-history-heartbeat.json.
+  Motivated by the missed 2026-08-21 Atrium sale of #6192 (owner-caught).
+- Registry-driven marketplace set (nft_marketplace stream entries) — a new
+  venue is guarded the moment it's registered, no code change.
+- Gate G6 on the REAL committed 2026/08 month: the missed sale tx flags
+  pre-resolution, clears on resolution, window respected. Shape-aware: passes
+  both before and after the resolve-market-exits Action runs.
+- Companion: coverage & gap register appended to tla-core/docs/DATA-MAP.md
+  (FCD→walker seam Jan 7–9 2025, OTC invisibility, vocabulary lock status,
+  frozen-spot semantics).
+
+
 ## market-history 1.0.0 — 2026-08-23 — the ported duty (Analytics tab un-frozen)
 
 - **NEW module market-history.js** — forward maintenance of sales-enriched.json,

@@ -35,7 +35,8 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || 'nfts/adao/snapshots';
 const TRANSFERS_PATH = 'nfts/adao/transfers';
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.0.0';
+const VERSION = 'nft-market-history-1.1.0';
+const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
 // extended at runtime from historical enriched rows (denom → denom_symbol as
@@ -300,6 +301,28 @@ function maintainListingHistory(lh, v2events) {
   return { opened, closed, unmatched, total: recs.length };
 }
 
+// ---- 4. unresolved-exit sentinel -------------------------------------------
+// THE "NEVER AGAIN" INVARIANT. Every NFT that leaves a marketplace contract did
+// so as a SALE or a DELIST — there is no third thing. So every v1 exit record
+// (transfer_nft/send_nft FROM a registry marketplace) must have a v2 sale or
+// cancel record for the same tx. Any exit without one is a coverage hole and
+// gets screamed about — a heartbeat warning, not a lucky catch two days later
+// (which is exactly how the 2026-08-21 Atrium sale of #6192 was found).
+function findUnresolvedExits(monthDocs, marketAddrs, sinceIso) {
+  const resolvedTx = new Set();
+  const exits = [];
+  for (const doc of Object.values(monthDocs)) {
+    for (const r of (doc || [])) {
+      if (Number(r.schemaVersion) >= 2 && (r.action === 'sale' || r.action === 'cancel')) resolvedTx.add(r.txhash);
+      if (Number(r.schemaVersion) === 1 && (r.action === 'transfer_nft' || r.action === 'send_nft')
+          && marketAddrs.has(r.from) && r.timestamp > sinceIso) {
+        exits.push({ txhash: r.txhash, token_id: r.token_id, from: r.from, timestamp: r.timestamp });
+      }
+    }
+  }
+  return exits.filter(e => !resolvedTx.has(e.txhash));
+}
+
 // =============================================================================
 // IO shell
 // =============================================================================
@@ -340,9 +363,10 @@ async function main() {
   const lastSale = enr.sales.map(s => s.timestamp).sort().pop() || '2023-12-01T00:00:00Z';
   const scanFrom = new Date(Date.parse(lastSale) - 32 * 86400000).toISOString().slice(0, 10);
   const tMonths = monthsBetween(scanFrom, today);
-  const v2 = [];
+  const v2 = []; const tDocs = {};
   await Promise.all(tMonths.map(async m => {
     const doc = await fetchJson(RAW(`${TRANSFERS_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`));
+    tDocs[m] = doc;
     for (const r of (doc || [])) if (Number(r.schemaVersion) >= 2 && ['sale', 'list', 'cancel'].includes(r.action)) v2.push(r);
   }));
   const denomLearned = {};
@@ -354,6 +378,29 @@ async function main() {
 
   const lres = maintainListingHistory(lh, v2);   // sale records close listings too
   console.log(`  listing-history: +${lres.opened} opened, ${lres.closed} closed${lres.unmatched ? `, ⚠ ${lres.unmatched} unmatched close(s)` : ''} → ${lres.total}`);
+
+  // 4) unresolved-exit sentinel over the trailing window (registry marketplaces)
+  let unresolved = [];
+  try {
+    const reg = await fetchJson(RAW('tla-voting/capture-registry.json'));
+    const marketAddrs = new Set((reg && reg.contracts || []).filter(c => (c.streams || []).includes('nft_marketplace')).map(c => c.address));
+    if (marketAddrs.size) {
+      const sinceIso = new Date(Date.now() - SENTINEL_WINDOW_DAYS * 86400000).toISOString();
+      const sMonths = monthsBetween(sinceIso.slice(0, 10), today);
+      const sDocs = {};
+      await Promise.all(sMonths.map(async m => {
+        sDocs[m] = tDocs[m] !== undefined ? tDocs[m] : await fetchJson(RAW(`${TRANSFERS_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`));
+      }));
+      unresolved = findUnresolvedExits(sDocs, marketAddrs, sinceIso);
+      if (unresolved.length) {
+        console.warn(`  ⚠⚠ SENTINEL: ${unresolved.length} marketplace exit(s) in the last ${SENTINEL_WINDOW_DAYS}d have NO sale/cancel resolution — every exit is one or the other; these are coverage holes:`);
+        for (const e of unresolved.slice(0, 20)) console.warn(`     ${e.timestamp.slice(0, 10)} #${e.token_id} tx ${e.txhash.slice(0, 10)}… from …${e.from.slice(-6)}`);
+        if (unresolved.length > 20) console.warn(`     … and ${unresolved.length - 20} more`);
+      } else {
+        console.log(`  ✓ sentinel: every marketplace exit in the last ${SENTINEL_WINDOW_DAYS}d resolves to a sale or cancel`);
+      }
+    } else console.warn('  ⚠ sentinel skipped: no nft_marketplace entries readable from registry');
+  } catch (e) { console.warn(`  ⚠ sentinel errored (non-fatal): ${e.message}`); }
 
   // publish (order: dailies first — the enricher's numbers cite them)
   await publish(`${NFT_PATH}/luna-usd-daily.json`, lunaDaily, `market-history: luna-usd-daily +${f1.added} days`);
@@ -367,10 +414,13 @@ async function main() {
     capturedAt: new Date().toISOString(),
     stats: { luna_days_added: f1.added, bluna_days_added: f2.added,
       sales_added: sres.added, sales_ambiguous_skipped: sres.skippedAmbiguous,
-      listings_opened: lres.opened, listings_closed: lres.closed, unmatched_closes: lres.unmatched },
+      listings_opened: lres.opened, listings_closed: lres.closed, unmatched_closes: lres.unmatched,
+      unresolved_exits: unresolved.length,
+      unresolved_exit_txs: unresolved.slice(0, 20).map(e => ({ tx: e.txhash, token_id: e.token_id, at: e.timestamp })) },
+    sentinel_window_days: SENTINEL_WINDOW_DAYS,
   }, 'market-history heartbeat');
   console.log('  done');
 }
 
-module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, DENOM_MAP };
+module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP };
 if (require.main === module) main().catch(e => { console.error('market-history failed:', e.message); process.exit(1); });

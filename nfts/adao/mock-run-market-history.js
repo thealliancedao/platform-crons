@@ -132,6 +132,33 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   check('G4 idempotent list (same auction_id re-fed opens 0)', MH.maintainListingHistory(lh, [ev[0]]).opened === 0);
 }
 
+// ---------- G6: unresolved-exit sentinel (real months, real fixture) ---------
+{
+  const ATR = 'terra15du229lqcxkn939pmjgklqunftf604q4wz87kt5awj6reghec5jqs0w0kj';
+  const BBL6 = 'terra1ej4cv98e9g2zjefr5auf2nwtq4xl3dm7x0qml58yna2ml2hk595s7gccs9';
+  const BO = 'terra1kj7pasyahtugajx9qud02r5jqaf60mtm7g5v9utr94rmdfftx0vqspf4at';
+  const markets = new Set([ATR, BBL6, BO]);
+  const aug = P('nfts/adao/transfers/2026/08.json');
+  const SALE_TX = '995038E56D407FAEDEDD49188C5E9E108B5425E896E3F03B8CF5B0DA5720E994';
+  const hasV2ForSale = aug.some(r => Number(r.schemaVersion) >= 2 && r.txhash === SALE_TX && (r.action === 'sale' || r.action === 'cancel'));
+  const un1 = MH.findUnresolvedExits({ '2026-08': aug }, markets, '2026-06-12T00:00:00Z');
+  if (hasV2ForSale) {
+    // post-resolve-Action state: the known sale must NOT flag
+    check('G6 sentinel: resolved sale tx does not flag', !un1.some(e => e.txhash === SALE_TX), `${un1.length} unresolved remain`);
+  } else {
+    // pre-resolve state: the known missed sale MUST flag
+    check('G6 sentinel: the missed Atrium sale flags as unresolved', un1.some(e => e.txhash === SALE_TX), `${un1.length} unresolved`);
+    // merging its v2 sale record clears exactly that flag
+    const v2sale = { schemaVersion: 2, k: `${SALE_TX}|${ATR}|sale|6192|11`, txhash: SALE_TX, height: 22478346,
+      timestamp: '2026-08-21T18:48:42Z', contract: ATR, action: 'sale', token_id: '6192' };
+    const un2 = MH.findUnresolvedExits({ '2026-08': [...aug, v2sale] }, markets, '2026-06-12T00:00:00Z');
+    check('G6 sentinel: resolution clears the flag', !un2.some(e => e.txhash === SALE_TX) && un2.length === un1.length - un1.filter(e => e.txhash === SALE_TX).length);
+  }
+  // exits outside the window never flag
+  const un3 = MH.findUnresolvedExits({ '2026-08': aug }, markets, '2026-08-22T00:00:00Z');
+  check('G6 sentinel: window respected', un3.every(e => e.timestamp > '2026-08-22T00:00:00Z'));
+}
+
 // ---------- G5: flows.js delisting→sale upgrade ------------------------------
 {
   const flows = require('./flows.js');
