@@ -673,7 +673,7 @@ async function main() {
 
     const payload = {
         meta: {
-            version: 'dao-dashboard-1.3-lion-scan',
+            version: 'dao-dashboard-1.4-daily-index',
             epoch,
             phase: 'live',
             generated_at: new Date().toISOString(),
@@ -714,6 +714,17 @@ async function main() {
         const existing = await githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${archivePath}?ref=${GITHUB_BRANCH}`);
         if (existing.status === 404) {
             await pushToGithub(archivePath, json, `dao-dashboard daily archive ${day}`);
+            // 1.4 (2026-08-22): maintain daily/index.json — the list of dates that exist, so pages
+            // fetch exactly those files instead of probing every calendar day (owner HARs: 60+
+            // 404s per load). Migrated legacy epoch-end rows (Dec 2025–May 2026) are in the same
+            // folder and the same index, flagged migrated_dates — one path, deeper history.
+            try {
+                const idxPath = 'member-data/dao-dashboard/daily/index.json';
+                const cur = await githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${idxPath}?ref=${GITHUB_BRANCH}`);
+                let idx = { schemaVersion: 1, product: 'member-data/dao-dashboard/daily/index', note: 'Dates with a daily archive. Maintained by the dao-dashboard cron on every archive write; migrated rows listed in migrated_dates.', dates: [], migrated_dates: [] };
+                if (cur.status === 200 && cur.data && cur.data.content) { try { idx = JSON.parse(Buffer.from(cur.data.content, 'base64').toString('utf8')); } catch (_) {} }
+                if (!idx.dates.includes(day)) { idx.dates = [...new Set([...idx.dates, day])].sort(); idx.updated_at = new Date().toISOString(); await pushToGithub(idxPath, JSON.stringify(idx, null, 1), `dao-dashboard daily index +${day}`); }
+            } catch (e) { console.warn(`  ⚠ daily index skipped: ${e.message}`); }
         }
     } catch (e) { console.warn(`  ⚠ daily archive skipped: ${e.message}`); }
 
