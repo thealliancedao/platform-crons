@@ -99,21 +99,26 @@ const AX = require('./lib/aux-classifiers.js');
 let AUX = null;
 const AUX_DIRS = { votion: 'votion/events', dex: 'dex-liquidity/events', nft: 'nfts/adao/transfers', samples: 'price-history/reserve-implied' };
 function parseAuxRegistry(reg) {
-    const vaults = {}, pairs = {}, nfts = {}; const watch = new Set();
+    const vaults = {}, pairs = {}, nfts = {}, markets = {}; const watch = new Set();
     for (const c of (reg && reg.contracts) || []) {
         const s = c.streams || [];
         if (s.includes('votion_flows')) { vaults[c.address] = { vdenom: c.vdenom, lst: c.lst }; watch.add(c.address); }
         if (s.includes('dex_liquidity')) { pairs[c.address] = { name: (c.label.match(/pair ([^ ]+)/) || [])[1] || c.label }; watch.add(c.address); }
         if (s.includes('nft_transfers')) { nfts[c.address] = c.label; watch.add(c.address); }
+        if (s.includes('nft_marketplace')) {   // classifyNftTx v2: sale/list/cancel/bid lifecycle
+            markets[c.address] = { label: c.label, fee_wallet: c.fee_wallet || null,
+                royalty_recipients: c.royalty_recipients || [] };
+            watch.add(c.address);
+        }
     }
-    return { vaults, pairs, nfts, watch };
+    return { vaults, pairs, nfts, markets, watch };
 }
 async function loadAuxRegistry() {
     const url = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/tla-voting/capture-registry.json?t=${Date.now()}`;
     const reg = await tryGetJson(url, 'capture-registry (aux watch-sets)');
     if (!reg) return null;
     const a = parseAuxRegistry(reg);
-    console.log(`  aux registry: ${Object.keys(a.vaults).length} vaults, ${Object.keys(a.pairs).length} pairs, ${Object.keys(a.nfts).length} nft contracts watched`);
+    console.log(`  aux registry: ${Object.keys(a.vaults).length} vaults, ${Object.keys(a.pairs).length} pairs, ${Object.keys(a.nfts).length} nft contracts, ${Object.keys(a.markets).length} marketplaces watched`);
     return a;
 }
 // day-sample merge: same pair+date keeps the HIGHEST-height sample (last swap
@@ -238,7 +243,7 @@ async function walkBlocks(from, to, budgetNote) {
           aux.votion.push(...AX.classifyVotionTx(txr, AUX.vaults));
           const pr = AX.classifyPairLiquidityTx(txr, AUX.pairs);
           aux.dex.push(...pr.records); aux.rawSamples.push(...pr.swapSamples);
-          aux.nft.push(...AX.classifyNftTx(txr, AUX.nfts));
+          aux.nft.push(...AX.classifyNftTx(txr, AUX.nfts, AUX.markets));
         }
       }
     }
