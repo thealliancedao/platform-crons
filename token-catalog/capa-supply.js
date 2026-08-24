@@ -1,5 +1,5 @@
 // =============================================================================
-// CAPA Supply Map — org-token-catalog duty (v1, 2026-08-24)
+// CAPA Supply Map — org-token-catalog duty (v1.1, 2026-08-24)
 // =============================================================================
 // SPEC: tla-core/docs/pending-changes/SPEC-capa-supply-map.md
 // Gate values: capa-supply-probe v2 run 2026-08-24T04:03Z (artifact 9506487143).
@@ -12,6 +12,19 @@
 // Laws honoured: null-vs-0 (a failed query is null and degrades status, never a
 // silent 0); rates from live contracts at capture, never constants; unexplained
 // remainders published as *_unattributed, never dropped.
+//
+// v1.1 (first live publish, guard_failed on 3 — each was a real fact):
+//  1. The hub holds NO idle CAPA: it STAKES its CAPA in Solid governance. So the
+//     gov contract's balance CONTAINS the hub. in_hub now reads hub state{};
+//     gov splits into hub-portion (gov staker{hub}) + direct stakers; the
+//     cross-check is hub-state ≈ hub's gov staker balance.
+//  2. Astroport-config staking forwards LP into Astroport Incentives — the
+//     staking contract's cw20 balance is 0 by design. Staked totals now come
+//     from `total_staked_balances` (post-take amounts).
+//  3. Amp/non-amp split now uses the COMPOUNDER'S OWN entry in
+//     `all_staked_balances{address: compounder}` — same post-take basis as the
+//     total, so the split can't go negative from take-rate drift. Rate-implied
+//     amp is gone (rates still published).
 
 'use strict';
 
@@ -34,7 +47,7 @@ const C = {
 };
 
 const GUARD_TOLERANCE = 0.0001;   // 0.01% — SPEC guard band
-const num = (v) => (v == null ? null : Number(v) / 1e6);
+const num = (v) => { if (v == null) return null; const n = Number(v) / 1e6; return Number.isFinite(n) ? n : null; };   // NaN is a lie, not a number (v1.1 gate finding)
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 // deps = { queryContract, fetchJson, lcdBase } — injected so the mock gate can
@@ -54,40 +67,59 @@ async function captureCapaSupply(deps) {
   const val = (r, pick) => { if (!r || r.__err) { if (r) errors.push(r.__err); return null; } try { return pick(r); } catch { return null; } };
 
   // ---- level 1: CAPA ---------------------------------------------------------
-  const [tokenInfo, govBal, hubState, astroPool, astroLpInfo, ssPool] = await Promise.all([
+  const [tokenInfo, govBal, hubState, hubGovStake, astroPool, astroLpInfo, ssPool] = await Promise.all([
     q(C.CAPA_TOKEN, { token_info: {} }),
     q(C.CAPA_TOKEN, { balance: { address: C.CAPA_GOV } }),
     q(C.AMPCAPA_HUB, { state: {} }),
+    q(C.CAPA_GOV, { staker: { address: C.AMPCAPA_HUB } }),   // v1.1: the hub's stake INSIDE gov
     q(C.ASTRO_PAIR, { pool: {} }),
     q(C.ASTRO_LP, { token_info: {} }),
     q(C.SS_PAIR, { pool: {} }),
   ]);
   const totalSupply = val(tokenInfo, (r) => num(r.total_supply));
-  const govStaked   = val(govBal, (r) => num(r.balance));                      // the gov contract HOLDS the staked CAPA
+  const govContractBal = val(govBal, (r) => num(r.balance));        // hub portion + direct stakers + accrued
   const hubRate     = val(hubState, (r) => Number(r.exchange_rate));
-  const inHubState  = val(hubState, (r) => num(r.total_utoken ?? r.total_ustake ?? r.total_native));
-  const inHubBal    = await (async () => val(await q(C.CAPA_TOKEN, { balance: { address: C.AMPCAPA_HUB } }), (r) => num(r.balance)))();
+  const inHub       = val(hubState, (r) => num(r.total_utoken ?? r.total_ustake ?? r.total_native));
+  const hubInGov    = val(hubGovStake, (r) => num(r.balance));
+  const govDirect   = [govContractBal, hubInGov].every(isNum) ? govContractBal - hubInGov : null;
   const capaReserveOf = (pool) => val(pool, (r) => num((r.assets.find(a => JSON.stringify(a.info).includes(C.CAPA_TOKEN)) || {}).amount));
   const astroCapa   = capaReserveOf(astroPool);
   const ssCapa      = capaReserveOf(ssPool);
   const astroLpSupply = val(astroLpInfo, (r) => num(r.total_supply));
   const ssLpSupply    = await supplyOf(C.SS_LP_DENOM);
 
-  // cross-check the two independent reads of CAPA-in-hub (state vs cw20 balance)
-  const hubAgree = isNum(inHubState) && isNum(inHubBal)
-    ? Math.abs(inHubState - inHubBal) <= Math.max(1, inHubBal) * GUARD_TOLERANCE : null;
-  const inHub = isNum(inHubBal) ? inHubBal : inHubState;   // balance is the holding truth; state is the cross-check
+  // v1.1 cross-check: the hub's position per its OWN state vs per the gov
+  // contract's books. (The hub may hold a sliver un-staked, so tolerance only.)
+  const hubAgree = isNum(inHub) && isNum(hubInGov)
+    ? Math.abs(inHub - hubInGov) <= Math.max(1, inHub) * 0.005 : null;   // 0.5%: accrual timing between the two books
 
   // ---- level 2: ampCAPA ------------------------------------------------------
-  const [ampSupply, ampInSingle, amplpAmpSupply, amplpAstroSupply, amplpSsSupply, rates, daoTotal] = await Promise.all([
+  const [ampSupply, amplpAmpSupply, amplpAstroSupply, amplpSsSupply, rates, daoTotal,
+         singleTotals, projectTotals, compSingle, compProject] = await Promise.all([
     supplyOf(C.AMPCAPA_DENOM),
-    bankDenom(C.TLA_STAKE_SINGLE, C.AMPCAPA_DENOM),        // ALL ampCAPA staked in TLA single (non-amp + compounder-routed)
     supplyOf(C.AMPLP_AMPCAPA),
     supplyOf(C.AMPLP_ASTRO_LP),
     supplyOf(C.AMPLP_SS_LP),
     q(C.VE3_COMPOUNDER, { amplp_exchange_rates: {} }),
     q(C.AMPCAPA_DAO_VOTE, { total_power_at_height: {} }),
+    // v1.1: post-take staked amounts from the staking contracts' own books —
+    // the ONLY basis on which totals and the compounder's share can be compared.
+    q(C.TLA_STAKE_SINGLE, { total_staked_balances: {} }),
+    q(C.TLA_STAKE_PROJECT, { total_staked_balances: {} }),
+    q(C.TLA_STAKE_SINGLE, { all_staked_balances: { address: C.VE3_COMPOUNDER } }),
+    q(C.TLA_STAKE_PROJECT, { all_staked_balances: { address: C.VE3_COMPOUNDER } }),
   ]);
+  const amountFor = (res, matcher) => val(res, (r) => {
+    const rows = Array.isArray(r) ? r : (r.balances || []);
+    const hit = rows.find(x => JSON.stringify(x.asset && x.asset.info).includes(matcher));
+    return hit ? num(hit.asset.amount) : 0;   // contract answered; asset absent = confirmed 0
+  });
+  const ampInSingle   = amountFor(singleTotals, C.AMPCAPA_DENOM);
+  const ampViaCompCtr = amountFor(compSingle, C.AMPCAPA_DENOM);
+  const astroLpStakedT = amountFor(projectTotals, C.ASTRO_LP);
+  const astroLpAmpCtr  = amountFor(compProject, C.ASTRO_LP);
+  const ssLpStakedT    = amountFor(projectTotals, C.SS_LP_DENOM);
+  const ssLpAmpCtr     = amountFor(compProject, C.SS_LP_DENOM);
   const rateFor = (denom) => val(rates, (r) => {
     const rows = r.exchange_rates || r;   // tolerate either shape
     const hit = (Array.isArray(rows) ? rows : []).find(x => JSON.stringify(x).includes(denom));
@@ -95,30 +127,30 @@ async function captureCapaSupply(deps) {
     const v = Array.isArray(hit) ? hit[1] : (hit.exchange_rate ?? hit.rate);
     return v == null ? null : Number(v);
   });
-  const ampcapaAmplpRate = rateFor(C.AMPLP_AMPCAPA);       // ampCAPA per receipt — live, never a constant
-  const ampViaCompounder = isNum(amplpAmpSupply) && isNum(ampcapaAmplpRate) ? amplpAmpSupply * ampcapaAmplpRate : null;
-  const ampNonAmp        = isNum(ampInSingle) && isNum(ampViaCompounder) ? ampInSingle - ampViaCompounder : null;
+  const ampcapaAmplpRate = rateFor(C.AMPLP_AMPCAPA);       // published for reference; NOT used for the split (v1.1)
+  const ampViaCompounder = ampViaCompCtr;
+  const ampNonAmp        = [ampInSingle, ampViaCompounder].every(isNum) ? ampInSingle - ampViaCompounder : null;
   const daoPower         = val(daoTotal, (r) => num(r.power));
   // receipt not in the DAO = held in wallets OR unbonding (claims are per-wallet;
   // v1 cannot total them, so the remainder is published as one labeled bucket).
   const receiptOutsideDao = isNum(amplpAmpSupply) && isNum(daoPower) ? amplpAmpSupply - daoPower : null;
   const ampLiquid        = [ampSupply, ampInSingle].every(isNum) ? ampSupply - ampInSingle : null;
 
-  // ---- LP split (CAPA side) --------------------------------------------------
+  // ---- LP split (CAPA side, v1.1: one post-take basis) -----------------------
   const capaPerAstroLp = isNum(astroCapa) && isNum(astroLpSupply) && astroLpSupply > 0 ? astroCapa / astroLpSupply : null;
-  const astroLpStaked  = await (async () => val(await q(C.ASTRO_LP, { balance: { address: C.TLA_STAKE_PROJECT } }), (r) => num(r.balance)))();
-  const astroAmplpRate = rateFor(C.AMPLP_ASTRO_LP);        // LP per receipt
-  const astroLpAmp     = isNum(amplpAstroSupply) && isNum(astroAmplpRate) ? amplpAstroSupply * astroAmplpRate : null;
-  const astroLpNonAmp  = isNum(astroLpStaked) && isNum(astroLpAmp) ? astroLpStaked - astroLpAmp : null;
+  const astroAmplpRate = rateFor(C.AMPLP_ASTRO_LP);
+  const astroLpStaked  = astroLpStakedT;
+  const astroLpAmp     = astroLpAmpCtr;
+  const astroLpNonAmp  = [astroLpStaked, astroLpAmp].every(isNum) ? astroLpStaked - astroLpAmp : null;
   const capaPerSsLp    = isNum(ssCapa) && isNum(ssLpSupply) && ssLpSupply > 0 ? ssCapa / ssLpSupply : null;
-  const ssLpStaked     = await bankDenom(C.TLA_STAKE_PROJECT, C.SS_LP_DENOM);
   const ssAmplpRate    = rateFor(C.AMPLP_SS_LP);
-  const ssLpAmp        = isNum(amplpSsSupply) && isNum(ssAmplpRate) ? amplpSsSupply * ssAmplpRate : null;
-  const ssLpNonAmp     = isNum(ssLpStaked) && isNum(ssLpAmp) ? ssLpStaked - ssLpAmp : null;
+  const ssLpStaked     = ssLpStakedT;
+  const ssLpAmp        = ssLpAmpCtr;
+  const ssLpNonAmp     = [ssLpStaked, ssLpAmp].every(isNum) ? ssLpStaked - ssLpAmp : null;
 
   // ---- assemble + guards -----------------------------------------------------
   const level1 = {
-    'capa.gov_staked': govStaked,
+    'capa.gov_staked_direct': govDirect,     // v1.1: hub's stake lives inside gov — split out
     'capa.in_hub': inHub,
     'capa.in_lp.astro': astroCapa,
     'capa.in_lp.ss': ssCapa,
@@ -140,7 +172,7 @@ async function captureCapaSupply(deps) {
     ? Math.abs(ampSupply * hubRate - inHub) <= inHub * GUARD_TOLERANCE : null;
 
   const guards = {
-    hub_state_vs_balance: hubAgree,
+    hub_state_vs_gov_books: hubAgree,
     level2_sums_to_ampcapa_supply: l2Guard,
     ampcapa_supply_x_rate_equals_in_hub: l2HubGuard,
     liquid_non_negative: isNum(liquid) ? liquid >= 0 : null,
@@ -162,8 +194,8 @@ async function captureCapaSupply(deps) {
     capa: {
       total_supply: totalSupply,
       liquid_derived: liquid,      // remainder: wallets + anything v1 has no read for (labeled, never hidden)
-      gov_staked: govStaked,
-      in_hub: inHub, in_hub_state_read: inHubState,
+      gov_contract_balance: govContractBal, gov_hub_portion: hubInGov, gov_staked_direct: govDirect,
+      in_hub: inHub,
       in_lp: {
         astro: { capa: astroCapa, lp_supply: astroLpSupply, lp_staked_tla: astroLpStaked, lp_amp: astroLpAmp, lp_nonamp: astroLpNonAmp },
         ss:    { capa: ssCapa, lp_supply: ssLpSupply, lp_staked_tla: ssLpStaked, lp_amp: ssLpAmp, lp_nonamp: ssLpNonAmp },
