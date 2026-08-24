@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.3';   // 1.0.2 shipped without bumping this string (2026-08-19); corrected here
+const VERSION       = 'org-system-health-1.0.4';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -209,6 +209,7 @@ const FRESHNESS_MAP = [
     // (~5h observed cadence) but is its own product — its own row, read from
     // the product itself (it carries capturedAt; no separate heartbeat).
     { product: 'capa-supply',        kind: 'cron',    path: 'token-catalog/supply/capa/current.json',     ts: ['capturedAt'],                max_age_h: 12 },
+    { product: 'fuel-supply',        kind: 'cron',    path: 'token-catalog/supply/fuel/current.json',     ts: ['capturedAt'],                max_age_h: 12 },   // 2026-08-24: Boost DAO (Neutron) + Terra IBC map
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
 async function invHeartbeatFreshness(reader, now) {

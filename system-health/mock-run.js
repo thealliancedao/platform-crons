@@ -76,6 +76,7 @@ function healthyRepo() {
         'dex-data/credia/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
         'votion/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', vaults_at: '2026-07-16T11:00:00Z', positions_at: '2026-07-16T02:00:00Z' },   // latest day 26h < 50h → fresh
         'token-catalog/supply/capa/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },   // capa-supply v2 row (2026-08-24): the product IS the heartbeat
+        'token-catalog/supply/fuel/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },   // fuel-supply v1 row (2026-08-24)
     };
 }
 // fix the healthy fixture note above: NOT-TLA pool must satisfy INV2
@@ -145,6 +146,12 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO['token-catalog/supply/capa/current.json'].capturedAt = '2026-07-15T12:00:00Z';   // 24h > 12h
     out = await M.run();
     check('R4b capa-supply stale via its own capturedAt (12h band)', out.invariants.heartbeat_freshness.status === 'violation' && JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('capa-supply'));
+
+    console.log('— R4c: fuel-supply row (2026-08-24) —');
+    REPO = fixNotTla(healthyRepo());
+    delete REPO['token-catalog/supply/fuel/current.json'];   // absent product must show, not vanish
+    out = await M.run();
+    check('R4c fuel-supply absent → listed stale', out.invariants.heartbeat_freshness.status === 'violation' && JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('fuel-supply'));
 
     console.log('— R5: coverage drop alarm —');
     REPO = fixNotTla(healthyRepo());
