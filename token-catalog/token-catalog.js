@@ -1141,6 +1141,19 @@ async function run() {
     console.log('  ✓ token-catalog/snapshots/index.json');
     await publishFile('token-catalog/snapshots/heartbeat.json', hbContent, `heartbeat ${status}`);
     console.log('  ✓ token-catalog/snapshots/heartbeat.json');
+
+    // ── CAPA supply map duty (v1, 2026-08-24 — SPEC-capa-supply-map.md) ─────
+    // Isolated: a supply-map failure NEVER takes the catalog publish down with
+    // it (same isolation contract as appendToPriceHistory above).
+    try {
+      const { captureCapaSupply } = require('./capa-supply.js');
+      const supplyDoc = await captureCapaSupply({ queryContract, fetchJson, lcdBase: TERRA_LCD_PRIMARY });
+      await publishFile('token-catalog/supply/capa/current.json', JSON.stringify(supplyDoc, null, 2),
+        `capa supply map ${supplyDoc.status}`);
+      console.log(`  ✓ token-catalog/supply/capa/current.json (${supplyDoc.status}${supplyDoc.guard_failures.length ? ' — GUARDS: ' + supplyDoc.guard_failures.join(',') : ''})`);
+    } catch (e) {
+      console.error('  ✗ capa supply map failed (catalog publish unaffected):', String(e.message || e).slice(0, 200));
+    }
   } else {
     console.log('  (no GITHUB_TOKEN — wrote local token-catalog.json + heartbeat.json only)');
   }
