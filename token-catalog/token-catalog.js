@@ -1189,6 +1189,24 @@ async function run() {
     } catch (e) {
       console.error('  ✗ capa supply map step failed (catalog publish unaffected):', String(e.message || e).slice(0, 200));
     }
+
+    // ── FUEL supply map duty (v1, 2026-08-24 — Boost DAO on Neutron + Terra IBC) ──
+    // Same isolation contract. Neutron LCD via env NEUTRON_LCD (default publicnode).
+    try {
+      const FS = require('./fuel-supply.js');
+      const readIdx2 = async (p) => { try { return await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`, p); } catch (e) { return /HTTP 404/.test(String(e.message)) ? null : undefined; } };
+      const { doc: fuelDoc, wallets: fuelWallets } = await FS.captureFuelSupply({ fetchJson, terraLcdBase: TERRA_LCD_PRIMARY, neutronLcdBase: process.env.NEUTRON_LCD || undefined, catalogPools: pools });
+      await publishFile('token-catalog/supply/fuel/current.json', JSON.stringify(fuelDoc, null, 2), `fuel supply map ${fuelDoc.status}`);
+      await publishFile('token-catalog/supply/fuel/wallets.json', JSON.stringify(fuelWallets, null, 1), `fuel supply wallets ${fuelWallets.status} — ${fuelWallets.counts.rows_published} rows`);
+      console.log(`  ✓ token-catalog/supply/fuel/{current,wallets}.json (${fuelDoc.status} — stakers ${fuelDoc.neutron.boost_stakers}, staked ${fuelDoc.neutron.boost_staked}, treasury ${fuelDoc.neutron.boost_treasury}, bridged ${fuelDoc.neutron.bridged_to_terra}, ${fuelWallets.counts.rows_published} rows + tail ${fuelWallets.counts.tail_below_floor}${fuelDoc.guard_failures.length ? ' — GUARDS: ' + fuelDoc.guard_failures.join(',') : ''}${fuelDoc.incomplete_enumerations.length ? ' — INCOMPLETE: ' + fuelDoc.incomplete_enumerations.join(',') : ''})`);
+      for (const [k, v] of Object.entries(fuelDoc.sum_guards)) if (v.ok !== true) console.log(`     guard ${k}: ok=${v.ok} sum=${v.sum} expected=${v.expected}`);
+      if (fuelDoc.query_errors.length) console.log(`     query_errors: ${fuelDoc.query_errors.join(' | ')}`);
+      const fidx = FS.upsertIndex(await readIdx2('token-catalog/supply/fuel/index.json'), fuelDoc);
+      await publishFile('token-catalog/supply/fuel/index.json', JSON.stringify(fidx, null, 2), `fuel supply index — ${fidx.date_range.to} (${fidx.row_count} rows)`);
+      console.log(`  ✓ token-catalog/supply/fuel/index.json (${fidx.row_count} rows)`);
+    } catch (e) {
+      console.error('  ✗ fuel supply map step failed (catalog publish unaffected):', String(e.message || e).slice(0, 200));
+    }
   } else {
     console.log('  (no GITHUB_TOKEN — wrote local token-catalog.json + heartbeat.json only)');
   }
