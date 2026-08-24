@@ -477,6 +477,42 @@ async function captureUnclaimed(prices, ampRatio) {
 }
 
 // ── Section: DAO treasury (main-wallet balances, legacy shape) ──────────────
+// ── Section: last claims (2026-08-24) ────────────────────────────────────────
+// The index page's "Last claimed" labels were HARDCODED constants (Sep/Dec 2025)
+// and had drifted 6–10 months from chain. tla-flows captures every DAO
+// execution: the treasury's `claim` events carry raw_actions naming which
+// mechanism ran. Classify by action (a tx can be several), keep the latest per
+// mechanism. null = no such event in the window (unknown), never a made-up date.
+const URL_FLOWS_MONTH = (y, m) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-flows/events/${y}/${String(m).padStart(2, '0')}.json`;
+const LAST_CLAIM_WINDOW_MONTHS = 18;
+const CLAIM_KINDS = {                 // mechanism → raw action that proves it ran
+    deposit: 'asset/claim_rewards',   // staking-contract rewards (ca/withdraw follows)
+    vote:    'bribe/claim_bribes',
+    rebase:  'gauge/claim_rebase',
+    locks:   've/deposit_for',        // re-lock / deposit_for = the lock adjustment
+};
+function deriveLastClaims(events, daoWallet = DAO_MAIN_WALLET) {
+    const out = Object.fromEntries(Object.keys(CLAIM_KINDS).map(k => [k, null]));
+    for (const e of events) {
+        if (!e || e.user !== daoWallet || e.type !== 'claim') continue;
+        const acts = new Set(e.raw_actions || []);
+        for (const [kind, action] of Object.entries(CLAIM_KINDS)) {
+            if (!acts.has(action)) continue;
+            if (!out[kind] || e.timestamp > out[kind].timestamp) out[kind] = { timestamp: e.timestamp, date: String(e.timestamp).slice(0, 10), txhash: e.txhash, height: e.height ?? null };
+        }
+    }
+    return out;
+}
+async function captureLastClaims() {
+    const now = new Date(); const months = [];
+    for (let i = 0; i < LAST_CLAIM_WINDOW_MONTHS; i++) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); months.push([d.getUTCFullYear(), d.getUTCMonth() + 1]); }
+    const files = await Promise.all(months.map(([y, m]) => fetchJson(URL_FLOWS_MONTH(y, m) + `?t=${Date.now()}`, `tla-flows ${y}-${m}`).catch(() => null)));
+    const missing = files.filter(f => f === null).length;
+    const events = files.flatMap(f => Array.isArray(f) ? f : []);
+    const last = deriveLastClaims(events);
+    return { ...last, source: 'tla-flows events (DAO treasury claim executions)', window_months: LAST_CLAIM_WINDOW_MONTHS, months_read: files.length - missing, months_missing: missing, note: 'null = no such claim seen in the window, not "never"' };
+}
+
 // Legacy v3 dashboard.treasury = [{token, amount, price, usd}] for the main
 // wallet's native + cw20 holdings. dao_treasury.html uses this as the snapshot
 // baseline for its "What Changed" comparison, and the daily archives give the
@@ -660,6 +696,9 @@ async function main() {
 
     try { alliances = await captureLionAlliance(); console.log(`  lion_dao: ${alliances.lion_dao.chain_staking.validators[0].staked_luna} LUNA staked`); }
     catch (e) { errors.push(`alliances: ${e.message}`); }
+    let lastClaims = null;   // isolated: a flows read failure never blocks the dashboard
+    try { lastClaims = await captureLastClaims(); console.log(`  last_claims: deposit ${lastClaims.deposit && lastClaims.deposit.date} · vote ${lastClaims.vote && lastClaims.vote.date} · rebase ${lastClaims.rebase && lastClaims.rebase.date} · locks ${lastClaims.locks && lastClaims.locks.date} (${lastClaims.months_read} months read)`); }
+    catch (e) { console.error('  last_claims failed (isolated):', e.message); errors.push('last_claims: ' + e.message); }
 
     let treasury = null;
     try { treasury = await captureTreasury(prices); console.log(`  treasury: $${treasury.total_usd.toFixed(2)} across ${treasury.tokens.length} tokens`); }
@@ -673,7 +712,7 @@ async function main() {
 
     const payload = {
         meta: {
-            version: 'dao-dashboard-1.4-daily-index',
+            version: 'dao-dashboard-1.5-last-claims',
             epoch,
             phase: 'live',
             generated_at: new Date().toISOString(),
@@ -688,6 +727,7 @@ async function main() {
             rebase:            unclaimed ? unclaimed.rebase : null,
             tla_deposits:      deposits,
             alliances:         alliances,
+            last_claims:       lastClaims,
         },
         token_prices: prices,
     };
@@ -732,7 +772,7 @@ async function main() {
 }
 
 // Exported for offline transform testing (sandbox can't reach the LCD)
-module.exports = { main, aggregateDeposits, aggregateUnclaimed, resolveAssetInfo, flattenPrices };
+module.exports = { main, aggregateDeposits, aggregateUnclaimed, resolveAssetInfo, flattenPrices, deriveLastClaims, CLAIM_KINDS };
 
 if (require.main === module) {
     main().catch(e => { console.error('FATAL:', e); process.exit(1); });
