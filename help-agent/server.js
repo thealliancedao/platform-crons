@@ -58,6 +58,9 @@ const CORPUS_SOURCES = [
   // v1.11.2 (2026-08-23): aDAO's own mechanics (daily claim, 90/10 split, break) — the ally page's questions answered from receipts.
   ['alliance-dao',      `${CORE}/docs/ecosystem-knowledge/alliance-dao.md`],
   ['alliance-dao-facts',`${CORE}/docs/ecosystem-knowledge/alliance-dao.facts.json`],
+  // v1.11.4 (2026-08-24): Boost DAO (FUEL) — the fuel-tool page's questions, from their own disclosures.
+  ['boost-dao',         `${CORE}/docs/ecosystem-knowledge/boost-dao.md`],
+  ['boost-dao-facts',   `${CORE}/docs/ecosystem-knowledge/boost-dao.facts.json`],
   // v1.11.3 (2026-08-24): preamble-only and max_tokens-mid-tool answers also force a final text-only turn (v1.11.1 only caught stop_reason=tool_use).
   // v1.11.1 (2026-08-22): tool loop never returns a preamble as the answer (final text-only turn); tool throws become tool_result errors.
   // v1.11.0 (2026-08-22): trust_register tier from catalog/trusted/current.json (how each address is known) + Capapult/Terra registries.
@@ -428,6 +431,7 @@ const AUDIT_SRC = {
   tokens: 'token-catalog/snapshots/current.json', runway: 'tla-voting/bribe-state/runway.json',
   astro: 'dex-data/astroport/snapshots/current.json', prices: 'network-and-prices/current.json',
   trusted: 'catalog/trusted/current.json',   // v1.11.0: ONE trust product (how each address is known)
+  capa_supply: 'token-catalog/supply/capa/current.json',   // v1.11.4: the CAPA custody map (guard-checked)
 };
 const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions', 'Capapult': 'capapult', 'Terra': 'terra' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
