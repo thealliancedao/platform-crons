@@ -55,6 +55,9 @@ const CORPUS_SOURCES = [
   ['astroport',         `${CORE}/docs/ecosystem-knowledge/astroport.md`],
   ['backbonelabs',      `${CORE}/docs/ecosystem-knowledge/backbonelabs.md`],
   ['credia',            `${CORE}/docs/ecosystem-knowledge/credia.md`],
+  // v1.11.2 (2026-08-23): aDAO's own mechanics (daily claim, 90/10 split, break) — the ally page's questions answered from receipts.
+  ['alliance-dao',      `${CORE}/docs/ecosystem-knowledge/alliance-dao.md`],
+  ['alliance-dao-facts',`${CORE}/docs/ecosystem-knowledge/alliance-dao.facts.json`],
   // v1.11.1 (2026-08-22): tool loop never returns a preamble as the answer (final text-only turn); tool throws become tool_result errors.
   // v1.11.0 (2026-08-22): trust_register tier from catalog/trusted/current.json (how each address is known) + Capapult/Terra registries.
   // v1.10.0 (2026-08-22): privacy-preserving question log → tla-core/help-agent/questions/<yyyy-mm>.json (QUESTION_LOG=1 + GITHUB_TOKEN).
