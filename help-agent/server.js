@@ -58,6 +58,7 @@ const CORPUS_SOURCES = [
   // v1.11.2 (2026-08-23): aDAO's own mechanics (daily claim, 90/10 split, break) — the ally page's questions answered from receipts.
   ['alliance-dao',      `${CORE}/docs/ecosystem-knowledge/alliance-dao.md`],
   ['alliance-dao-facts',`${CORE}/docs/ecosystem-knowledge/alliance-dao.facts.json`],
+  // v1.11.5 (2026-08-24): capa_wallets in the read_product allow-list (per-wallet CAPA custody rows, DATA-MAP section added).
   // v1.11.4 (2026-08-24): Boost DAO (FUEL) — the fuel-tool page's questions, from their own disclosures.
   ['boost-dao',         `${CORE}/docs/ecosystem-knowledge/boost-dao.md`],
   ['boost-dao-facts',   `${CORE}/docs/ecosystem-knowledge/boost-dao.facts.json`],
@@ -432,6 +433,7 @@ const AUDIT_SRC = {
   astro: 'dex-data/astroport/snapshots/current.json', prices: 'network-and-prices/current.json',
   trusted: 'catalog/trusted/current.json',   // v1.11.0: ONE trust product (how each address is known)
   capa_supply: 'token-catalog/supply/capa/current.json',   // v1.11.4: the CAPA custody map (guard-checked)
+  capa_wallets: 'token-catalog/supply/capa/wallets.json',  // v1.11.5: per-wallet custody rows (13 forms, sum-guarded; rows ≥ floor + tail)
 };
 const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions', 'Capapult': 'capapult', 'Terra': 'terra' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
