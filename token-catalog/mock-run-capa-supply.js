@@ -294,6 +294,26 @@ if (require.main !== module) return;
   try { M.upsertIndex({ garbage: true }, doc2); } catch (e) { if (/corrupt/.test(e.message)) threw++; }
   check('E4 never-shrink: a failed or corrupt read of the committed index REFUSES (absent=null starts fresh, undefined/corrupt throw)', threw === 2);
 
+  console.log('\n=== v2.1 compact per-wallet daily + fold helpers ===');
+  const { walletsDaily: DY } = await M.captureCapaWallets(world, doc);
+  check('F1 daily row for the owner = [total, receipt_dao] matching wallets.json', Array.isArray(DY.rows[OWNER]) && near(DY.rows[OWNER][0], o.total_capa_equiv, 1e-6) && near(DY.rows[OWNER][1], o.capa_equiv.receipt_dao, 1e-6), DY.rows[OWNER]);
+  check('F2 buckets absent from the daily; DAO staker below floor is PRESENT (W9-style) and filler is absent', !DY.rows[C.AMPCAPA_HUB] && !DY.rows[C.VE3_COMPOUNDER] && !!DY.rows[W(9)] && !DY.rows[W(10)]);
+  check('F3 daily carries date/src/rates/columns/row_count', DY.date === doc.capturedAt.slice(0, 10) && DY.src === 'capture' && near(DY.rates.hub_capa_per_ampcapa, R.hub) && DY.columns[1] === 'receipt_dao_capa' && DY.row_count === Object.keys(DY.rows).length);
+  const worldB2 = makeWorld({ stateFailAt: { addr: C.CAPA_TOKEN, page: 1 } });   // fresh world: the fail trigger is call-counted, worldB already consumed it
+  const { walletsDaily: WDB } = await M.captureCapaWallets(worldB2, await M.captureCapaSupply(worldB2));
+  check('F4 incomplete enumeration → daily total is null (unknown), receipt_dao still known (6-dp rounded)', WDB.rows[OWNER][0] === null && near(WDB.rows[OWNER][1], o.capa_equiv.receipt_dao, 1e-5));
+  const leg = M.legacyIndexRow({ date: '2026-08-09', capturedAt: '2026-08-09T23:50:33.283Z', hub_rate: 1.1055, receipt_in_dao: 15828086.3, src: 'legacy_fold ampcapa-data_2026 epoch-197' });
+  check('F5 legacy index row has the SAME keys as a captured row, other fields null, status legacy_fold', JSON.stringify(Object.keys(leg).filter(k => k !== 'src').sort()) === JSON.stringify(Object.keys(M.indexRowOf(doc2)).sort()) && leg.capa_liquid === null && leg.status === 'legacy_fold');
+  const f1 = M.foldIndexRows(idx3, [leg, M.legacyIndexRow({ date: idx3.rows[0].date, capturedAt: 'x', hub_rate: 9, receipt_in_dao: 9, src: 'legacy' })]);
+  check('F6 fold adds only missing dates (1 added, 1 skipped); the captured row is byte-untouched', f1.added === 1 && f1.skipped === 1 && f1.doc.row_count === 3 && JSON.stringify(f1.doc.rows.find(r => r.date === idx3.rows[0].date)) === JSON.stringify(idx3.rows[0]) && f1.doc.rows[0].date === '2026-08-09');
+  let thr = 0; try { M.foldIndexRows(undefined, [leg]); } catch (e) { thr++; } try { M.foldIndexRows({ nope: 1 }, [leg]); } catch (e) { thr++; }
+  check('F7 fold refuses failed/corrupt reads (never-shrink)', thr === 2);
+  const d1 = M.upsertDailyIndex(null, '2026-08-24', 'capture');
+  const d2 = M.upsertDailyIndex(d1.doc, '2026-08-09', 'legacy_fold');
+  const d3 = M.upsertDailyIndex(d2.doc, '2026-08-24', 'legacy_fold');
+  const d4 = M.upsertDailyIndex(d3.doc, '2026-08-09', 'capture');
+  check('F8 daily index: sorted, legacy never demotes a captured day, capture upgrades a legacy day', d2.doc.days[0].date === '2026-08-09' && d3.changed === false && d4.doc.days[0].src === 'capture' && d4.doc.day_count === 2);
+
   console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
   process.exit(FAIL ? 1 : 0);
 })().catch(e => { console.error('GATE CRASH:', e); process.exit(1); });

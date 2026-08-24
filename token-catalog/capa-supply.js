@@ -1,5 +1,5 @@
 // =============================================================================
-// CAPA Supply Map — org-token-catalog duty (v2.0, 2026-08-24)
+// CAPA Supply Map — org-token-catalog duty (v2.1, 2026-08-24)
 // =============================================================================
 // SPEC: tla-core/docs/pending-changes/SPEC-capa-supply-map.md
 // Gate values: capa-supply-probe v2 run 2026-08-24T04:03Z (artifact 9506487143).
@@ -44,6 +44,16 @@
 //  is unchanged; v2 ADDS `wallets` (summary) to current.json and the row file.
 //  Claims (DAO unbonding) are read for the ampCAPA-orbit wallets only; the guard
 //  publishes any uncovered remainder as `receipt_unbonding_unattributed`.
+//
+// v2.1 — COMPACT PER-WALLET DAILY (`supply/capa/wallets-daily/<date>.json`):
+//  the change-period series the ampCAPA tool's members tab needs (24h/7d/30d
+//  deltas), replacing the dead defipatriot/ampcapa-data_2026 snapshots. One
+//  row per HOLDER that is a DAO staker or ≥ floor: `[total_capa_equiv,
+//  receipt_dao_capa]` (~20 bytes/row) — the legacy feed's `members[].capa` IS
+//  the second number (receipt × ve3 rate × hub rate), so legacy weeklies fold
+//  in as `[null, receipt_dao]` (total unknown then — never invented).
+//  `foldIndexRows` adds legacy dates to index.json ONLY where no captured row
+//  exists (prior-verbatim: captured rows win; legacy fills the past).
 
 'use strict';
 
@@ -507,6 +517,16 @@ async function captureCapaWallets(deps, doc) {
   }
   rows.sort((a, b) => b.total_capa_equiv - a.total_capa_equiv);
 
+  // ---- compact per-wallet daily (v2.1): holders that are DAO stakers OR ≥ floor ----
+  const dailyRows = {};
+  for (const [addr, r] of Object.entries(raw)) {
+    if (STRUCTURAL[addr]) continue;
+    const c = conv(r); const t = total(c);
+    if (!(r.dao_power > 0) && t < WALLET_FLOOR_CAPA) continue;
+    const rd = c.receipt_dao;
+    dailyRows[addr] = [Object.values(c).some(v => v === null) ? null : round6(t), rd === null ? null : round6(rd)];
+  }
+
   // ---- unattributed remainders (labeled, never dropped) ----
   const incentivesLp = (raw[ASTRO_INCENTIVES] || {}).astro_lp_liquid;
   const unattributed = {
@@ -522,6 +542,14 @@ async function captureCapaWallets(deps, doc) {
   const incomplete = Object.entries(guards).filter(([, v]) => v.enumeration === 'incomplete').map(([k]) => k);
   const status = failed.length ? 'guard_failed' : (incomplete.length || claimsFailed || !isNum(govRate)) ? 'partial' : 'ok';
 
+  const walletsDaily = {
+    schemaVersion: 2, module: 'token-catalog', product: 'supply/capa/wallets-daily',
+    date: doc.capturedAt.slice(0, 10), capturedAt: doc.capturedAt, src: 'capture', status,
+    rates: { hub_capa_per_ampcapa: hubRate, compounder_ampcapa_per_receipt: compRate },
+    columns: ['total_capa_equiv', 'receipt_dao_capa'],   // null = unknown this run, never 0
+    row_count: Object.keys(dailyRows).length,
+    rows: dailyRows,
+  };
   const wallets = {
     schemaVersion: 2, module: 'token-catalog', product: 'supply/capa/wallets',
     capturedAt: doc.capturedAt, status, guard_failures: failed, incomplete_enumerations: incomplete,
@@ -537,8 +565,9 @@ async function captureCapaWallets(deps, doc) {
     tail_below_floor: { count: tailCount, total_capa_equiv: tailTotal, capa_equiv: tailCols },
   };
   const doc2 = { ...doc, schemaVersion: 2, wallets: { file: 'wallets.json', status, rows_published: wallets.counts.rows_published, wallets_enumerated: walletsEnumerated, floor_capa_equiv: WALLET_FLOOR_CAPA, sum_guards_ok: failed.length === 0 && incomplete.length === 0, guard_failures: failed, incomplete_enumerations: incomplete } };
-  return { doc: doc2, wallets };
+  return { doc: doc2, wallets, walletsDaily };
 }
+const round6 = (v) => Math.round(v * 1e6) / 1e6;
 
 // ---- row-series (daily/<date>.json + index.json) — pure, testable ----
 // index.json rows: one per UTC date, same-date upsert, never-shrink (a row can
@@ -570,5 +599,35 @@ function upsertIndex(existing, doc) {
   return { schemaVersion: 2, module: 'token-catalog', product: 'supply/capa/index', updatedAt: doc.capturedAt, row_count: rows.length, date_range: rows.length ? { from: rows[0].date, to: rows[rows.length - 1].date } : null, rows };
 }
 
-module.exports = { captureCapaSupply, captureCapaWallets, indexRowOf, upsertIndex, CAPA_CONTRACTS: C, GUARD_TOLERANCE, WALLET_FLOOR_CAPA,
+// A legacy (ampcapa-data_2026) weekly/monthly snapshot → the SAME index row
+// shape, every field it cannot supply left null, `src` labeling the repair.
+function legacyIndexRow({ date, capturedAt, hub_rate, receipt_in_dao, src }) {
+  const row = Object.fromEntries(Object.keys(indexRowOf({ capturedAt: '2000-01-01T00:00:00.000Z', status: 'ok', rates: {}, capa: { in_lp: { astro: {}, ss: {} } }, ampcapa: {} })).map(k => [k, null]));
+  return { ...row, date, capturedAt, status: 'legacy_fold', hub_rate, receipt_in_dao, src };
+}
+// Prior-verbatim fold: legacy rows are added ONLY for dates with no committed
+// row; committed rows (captured or previously folded) are never touched.
+// Never-shrink: refuses a failed/corrupt read like upsertIndex.
+function foldIndexRows(existing, legacyRows) {
+  if (existing === undefined) throw new Error('never-shrink: existing index read failed');
+  if (existing !== null && (typeof existing !== 'object' || !Array.isArray(existing.rows))) throw new Error('never-shrink: existing index is corrupt');
+  const rows = existing ? existing.rows.slice() : []; const have = new Set(rows.map(r => r.date)); let added = 0, skipped = 0;
+  for (const lr of legacyRows) { if (have.has(lr.date)) { skipped++; continue; } rows.push(lr); have.add(lr.date); added++; }
+  rows.sort((a, b) => a.date < b.date ? -1 : 1);
+  const meta = existing || {};
+  return { doc: { schemaVersion: 2, module: 'token-catalog', product: 'supply/capa/index', updatedAt: meta.updatedAt || null, row_count: rows.length, date_range: rows.length ? { from: rows[0].date, to: rows[rows.length - 1].date } : null, rows }, added, skipped };
+}
+// wallets-daily/index.json: the date list (+ src) the page picks comparison days from. Never-shrink.
+function upsertDailyIndex(existing, date, src) {
+  if (existing === undefined) throw new Error('never-shrink: existing wallets-daily index read failed');
+  if (existing !== null && (typeof existing !== 'object' || !Array.isArray(existing.days))) throw new Error('never-shrink: existing wallets-daily index is corrupt');
+  const days = existing ? existing.days.slice() : [];
+  const i = days.findIndex(d => d.date === date);
+  if (i >= 0) { if (days[i].src === 'capture' && src !== 'capture') return { doc: existing, changed: false }; days[i] = { date, src }; }   // a captured day is never demoted to legacy
+  else days.push({ date, src });
+  days.sort((a, b) => a.date < b.date ? -1 : 1);
+  return { doc: { schemaVersion: 2, module: 'token-catalog', product: 'supply/capa/wallets-daily/index', updatedAt: new Date().toISOString(), day_count: days.length, date_range: { from: days[0].date, to: days[days.length - 1].date }, days }, changed: true };
+}
+
+module.exports = { captureCapaSupply, captureCapaWallets, indexRowOf, upsertIndex, legacyIndexRow, foldIndexRows, upsertDailyIndex, CAPA_CONTRACTS: C, GUARD_TOLERANCE, WALLET_FLOOR_CAPA,
   _decoders: { decodeCw20BalanceKey, decodeGovBankKey, decodeVe3SharesKey, bech32Encode } };

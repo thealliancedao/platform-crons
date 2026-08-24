@@ -1153,10 +1153,10 @@ async function run() {
       const S = require('./capa-supply.js');
       const deps = { queryContract, fetchJson, lcdBase: TERRA_LCD_PRIMARY };
       let supplyDoc = await S.captureCapaSupply(deps);
-      let walletsDoc = null;
+      let walletsDoc = null, walletsDaily = null;
       try {
         const w = await S.captureCapaWallets(deps, supplyDoc);
-        supplyDoc = w.doc; walletsDoc = w.wallets;
+        supplyDoc = w.doc; walletsDoc = w.wallets; walletsDaily = w.walletsDaily;
       } catch (e) {
         console.error('  ✗ capa supply per-wallet rows failed (collection map still publishes):', String(e.message || e).slice(0, 200));
         supplyDoc = { ...supplyDoc, schemaVersion: 2, wallets: { file: 'wallets.json', status: 'error', error: String(e.message || e).slice(0, 200) } };
@@ -1171,15 +1171,18 @@ async function run() {
         console.log(`  ✓ token-catalog/supply/capa/wallets.json (${walletsDoc.status} — ${walletsDoc.counts.rows_published} wallets + ${walletsDoc.counts.contracts_published} contracts, tail ${walletsDoc.counts.tail_below_floor}, claims ${walletsDoc.counts.claims_queried}/${walletsDoc.counts.claims_failed} failed${walletsDoc.guard_failures.length ? ' — GUARDS: ' + walletsDoc.guard_failures.join(',') : ''}${walletsDoc.incomplete_enumerations.length ? ' — INCOMPLETE: ' + walletsDoc.incomplete_enumerations.join(',') : ''})`);
         for (const [k, v] of Object.entries(g)) if (v.ok !== true) console.log(`     guard ${k}: ok=${v.ok} sum=${v.sum} expected=${v.expected}${v.error ? ' err=' + v.error : ''}`);
       }
+      // v2.1: compact per-wallet daily + its date index (never-shrink; read failure ≠ absent)
+      const readIdx = async (p) => { try { return await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`, p); } catch (e) { return /HTTP 404/.test(String(e.message)) ? null : undefined; } };
+      if (walletsDaily) {
+        await publishFile(`token-catalog/supply/capa/wallets-daily/${walletsDaily.date}.json`, JSON.stringify(walletsDaily), `capa wallets-daily ${walletsDaily.date} (${walletsDaily.row_count} rows)`);
+        const di = S.upsertDailyIndex(await readIdx('token-catalog/supply/capa/wallets-daily/index.json'), walletsDaily.date, 'capture');
+        if (di.changed) await publishFile('token-catalog/supply/capa/wallets-daily/index.json', JSON.stringify(di.doc, null, 2), `capa wallets-daily index — ${walletsDaily.date}`);
+        console.log(`  ✓ token-catalog/supply/capa/wallets-daily/${walletsDaily.date}.json (${walletsDaily.row_count} rows) + index (${di.doc.day_count} days)`);
+      }
       // daily + index row series (same-date upsert; never-shrink; read failure ≠ absent)
       const day = supplyDoc.capturedAt.slice(0, 10);
       await publishFile(`token-catalog/supply/capa/daily/${day}.json`, JSON.stringify(supplyDoc, null, 2), `capa supply daily ${day}`);
-      let existingIdx;
-      try {
-        existingIdx = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/token-catalog/supply/capa/index.json?t=${Date.now()}`, 'capa supply index');
-      } catch (e) {
-        existingIdx = /HTTP 404/.test(String(e.message)) ? null : undefined;   // 404 = first row; anything else = read FAILED
-      }
+      const existingIdx = await readIdx('token-catalog/supply/capa/index.json');   // null = 404 (first row); undefined = read FAILED
       const idx = S.upsertIndex(existingIdx, supplyDoc);   // throws on failed/corrupt read — caught below, index simply not touched this run
       await publishFile('token-catalog/supply/capa/index.json', JSON.stringify(idx, null, 2), `capa supply index — ${day} (${idx.row_count} rows)`);
       console.log(`  ✓ token-catalog/supply/capa/daily/${day}.json + index.json (${idx.row_count} rows)`);
