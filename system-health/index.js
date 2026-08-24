@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.1';
+const VERSION       = 'org-system-health-1.0.3';   // 1.0.2 shipped without bumping this string (2026-08-19); corrected here
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -205,6 +205,10 @@ const FRESHNESS_MAP = [
     { product: 'votion-vaults',      kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['vaults_at', 'capturedAt'],   max_age_h: 6 },
     { product: 'votion-positions',   kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['positions_at'],              max_age_h: 30 },
     { product: 'price-history',      kind: 'day-key', pathFn: (now) => `price-history/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}.json`, max_age_h: 50 },
+    // 2026-08-24 (capa-supply v2): the CAPA custody map rides org-token-catalog
+    // (~5h observed cadence) but is its own product — its own row, read from
+    // the product itself (it carries capturedAt; no separate heartbeat).
+    { product: 'capa-supply',        kind: 'cron',    path: 'token-catalog/supply/capa/current.json',     ts: ['capturedAt'],                max_age_h: 12 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
 async function invHeartbeatFreshness(reader, now) {
