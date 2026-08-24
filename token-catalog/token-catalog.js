@@ -1142,17 +1142,49 @@ async function run() {
     await publishFile('token-catalog/snapshots/heartbeat.json', hbContent, `heartbeat ${status}`);
     console.log('  ✓ token-catalog/snapshots/heartbeat.json');
 
-    // ── CAPA supply map duty (v1, 2026-08-24 — SPEC-capa-supply-map.md) ─────
+    // ── CAPA supply map duty (v2, 2026-08-24 — SPEC-capa-supply-map.md) ─────
     // Isolated: a supply-map failure NEVER takes the catalog publish down with
     // it (same isolation contract as appendToPriceHistory above).
+    // v2: per-wallet rows (wallets.json, sum-guarded per form) + daily/<date>
+    // + index.json row series. Each product publishes independently so a
+    // wallet-enumeration failure never blocks the collection map, and the
+    // series never rebuilds from a failed read (upsertIndex refuses).
     try {
-      const { captureCapaSupply } = require('./capa-supply.js');
-      const supplyDoc = await captureCapaSupply({ queryContract, fetchJson, lcdBase: TERRA_LCD_PRIMARY });
+      const S = require('./capa-supply.js');
+      const deps = { queryContract, fetchJson, lcdBase: TERRA_LCD_PRIMARY };
+      let supplyDoc = await S.captureCapaSupply(deps);
+      let walletsDoc = null;
+      try {
+        const w = await S.captureCapaWallets(deps, supplyDoc);
+        supplyDoc = w.doc; walletsDoc = w.wallets;
+      } catch (e) {
+        console.error('  ✗ capa supply per-wallet rows failed (collection map still publishes):', String(e.message || e).slice(0, 200));
+        supplyDoc = { ...supplyDoc, schemaVersion: 2, wallets: { file: 'wallets.json', status: 'error', error: String(e.message || e).slice(0, 200) } };
+      }
       await publishFile('token-catalog/supply/capa/current.json', JSON.stringify(supplyDoc, null, 2),
         `capa supply map ${supplyDoc.status}`);
       console.log(`  ✓ token-catalog/supply/capa/current.json (${supplyDoc.status}${supplyDoc.guard_failures.length ? ' — GUARDS: ' + supplyDoc.guard_failures.join(',') : ''})`);
+      if (walletsDoc) {
+        await publishFile('token-catalog/supply/capa/wallets.json', JSON.stringify(walletsDoc, null, 1),
+          `capa supply wallets ${walletsDoc.status} — ${walletsDoc.counts.rows_published} rows`);
+        const g = walletsDoc.sum_guards;
+        console.log(`  ✓ token-catalog/supply/capa/wallets.json (${walletsDoc.status} — ${walletsDoc.counts.rows_published} wallets + ${walletsDoc.counts.contracts_published} contracts, tail ${walletsDoc.counts.tail_below_floor}, claims ${walletsDoc.counts.claims_queried}/${walletsDoc.counts.claims_failed} failed${walletsDoc.guard_failures.length ? ' — GUARDS: ' + walletsDoc.guard_failures.join(',') : ''}${walletsDoc.incomplete_enumerations.length ? ' — INCOMPLETE: ' + walletsDoc.incomplete_enumerations.join(',') : ''})`);
+        for (const [k, v] of Object.entries(g)) if (v.ok !== true) console.log(`     guard ${k}: ok=${v.ok} sum=${v.sum} expected=${v.expected}${v.error ? ' err=' + v.error : ''}`);
+      }
+      // daily + index row series (same-date upsert; never-shrink; read failure ≠ absent)
+      const day = supplyDoc.capturedAt.slice(0, 10);
+      await publishFile(`token-catalog/supply/capa/daily/${day}.json`, JSON.stringify(supplyDoc, null, 2), `capa supply daily ${day}`);
+      let existingIdx;
+      try {
+        existingIdx = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/token-catalog/supply/capa/index.json?t=${Date.now()}`, 'capa supply index');
+      } catch (e) {
+        existingIdx = /HTTP 404/.test(String(e.message)) ? null : undefined;   // 404 = first row; anything else = read FAILED
+      }
+      const idx = S.upsertIndex(existingIdx, supplyDoc);   // throws on failed/corrupt read — caught below, index simply not touched this run
+      await publishFile('token-catalog/supply/capa/index.json', JSON.stringify(idx, null, 2), `capa supply index — ${day} (${idx.row_count} rows)`);
+      console.log(`  ✓ token-catalog/supply/capa/daily/${day}.json + index.json (${idx.row_count} rows)`);
     } catch (e) {
-      console.error('  ✗ capa supply map failed (catalog publish unaffected):', String(e.message || e).slice(0, 200));
+      console.error('  ✗ capa supply map step failed (catalog publish unaffected):', String(e.message || e).slice(0, 200));
     }
   } else {
     console.log('  (no GITHUB_TOKEN — wrote local token-catalog.json + heartbeat.json only)');
