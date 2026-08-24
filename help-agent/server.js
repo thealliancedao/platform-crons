@@ -58,6 +58,7 @@ const CORPUS_SOURCES = [
   // v1.11.2 (2026-08-23): aDAO's own mechanics (daily claim, 90/10 split, break) — the ally page's questions answered from receipts.
   ['alliance-dao',      `${CORE}/docs/ecosystem-knowledge/alliance-dao.md`],
   ['alliance-dao-facts',`${CORE}/docs/ecosystem-knowledge/alliance-dao.facts.json`],
+  // v1.11.3 (2026-08-24): preamble-only and max_tokens-mid-tool answers also force a final text-only turn (v1.11.1 only caught stop_reason=tool_use).
   // v1.11.1 (2026-08-22): tool loop never returns a preamble as the answer (final text-only turn); tool throws become tool_result errors.
   // v1.11.0 (2026-08-22): trust_register tier from catalog/trusted/current.json (how each address is known) + Capapult/Terra registries.
   // v1.10.0 (2026-08-22): privacy-preserving question log → tla-core/help-agent/questions/<yyyy-mm>.json (QUESTION_LOG=1 + GITHUB_TOKEN).
@@ -776,6 +777,24 @@ async function ask(question, explicitWallet, page, mode) {
     body.messages.push({ role: 'user', content: [{ type: 'text', text: 'Tool budget is spent. Answer now, in full, from what you already have; say explicitly what you could not check.' }] });
     const saved = body.tools; delete body.tools; delete body.tool_choice;
     try { d = await call(); } finally { if (saved) body.tools = saved; }
+  }
+  // v1.11.3 (owner report 2026-08-24: audit reply froze again at "I'll audit these
+  // messages…", this time with chain_queries:0 — stop_reason was max_tokens (cut
+  // mid-tool-call) or end_turn on a bare announcement, so the v1.11.1 guard never
+  // fired). Same cure, wider net: if what the visitor would see is nothing but a
+  // short promise of future work, force ONE text-only turn with room to answer.
+  {
+    const visible = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n').trim();
+    const preambleOnly = visible.length < 220 && /^(I'?ll|I will|Let me|I am going to|I'm going to|First,? I)/i.test(visible);
+    const cutMidTool = d.stop_reason === 'max_tokens' && (d.content || []).some(c => c.type === 'tool_use');
+    if (preambleOnly || cutMidTool) {
+      // A cut-off tool_use block can't be echoed back without a tool_result — replay only the text.
+      body.messages.push({ role: 'assistant', content: [{ type: 'text', text: visible || '(no answer yet)' }] });
+      body.messages.push({ role: 'user', content: [{ type: 'text', text: 'Do not announce what you will do. Produce the answer itself now, in plain text, from the audit block and context you already have; name anything you could not verify.' }] });
+      const saved = body.tools; delete body.tools; delete body.tool_choice;
+      body.max_tokens = Math.max(body.max_tokens || 0, 1400);
+      try { d = await call(); } finally { if (saved) body.tools = saved; }
+    }
   }
   const answer = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n')
     || 'I could not complete the chain lookup — the public node may be busy. Try again, or paste the tx hash directly.';
