@@ -273,6 +273,7 @@ async function main() {
 
   // ---- 2. INPUTS -------------------------------------------------------------
   const tokenCatalog = await readRepoJson('token-catalog/snapshots/current.json');
+  const knownContracts = ((await readRepoJson('docs/curated/known_contracts.json', { required: false })) || {}).contracts || {};
   const snapshot     = await readRepoJson('member-data/tla-snapshot/current.json');
   const psHistory    = await readRepoJson('member-data/tla-snapshot/pool-status-history.json');
   const pdBribes     = await readRepoJson('tla-voting/pd-bribes/current.json', { required: false });
@@ -365,7 +366,11 @@ async function main() {
   const rows = [];
   for (const u of universe) {
     const tc = u.tc, snap = u.snap;
-    const name = (snap && snap.name) || (u.ps && u.ps.name) || tc.gauge_pool_id;
+    // 2026-08-25: name fallback for gauges the snapshot does not carry (e.g. the Credia wBTC receipt):
+    // token-catalog symbol for the bare denom, then the curated register, then the raw id.
+    const _bare = String(tc.gauge_pool_id || '').replace(/^(cw20|native):/, '');
+    const _tcSym = tokensByDenom[_bare] && ((tokensByDenom[_bare].effective && tokensByDenom[_bare].effective.symbol) || (tokensByDenom[_bare].discovered && tokensByDenom[_bare].discovered.symbol));
+    const name = (snap && snap.name) || (u.ps && u.ps.name) || _tcSym || (knownContracts[_bare] && knownContracts[_bare].name) || tc.gauge_pool_id;
     const bucket = (snap && snap.bucket) || tc.bucket || null;
     const dex = (snap && snap.dex) || null;
     const dexSub = (snap && snap.dex_subtype) || null;
