@@ -73,7 +73,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const VERSION = 'lp-grades-1.0.1';
+const VERSION = 'lp-grades-2.0.0';   // 2.0.0: five-lens v2 grade per pool (v2.js, SPEC-lp-grades-v2 §2) alongside v1
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
@@ -622,6 +622,31 @@ async function main() {
   rows.sort((a, b) => (b.scores.quality || 0) - (a.scores.quality || 0));
 
   // ---- 7. OUTPUT ---------------------------------------------------------------
+  // ---- v2 five-lens grade (2026-08-25): computed on the assembled rows; isolated so v1 always publishes ----
+  let v2 = null;
+  try {
+    const { computeV2 } = require('./v2.js');
+    const votionOpt = await readRepoJson('votion/optimization/current.json', { required: false });
+    const runway = await readRepoJson('tla-voting/bribe-state/runway.json', { required: false });
+    const pdFit = await readRepoJson('tla-voting/pd-bribes/fit/current.json', { required: false });
+    const votionByGauge = {}; for (const [g, gd] of Object.entries((votionOpt && votionOpt.aggregate) || {})) for (const [pid, pp] of Object.entries(gd.pools || {})) votionByGauge[g + '|' + pid] = pp.current_vp || 0;
+    const votedPeriod = votionOpt && Number(votionOpt.period) || currentEpoch;
+    // Votion's rate = median $/1M VP over pools Votion votes, on the pots funded for the voted period
+    const catSym = {}; for (const t of (tokenCatalog.tokens || [])) { const sym = (t.effective && t.effective.symbol) || (t.discovered && t.discovered.symbol); if (t.denom && sym) catSym[t.denom] = { sym, dec: (t.effective && t.effective.decimals != null) ? t.effective.decimals : (t.discovered && t.discovered.decimals != null ? t.discovered.decimals : 6) }; }
+    const px = (sym) => { const t = netPrices && netPrices.token_prices && netPrices.token_prices[sym]; return t ? (t.final_price_usd || t.price || 0) : 0; };
+    const runwayPots = {};
+    for (const rw of (runway && runway.pools) || []) { let usd = 0; for (const [den, v] of Object.entries(rw.by_denom || {})) { const amt = v.per_period && v.per_period[String(votedPeriod)]; if (!amt) continue; const bare = den.replace(/^(cw20|native):/, ''); const c = catSym[bare]; if (c && px(c.sym)) usd += Number(amt) / 10 ** c.dec * px(c.sym); } runwayPots[String(rw.gauge).toLowerCase() + '|' + String(rw.pool).replace(/^(cw20|native):/, '')] = usd; }
+    const rates = rows.filter(r => r.vp > 50000).map(r => { const k = String(r.bucket).toLowerCase() + '|' + String(r.gauge_pool_id).replace(/^(cw20|native):/, ''); return (votionByGauge[k] > 50000 && runwayPots[k] > 0) ? runwayPots[k] / (r.vp / 1e6) : null; }).filter(x => x != null).sort((a, b) => a - b);
+    const votionRate = rates.length ? rates[Math.floor((rates.length - 1) / 2)] : null;
+    const pdShareByGauge = {};
+    for (const b of (pdFit && pdFit.batches) || []) if (b.window && b.window.start <= votedPeriod && b.window.end >= votedPeriod) for (const l of b.legs || []) pdShareByGauge[String(l.gauge).toLowerCase() + '|' + String(l.gauge_pool_id).replace(/^(cw20|native):/, '')] = (pdShareByGauge[String(l.gauge).toLowerCase() + '|' + String(l.gauge_pool_id).replace(/^(cw20|native):/, '')] || 0) + l.luna_per_epoch;
+    const archive = [];
+    for (let e = currentEpoch - 1; e >= currentEpoch - 8; e--) { const a = await readRepoJson(`lp-grades/epochs/${e}.json`, { required: false }); if (!a) break; const byGauge = {}; for (const r of a.pools || []) if (r.v2 && r.v2.letter) byGauge[r.gauge_pool_id] = { letter: r.v2.letter, basis: 'v2' }; else if (r.grade) byGauge[r.gauge_pool_id] = { letter: r.grade, basis: 'v1' }; archive.push({ epoch: e, byGauge }); }
+    v2 = computeV2(rows, { snapshotPools: snapshot.pools || [], psHistory, votionByGauge, votionRate, runwayPots, votedPeriod, pdShareByGauge, lunaUsd: px('LUNA'), archive });
+    for (const r of rows) r.v2 = v2.byGauge[r.gauge_pool_id] || null;
+    console.log(`  v2: ${v2.meta.graded} graded · distribution ${JSON.stringify(v2.meta.distribution)} · Votion rate ${votionRate == null ? 'n/a' : '$' + votionRate.toFixed(2)}/1M VP · archive epochs ${archive.length}`);
+  } catch (e) { console.warn('  ⚠ v2 grade failed (v1 unaffected):', e.message); }
+
   const out = {
     schemaVersion: 1,
     cron: 'lp-grades',
@@ -636,6 +661,7 @@ async function main() {
       B_weights: config.asset_chain_value_B.sub_weights,
       grade_boundaries: gb,
       advisor: config.advisor || null },
+    v2: v2 ? v2.meta : null,
     sources: {
       token_catalog_at: tokenCatalog.meta && tokenCatalog.meta.generated_at || null,
       snapshot_at: snapshot.capturedAt,
