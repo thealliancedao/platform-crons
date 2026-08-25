@@ -88,6 +88,8 @@ const CORPUS_SOURCES = [
   ['explorer-changelog',`${CORE}/docs/changelogs/explorer-log.md`],
   ['help-changelog',    `${CORE}/docs/changelogs/help-log.md`],
   ['lp-grades-changelog',`${CORE}/docs/changelogs/cron-lp-grades-log.md`],
+  // v1.12.0 (2026-08-25): how pools are graded (five lenses), how the DAO decides where to vote (earned rule), the PD tracker — the plain-language guide
+  ['lp-grades-and-voting', `${CORE}/docs/ecosystem-knowledge/lp-grades-and-voting.md`],
   ['spec-lp-grading',   `${CORE}/docs/pending-changes/SPEC-lp-grading.md`],
   ['spec-activity-feed',`${CORE}/docs/pending-changes/SPEC-activity-feed.md`],
   ['spec-help-agent',   `${CORE}/docs/pending-changes/SPEC-site-help-agent.md`],
@@ -437,6 +439,8 @@ const AUDIT_SRC = {
   capa_wallets: 'token-catalog/supply/capa/wallets.json',  // v1.11.5: per-wallet custody rows (13 forms, sum-guarded; rows ≥ floor + tail)
   fuel_supply: 'token-catalog/supply/fuel/current.json',   // v1.11.6: FUEL map — Neutron native (Boost DAO staked/treasury/escrow/liquid) + Terra IBC
   fuel_wallets: 'token-catalog/supply/fuel/wallets.json',  // v1.11.6: per-wallet FUEL rows on both chains
+  lp_grades:    'lp-grades/snapshots/current.json',        // v1.12.0: v2 five-lens grades per pool (letter, lenses, streak, raw)
+  pd_bribe_fit: 'tla-voting/pd-bribes/fit/current.json',   // v1.12.0: PD placements vs their stated criterion, all pools, drift
 };
 const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions', 'Capapult': 'capapult', 'Terra': 'terra' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
