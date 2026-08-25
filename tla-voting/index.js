@@ -73,7 +73,7 @@ const EPOCH_DATES_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITH
 
 const SCHEMA_VERSION = 4;                      // index/cursor/heartbeat schema (monthly layout)
 const FORWARD_CADENCE_HOURS = 1;               // D6: hourly
-const VERSION = 'org-tla-voting-2.4.0';        // 2.3.1 (v6.1): governance-bribe capture — collision-aware msg_index (N add_bribe under one msg no longer collapse; PD fixture 402AE7B1) + dao_attr attribution (single dao attr → DAO core is briber, dynamic; else msg_target) — on 2.3.0 (rollups schema — bribe_ledger) on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
+const VERSION = 'org-tla-voting-2.5.0';   // 2.5.0: pd-bribe-fit duty (SPEC-lp-grades-v2 §4)        // 2.3.1 (v6.1): governance-bribe capture — collision-aware msg_index (N add_bribe under one msg no longer collapse; PD fixture 402AE7B1) + dao_attr attribution (single dao attr → DAO core is briber, dynamic; else msg_target) — on 2.3.0 (rollups schema — bribe_ledger) on 2.2.0 (bribe-state + v6 + lock rider) on 2.1.0 (rollups + v5) on 2.0.0 (walker + monthly + vote-state)
 const BUDGET       = Number(process.env.MAX_BLOCKS_PER_RUN || 2000);  // D6 (~3.2 h of chain)
 const CONFIRM_LAG  = Number(process.env.CONFIRM_LAG || 3);            // stay behind head so the LCD tx index has the block
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 700);     // cursor-migration fallback only (~1 h)
@@ -1168,6 +1168,16 @@ async function run() {
             console.log(`  pd-bribes: ${pb.meta.verified_placements} verified placements, ${pb.totals.net_luna_display.toLocaleString()} LUNA net (${pb.meta.unmatched_proposals} unmatched props, ${pb.meta.unmatched_executions} unmatched execs)`);
         } catch (pe) { addErr('pd-bribes', pe); console.warn(`  ⚠ pd-bribes step failed (rollups/streams unaffected): ${pe.message}`); }
     }
+    // 11b¾. pd-bribe-fit (SPEC-lp-grades-v2 §4, 2026-08-25): PD's placements vs their own stated
+    // criterion across ALL pools, at placement and through each window; consequence series. Reads
+    // committed products only; isolated failure.
+    try {
+        const { runPdFit } = require('./lib/pd-bribe-fit.js');
+        const fj = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error(`HTTP ${r.status} ${u}`); return r.json(); };
+        const ft = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error(`HTTP ${r.status} ${u}`); return r.text(); };
+        const pf = await runPdFit({ fetchJson: fj, fetchText: ft, publishFile: (p, obj, msg) => publishFile(p, typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2), msg), apiGetJsonMaybe: async (p) => { const r = await apiGetJson(p).catch(() => null); return r && r.ok ? r.data : null; } });
+        console.log(`  pd-bribe-fit: ${pf.batches} batches · ${pf.written} written · ${pf.weekly_epochs_read} weekly epochs`);
+    } catch (pe) { addErr('pd-bribe-fit', pe); console.warn(`  ⚠ pd-bribe-fit step failed (isolated): ${pe.message}`); }
 
     // 11c. bribe-state harvest (SPEC-tla-voting-bribe-state §2 — build #3): the
     // tribute completeness layer. Budgeted walk-down genesis capture + per-period
