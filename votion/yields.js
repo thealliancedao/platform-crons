@@ -176,16 +176,19 @@ async function buildYields({ T, vaults, hubs, lstSymbolOf, readRatioMonth, now, 
     // native staking — PRIMARY: chain-derived (provisions, bonded, community tax, alliance weights);
     // CROSS-CHECK: ampLUNA net daily rate grossed up by the hub fee (an estimate, said so).
     const chain = await nativeFromChain(T, nowMs, errors);
-    let native = { ...chain, apr_daily_est: null, apy_est: null, fee: null, basis_window_days: 30,
-        method: 'PRIMARY apr_stakers = annual_provisions ÷ bonded × (1 − community_tax) ÷ total_reward_weight (Σ active alliance weights + 1), before validator commission; apr_gross = provisions ÷ bonded (what validator sites quote); CROSS-CHECK apr_daily_est = ampLUNA hub 30d daily rate ÷ (1 − protocol_reward_fee). SmartStake CSV (docs/Staking APR.csv) remains the human reference.',
+    // First live run (2026-08-26 18:47): bonded 316.1M → gross 30.5%, provisions leg to stakers 21.8% — BELOW every
+    // published figure, while ampLUNA's realized 30d APY is 36.9%, ABOVE gross. Staking provisions alone cannot do
+    // that: LUNA delegators also receive the Alliance module's TAKE-RATE rewards, paid in the alliance assets, which
+    // the Eris hub collects and compounds. That leg is not measured here yet — published as a named gap, with the
+    // realized ampLUNA figure as the reference ceiling. The hub-fee gross-up was dropped: the hub config no longer
+    // exposes protocol_reward_fee, and the realized number is the better reference anyway.
+    let native = { ...chain, basis_window_days: 30,
+        method: 'apr_stakers = annual_provisions ÷ bonded × (1 − community_tax) ÷ total_reward_weight (Σ active alliance weights + 1) — the LUNA-provisions leg only, before validator commission; apr_gross = provisions ÷ bonded (what validator sites quote). NOT INCLUDED: alliance take-rate rewards paid to delegators in alliance assets (unmeasured — see take_rate_leg). ampluna_realized_apy_30d = the ampLUNA hub\'s own exchange-rate growth, everything included, after its validators\' commission and its fee.',
+        take_rate_leg: { status: 'unmeasured', note: 'Alliance take rates on alliance-staked assets are redistributed to LUNA delegators in those assets; not captured yet. ampLUNA realized minus the provisions leg bounds it from above.' },
         references: { allnodes_2026_08_26: 0.3778, stakely_2026_08_26: 0.2813, smartstake_csv: 'docs/Staking APR.csv' } };
     const amp = assets.ampLUNA, w30 = amp && amp.windows[30];
-    if (hubs.ampLUNA && w30) {
-        const fee = await hubProtocolFee(hubs.ampLUNA, T, errors);
-        const net = w30.apr_daily_contract ?? w30.apr_daily_measured;
-        if (fee != null && net != null) native = { ...native, fee, apr_daily_est: round(net / (1 - fee), 10), apy_est: round(apyOfDaily(net / (1 - fee))), crosscheck_source: `${amp.source} + hub config` };
-    }
-    if (native.apr_stakers != null && native.apr_daily_est != null) native.crosscheck_gap_pp = round((native.apr_stakers - native.apr_daily_est * DAYS_IN_YEAR) * 100, 2);
+    if (w30) { native.ampluna_realized_apy_30d = w30.apy_contract ?? w30.apy_measured; native.ampluna_realized_apr_30d = (w30.apr_daily_contract ?? w30.apr_daily_measured) != null ? round((w30.apr_daily_contract ?? w30.apr_daily_measured) * DAYS_IN_YEAR, 8) : null;
+        if (native.apr_stakers != null && native.ampluna_realized_apr_30d != null) native.gap_vs_ampluna_pp = round((native.ampluna_realized_apr_30d - native.apr_stakers) * 100, 2); }
     const status = vaultRows.every(r => WINDOWS.every(w => r.windows[w].apy_contract == null && r.windows[w].apy_measured == null)) ? 'error' : (errors.length ? 'partial' : 'ok');
     return {
         doc: {
