@@ -808,7 +808,7 @@ async function main() {
 }
 
 // Exported for offline transform testing (sandbox can't reach the LCD)
-module.exports = { main, aggregateDeposits, aggregateUnclaimed, resolveAssetInfo, flattenPrices, deriveLastClaims, CLAIM_KINDS };
+module.exports = { main, aggregateDeposits, aggregateUnclaimed, resolveAssetInfo, flattenPrices, deriveLastClaims, CLAIM_KINDS, pushToGithub, githubApiRequest, GITHUB_REPO, GITHUB_BRANCH };
 
 if (require.main === module) {
     main().catch(e => { console.error('FATAL:', e); process.exit(1); });

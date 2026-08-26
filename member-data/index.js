@@ -273,6 +273,20 @@ async function orchestrate() {
     }
   }
 
+  // supporters FOLD (2026-08-26): the permanent record behind supporters.html — gifts to the builder's
+  // wallet carrying the memo "thanks_defi", write-once/never-shrink. Isolated; disable with SUPPORTERS=0.
+  if (process.env.SUPPORTERS !== '0') {
+    try {
+      console.log('\n=== supporters (folded module) ===');
+      const dd = require('./dao-dashboard.js'); const sup = require('./supporters.js');
+      const fetchJson = async (u) => { const r = await fetch(u, { headers: { 'User-Agent': 'org-member-data' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
+      const readProduct = async (p) => { const r = await dd.githubApiRequest('GET', `/repos/${dd.GITHUB_REPO}/contents/${p}?ref=${dd.GITHUB_BRANCH}`); if (r.status === 404) return null; if (r.status !== 200 || !r.data || !r.data.content) throw new Error('read ' + p + ': HTTP ' + r.status); return JSON.parse(Buffer.from(r.data.content, 'base64').toString('utf8')); };
+      const publish = (p, obj, msg) => dd.pushToGithub(p, JSON.stringify(obj, null, 2), msg);
+      await sup.run({ fetchJson, readProduct, publish });
+      console.log('=== supporters done ===');
+    } catch (e) { console.error('supporters failed (isolated):', e.message); }
+  }
+
   // Rollups read the DAILY ARCHIVE, which the snapshot fold only writes at
   // 23:xx UTC — so they only have new input once a day. Run them after the
   // archive write (or when forced); each isolated from the other.
