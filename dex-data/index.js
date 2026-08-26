@@ -40,7 +40,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const LOCAL_OUT = process.env.LOCAL_OUT || './out';
 
-const VERSION = 'dex-data-1.3.1';
+const VERSION = 'dex-data-1.3.2';   // 1.3.2: Credia rate-history sidecar (lib/credia-rates.js) — hourly indexer points kept grow-only, 7-day ranges in rates/current.json
 
 // TLA epoch math (epochs are weekly; used to tag snapshots).
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');
@@ -92,6 +92,17 @@ async function writeJson(repoPath, obj) {
   }
   await commitToGitHub(repoPath, content, `dex-data: update ${repoPath}`);
   return { committed: repoPath };
+}
+
+// Read a repo JSON for merge-before-write. Contents API (read-after-write consistent) when a token
+// is present; local out-dir when running without one. null = absent; throws = failed (absent ≠ failed).
+async function readJson(repoPath) {
+  const { httpRequest } = require('./lib/fetch');
+  if (!GITHUB_TOKEN) { const local = path.join(LOCAL_OUT, repoPath); if (!fs.existsSync(local)) return null; return JSON.parse(fs.readFileSync(local, 'utf8')); }
+  try {
+    const res = await httpRequest(`https://api.github.com/repos/${GITHUB_REPO}/contents/${repoPath}?ref=${GITHUB_BRANCH}`, { headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.raw' }, timeoutMs: 20000 });
+    return JSON.parse(res.body);
+  } catch (e) { if (/\b404\b/.test(String(e && e.message || e))) return null; throw e; }
 }
 
 // Commit with 409-conflict retry. Multiple crons write to the same tla-core
@@ -162,6 +173,22 @@ async function main() {
     } else {
       console.log(`  ✗ ${r.id}: FAILED — ${r.error}`);
     }
+  }
+
+  // ---- Credia rate history (1.3.2) — off-chain indexer sidecar, isolated ----
+  // Keeps the hourly series Credia's own charts draw from, so a look-back exists
+  // when wanted; publishes 7-day ranges for the site. Disable via CREDIA_RATES=0.
+  if (process.env.CREDIA_RATES !== '0') {
+    try {
+      const cr = results.find(r => r.id === 'credia' && r.status === 'ok');
+      const markets = cr ? [...new Set((cr.snapshot.pools || []).map(p => p.raw && p.raw.info && (p.raw.info.cw20 || p.raw.info.native)).filter(Boolean))] : [];
+      if (markets.length) {
+        const { runCrediaRates } = require('./lib/credia-rates');
+        const { httpRequest } = require('./lib/fetch');
+        const rr = await runCrediaRates({ markets, httpRequest, readJson, writeJson, now: new Date() });
+        console.log(`  ${rr.status === 'ok' ? '✓' : '△'} credia-rates: ${rr.answered}/${rr.markets} markets · +${rr.added} points (${rr.kept} already held) · ${rr.files.length} files${rr.errors && rr.errors.length ? ' · errors ' + rr.errors.length : ''}`);
+      } else console.log('  – credia-rates: no credia snapshot this run (skipped)');
+    } catch (e) { console.error('  ✗ credia-rates failed (isolated, core snapshots unaffected):', e.message); }
   }
 
   // ---- Eris-convention per-pool APR (1.3.0, AUDIT-eris-apr-pricing fix #4) --

@@ -4,7 +4,8 @@
   "description": "TLA Stats DEX data capture \u2014 per-DEX forward-capture for the trading-quality grading system",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "mock:credia-rates": "node mock-run-credia-rates.js"
   },
   "license": "MIT"
 }
