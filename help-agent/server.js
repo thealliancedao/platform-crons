@@ -94,6 +94,7 @@ const CORPUS_SOURCES = [
   ['dao-governance-page', `${CORE}/docs/ecosystem-knowledge/dao-governance-page.md`],
   ['alliance-dao-lore',   `${CORE}/docs/ecosystem-knowledge/alliance-dao-lore.md`],
   ['cron-fleet',          `${CORE}/docs/CRON-FLEET.md`],   // v1.13.1: every Render job, its schedule, what it feeds
+  ['new-here-kit',        `${CORE}/docs/onboarding/NEW-HERE-KIT.md`],   // v1.13.2: the crash-course facts + the one-line pitch (the bot's answer to "what is this?")
   ['spec-lp-grading',   `${CORE}/docs/pending-changes/SPEC-lp-grading.md`],
   ['spec-activity-feed',`${CORE}/docs/pending-changes/SPEC-activity-feed.md`],
   ['spec-help-agent',   `${CORE}/docs/pending-changes/SPEC-site-help-agent.md`],
