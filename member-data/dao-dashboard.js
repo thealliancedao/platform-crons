@@ -703,6 +703,40 @@ async function main() {
     let treasury = null;
     try { treasury = await captureTreasury(prices); console.log(`  treasury: $${treasury.total_usd.toFixed(2)} across ${treasury.tokens.length} tokens`); }
     catch (e) { errors.push(`treasury: ${e.message}`); }
+    // 1.6 (owner 2026-08-25): the two index strips as a daily series — DAO TOTAL VALUE (tokens + TLA LPs + TLA locks
+    // + unminted NFT backing) and NFT COLLECTION ANALYTICS (market cap, volume, sales, listed) — captured as the
+    // numbers the page shows, from the same products, so the popup chart is the strip over time. Isolated.
+    let totalValue = null, nftStrip = null;
+    try {
+        const RAW = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
+        const [pos, nftSum, nftAn] = await Promise.all([
+            fetchJson(`${RAW}/member-data/positions/current.json?t=${Date.now()}`, 'positions'),
+            fetchJson(`${RAW}/nfts/adao/snapshots/summary.json?t=${Date.now()}`, 'nft summary'),
+            fetchJson(`${RAW}/nfts/adao/snapshots/nft-analytics.json?t=${Date.now()}`, 'nft analytics'),
+        ]);
+        const tsum = pos && pos.treasury && pos.treasury.summary || {};
+        const tokensUsd = (treasury && Array.isArray(treasury.tokens)) ? treasury.tokens.reduce((a, t) => a + (Number(t.usd) || 0), 0) : null;
+        const lpUsd = deposits ? (Number(deposits.total_usd) || 0) : null;
+        const locksUsd = tsum.total_locked_usd != null ? Number(tsum.total_locked_usd) : null;
+        const bk = nftSum && nftSum.backing || {};
+        const unminted = nftSum ? Number(nftSum.unminted_count) : null;
+        const perNftUsd = bk.per_nft_value_usd != null ? Number(bk.per_nft_value_usd) : null;
+        const backingUsd = (unminted != null && perNftUsd != null) ? unminted * perNftUsd : null;
+        const parts = [tokensUsd, lpUsd, locksUsd, backingUsd];
+        totalValue = { tokens_usd: tokensUsd, tla_lps_usd: lpUsd, tla_locks_usd: locksUsd, nft_backing_usd: backingUsd,
+            total_usd: parts.every(v => v != null) ? parts.reduce((a, v) => a + v, 0) : null,   // null-vs-0: a missing part means no total, never a smaller one
+            unminted_count: unminted, backing_per_nft_usd: perNftUsd, backing_per_nft_ampluna: bk.per_nft_ampluna != null ? Number(bk.per_nft_ampluna) : null,
+            locks_luna_equivalent: tsum.total_locked_luna_equivalent != null ? Number(tsum.total_locked_luna_equivalent) : null,
+            sources: { tokens: 'dao-dashboard treasury', tla_lps: 'dao-dashboard tla_deposits', tla_locks: 'positions treasury.summary.total_locked_usd', nft_backing: 'nfts summary backing.per_nft_value_usd × unminted_count' } };
+        const circ = nftSum ? (Number(nftSum.total_tokens) || 0) - (Number(nftSum.unminted_count) || 0) : null;
+        const listed = nftSum ? (Number(nftSum.bbl_listed_count) || 0) + (Number(nftSum.atrium_listed_count) || 0) + (Number(nftSum.boost_listed_count) || 0) : null;
+        const vol = nftAn && nftAn.volume || {};
+        nftStrip = { circulating: circ, listed, sales_total: vol.sales_count != null ? Number(vol.sales_count) : null, volume_usd_at_sale_total: vol.usd_at_sale != null ? Number(vol.usd_at_sale) : null,
+            mark_base_usd: perNftUsd,   // the page's "market cap" = mark price (base) × circulating; the mark is the lower of sales floor and ask — recorded by the nft cron; backing per NFT is the floor of it
+            market_cap_usd: null,       // filled by the page from mark × circulating when the mark is available; the daily row keeps the inputs
+            sources: { listed: 'nfts summary *_listed_count', volume_sales: 'nft-analytics volume', circulating: 'summary total_tokens − unminted_count' } };
+        console.log(`  total_value: tokens $${tokensUsd == null ? '—' : tokensUsd.toFixed(0)} + lps $${lpUsd == null ? '—' : lpUsd.toFixed(0)} + locks $${locksUsd == null ? '—' : locksUsd.toFixed(0)} + backing $${backingUsd == null ? '—' : backingUsd.toFixed(0)} = $${totalValue.total_usd == null ? '—' : totalValue.total_usd.toFixed(0)} · nft: listed ${listed} sales ${nftStrip.sales_total} volume $${nftStrip.volume_usd_at_sale_total}`);
+    } catch (e) { console.error('  total_value/nft strip failed (isolated):', e.message); errors.push('total_value: ' + e.message); }
 
     // Hard-fail rule: if the two headline sections both failed, don't publish.
     if (!deposits && !unclaimed) {
@@ -712,7 +746,7 @@ async function main() {
 
     const payload = {
         meta: {
-            version: 'dao-dashboard-1.5-last-claims',
+            version: 'dao-dashboard-1.6-strips',
             epoch,
             phase: 'live',
             generated_at: new Date().toISOString(),
@@ -728,6 +762,8 @@ async function main() {
             tla_deposits:      deposits,
             alliances:         alliances,
             last_claims:       lastClaims,
+            total_value:       totalValue,   // 1.6: the DAO TOTAL VALUE strip, per day
+            nft:               nftStrip,     // 1.6: the NFT COLLECTION ANALYTICS strip inputs, per day
         },
         token_prices: prices,
     };
