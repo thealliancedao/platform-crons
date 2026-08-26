@@ -248,7 +248,8 @@ function githubApiRequest(method, apiPath, body = null) {
 // mid-run ("is at <sha> but expected <sha>"). Re-fetch the sha on EVERY attempt
 // and back off with jitter; a stale sha is never reused. Same pattern already
 // proven in the dex folds, the relabel one-off and the daily-archive bank.
-async function publishFile(filePath, content, message, maxAttempts = 5) {
+// 2026-08-25: 8 attempts, longer jitter — the top-of-hour branch race (tla-voting + three */15 jobs) outlasted 5×~1s
+async function publishFile(filePath, content, message, maxAttempts = 8) {
     const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
     let lastErr = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -266,7 +267,7 @@ async function publishFile(filePath, content, message, maxAttempts = 5) {
             const msg = String(e && e.message || '');
             const racey = msg.includes(' 409 ') || msg.includes(' 422 ') || / 5\d\d /.test(msg);
             if (!racey || attempt === maxAttempts) throw e;
-            const wait = 400 * attempt + Math.floor(Math.random() * 400);
+            const wait = 700 * attempt + Math.floor(Math.random() * 1500);   // 0.7–2.2s → 5.6–7.1s: outlasts a burst of neighbours' commits
             console.log(`  ↻ publish retry ${attempt}/${maxAttempts - 1} after race (${msg.slice(0, 60)}…) — waiting ${wait}ms`);
             await new Promise(r => setTimeout(r, wait));
         }

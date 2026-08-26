@@ -385,7 +385,8 @@ function githubApiRequest(method, apiPath, body = null) {
 // BRANCH-RACE RETRY (2026-08-11): twelve org jobs write to tla-core, so main
 // can advance between our sha read and the PUT. Re-fetch the sha on EVERY
 // attempt; never reuse a stale one. (tla-participants died on exactly this.)
-async function publishFile(filePath, content, message, maxAttempts = 5) {
+// 2026-08-25: 8 attempts, longer jitter — the top-of-hour branch race (tla-voting + three */15 jobs) outlasted 5×~1s
+async function publishFile(filePath, content, message, maxAttempts = 8) {
     const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
     let lastErr = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -409,7 +410,7 @@ async function publishFile(filePath, content, message, maxAttempts = 5) {
             const msg = String(e && e.message || '');
             const racey = msg.includes(' 409 ') || msg.includes(' 422 ') || / 5\d\d /.test(msg);
             if (!racey || attempt === maxAttempts) throw e;
-            const wait = 400 * attempt + Math.floor(Math.random() * 400);
+            const wait = 700 * attempt + Math.floor(Math.random() * 1500);   // 0.7–2.2s → 5.6–7.1s: outlasts a burst of neighbours' commits
             console.log(`  ↻ publish retry ${attempt} after race — waiting ${wait}ms`);
             await new Promise(r => setTimeout(r, wait));
         }
