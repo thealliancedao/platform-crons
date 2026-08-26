@@ -23,16 +23,18 @@
 // =============================================================================
 
 const https = require('https');
+const Y = require('./yields.js');                 // Branch D (1.4.0): live yields from exchange_rates
+const C = require('../config/contracts.js');      // LST_HUBS: symbol → hub (single source)
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.3.0';   // 1.3.0: optimization product carries per-vault YIELD (reward ÷ vault TVL) — the site shows it, never recomputes
+const VERSION       = 'org-votion-1.4.0';   // 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
 const GAUGE  = 'terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj';
-const LCD_ENDPOINTS = ['https://terra-rest.publicnode.com', 'https://phoenix-lcd.terra.dev'];
+const LCD_ENDPOINTS = ['https://terra-rest.publicnode.com', 'https://phoenix-lcd.terra.dev', 'https://terra-lcd.stakely.io'];   // 1.4.0: Stakely LCD LB as third fallback (owner-found 2026-08-26)
 const CONCURRENCY = 5;                       // publicnode saturation rule
 const POSITIONS_MAX_AGE_H = 20;              // daily branch trigger
 const TXS_PAGE_LIMIT = 100;
@@ -629,6 +631,18 @@ async function runBranchC(now, errors, ctx) {
     return { status: 'ok', slugs: slugsOk, probes };
 }
 
+// ---------------------------------------------------------------------------- Branch D (1.4.0): yields
+const LUNA_LST_SYMBOLS = ['ampLUNA', 'arbLUNA', 'bLUNA'];   // the three "New Here? → TLA" bonding routes
+function lstSymbolOfContract(addr) { for (const [sym, h] of Object.entries(C.LST_HUBS)) if (h.lstDenom === addr) return sym; return null; }
+async function runBranchD(now, vaults) {
+    const hubs = {}; for (const sym of LUNA_LST_SYMBOLS) if (C.LST_HUBS[sym]) hubs[sym] = C.LST_HUBS[sym].hub;
+    const readRatioMonth = (y, m) => apiGetJson(`price-history/ratios/${y}/${m}.json`).then(r => r.data);
+    const r = await Y.buildYields({ T, vaults: vaults.map(v => ({ address: v.address, label: v.label, lst_contract: v.lst_contract })), hubs, lstSymbolOf: lstSymbolOfContract, readRatioMonth, now, version: VERSION });
+    await publishFile('votion/yields/current.json', r.doc, `votion: yields ${r.status} @ ${now.toISOString()}`);
+    await publishFile(`votion/yields/daily/${now.toISOString().slice(0, 10)}.json`, r.doc, `votion: yields daily ${now.toISOString().slice(0, 10)}`);
+    return r;
+}
+
 async function run() {
     const now = T.now();
     const errors = [];
@@ -663,16 +677,26 @@ async function run() {
     }
     catch (e) { errors.push({ where: 'optimization', error: e.message }); console.warn(`  C: optimization failed: ${e.message}`); }
 
+    // Branch D — yields (every run; cheap: 3 windows × (vaults + hubs) reads). Product the "New Here? → TLA" page reads live.
+    let yieldsStatus = 'skipped';
+    try {
+        const d = await runBranchD(now, vaults);
+        yieldsStatus = d.status;
+        if (d.errors.length) errors.push(...d.errors);
+        console.log(`  D: yields ${d.status} — ${d.doc.vaults.filter(v => v.headline[30] && v.headline[30].total_apy != null).length}/${d.doc.vaults.length} vaults with a 30d headline; native est ${d.doc.native_staking.apy_est == null ? 'n/a' : (d.doc.native_staking.apy_est * 100).toFixed(2) + '%'}`);
+    }
+    catch (e) { errors.push({ where: 'yields', error: e.message }); console.warn(`  D: yields failed: ${e.message}`); yieldsStatus = 'error'; }
+
     const status = vaults.length === 0 ? 'error' : (errors.length ? 'partial' : 'ok');
     await publishFile('votion/heartbeat.json', {
         version: VERSION, capturedAt: now.toISOString(), status,
         vaults_at: now.toISOString(), positions_at: positionsAt, positions_status: positionsStatus,
         lst_rate_fallback_in_use: errors.some(e => /lst_hub/.test(e.where)),
-        vault_count: vaults.length, optimization_status: optC.status, optimization_vaults: optC.slugs, optimization_probes: optC.probes, _errors: errors.length ? errors : null,
+        vault_count: vaults.length, optimization_status: optC.status, optimization_vaults: optC.slugs, optimization_probes: optC.probes, yields_status: yieldsStatus, _errors: errors.length ? errors : null,
     }, `votion heartbeat ${status}`);
     console.log(`  done: ${status}${errors.length ? ` (${errors.length} recorded errors)` : ''}`);
     return { status, vaults, errors };
 }
 
-module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, resolveLstHubRates, queryHubRate, LST_HUB_CANDIDATES, runBranchA, runBranchB, SEED_VAULTS, runBranchC };
+module.exports = { run, T, apiGetJson, publishFile, discoverVaults, loadVaultState, parseGaugeVotes, buildNowRollup, discoverHoldersIncremental, priceFromCatalog, resolveLstHubRates, queryHubRate, LST_HUB_CANDIDATES, runBranchA, runBranchB, SEED_VAULTS, runBranchC, runBranchD, lstSymbolOfContract };
 if (require.main === module) run().then(r => process.exit(r.status === 'error' ? 1 : 0)).catch(e => { console.error('FATAL:', e.message); process.exit(1); });

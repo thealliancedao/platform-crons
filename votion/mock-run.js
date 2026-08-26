@@ -58,6 +58,11 @@ M.T.githubApiRequest = async (method, apiPath, body, accept) => {
     if (method === 'PUT') { REPO[path] = JSON.parse(Buffer.from(body.content, 'base64').toString()); WRITES[path] = (WRITES[path] || 0) + 1; return { ok: true }; }
 };
 M.T.lcdGet = async (path) => {
+    // 1.4.0 Branch D chain staking inputs
+    if (path.includes('/cosmos/mint/v1beta1/annual_provisions')) return { annual_provisions: '96455271678637.83' };
+    if (path.includes('/cosmos/staking/v1beta1/pool')) return { pool: { bonded_tokens: '255306000000000' } };
+    if (path.includes('/cosmos/distribution/v1beta1/params')) return { params: { community_tax: '0' } };
+    if (path.includes('/terra/alliances')) return { alliances: [{ denom: 'x', reward_weight: '0.398', reward_start_time: '2025-01-01T00:00:00Z' }] };
     if (path.includes(`/code/3677/contracts`)) return CHAIN.codeList;
     if (path.includes('/supply/by_denom')) { const d = decodeURIComponent(path.split('denom=')[1]); const a = CHAIN.supply[d]; return a != null ? { amount: { denom: d, amount: a } } : null; }
     if (path.includes('/cosmos/tx/v1beta1/txs')) {
@@ -84,10 +89,12 @@ M.T.lcdGet = async (path) => {
     if (path.includes('/smart/')) {
         const mm = path.match(/contract\/([^/]+)\/smart\/(.+)$/); const addr = mm[1];
         const msg = JSON.parse(Buffer.from(decodeURIComponent(mm[2]), 'base64').toString());
-        if (msg.config) return CHAIN.config[addr] ? { data: CHAIN.config[addr] } : null;
+        if (msg.config) return CHAIN.config[addr] ? { data: CHAIN.config[addr] } : (addr === 'terra10788fkzah89xrdm27zkj5yvhj9x3494lxawzm5qq3vvxcqz2yzaqyd3enk' ? { data: { protocol_reward_fee: '0.05' } } : null);   // 1.4.0: only the real ampLUNA hub answers config (Branch D fee)
         if (msg.state) return CHAIN.state[addr] ? { data: CHAIN.state[addr] } : null;
         if (msg.lock_info) { const l = CHAIN.lock[String(msg.lock_info.token_id)]; return l ? { data: l } : null; }
         if (msg.user_info) return CHAIN.gauge[msg.user_info.user] ? { data: CHAIN.gauge[msg.user_info.user] } : { data: null };
+        // 1.4.0 Branch D: exchange_rates(limit) history + hub config fee — constant 0.1%/day growth, any contract the chain knows
+        if (msg.exchange_rates) { const n = msg.exchange_rates.limit || 30; const t0 = Math.floor(NOW.getTime() / 1000); const s = []; for (let i = 0; i < n; i++) { const t = t0 - i * 86400; s.push([Math.floor(t / 86400), { exchange_rate: (1.3 * Math.pow(1.001, n - 1 - i)).toFixed(15), time_s: t }]); } return { data: { exchange_rates: s, apr: String((Math.pow(1.001, n - 1) - 1) / (n - 1)) } }; }
         return null;
     }
     return null;
