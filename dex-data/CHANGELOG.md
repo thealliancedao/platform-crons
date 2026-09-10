@@ -1,3 +1,38 @@
+# 1.3.3 — 2026-09-10 — eris-apr: SkeletonSwap + Credia staked basis, single names, catalog decimals
+
+Owner audit (Eris screen, 2026-09-10 15:xx UTC) vs the committed product: every
+SkeletonSwap gauge pool and the Credia market published `tla_staked_usd = null`
+→ APR/APY null (5 SS pools $44.7K/$30.4K/$8.0K/$13.2K/$40.3K + wBTC.creda.a
+$80.7K on Eris), and the two single-asset rows had `pool_name: null`. Causes,
+one per leg: (1) the SS adapter defers TVL by design ("computed downstream from
+reserves × trusted prices") and eris-apr never performed that join; (2) the
+Credia adapter left `lp_total_supply` null although the gauge stakes the
+vproxy RECEIPT token whose supply is `state.supply_vtotal`; (3) single entries
+have no pool record and nothing named them; (4) latent: `catalogPrice` read a
+top-level `decimals` that the catalog schema never had → every catalog
+fallback priced at 6 decimals (8-dec wBTC would have been 100× off on that
+path).
+
+Fix, all labeled: new staked basis
+`staked_supply_ratio_x_reserve_implied_tvl (<price source>)` — Σ reserve ×
+token-catalog price over the pool's assets, tried ONLY when the adapter TVL is
+null and reserves + supply exist; ANY unpriced asset nulls the whole leg with
+`reserve_tvl_unpriced:<reason>` (never a partial sum); implied pool TVL
+published beside it (`pool_tvl_usd_reserve_implied`). Credia adapter publishes
+`lp_total_supply = supply_vtotal` so the standard basis applies. Singles named
+from the catalog's `effective` layer (its stated downstream contract;
+`pool_name_source`), decimals read from the same layer. NAMED GAP, not guessed:
+`single_asset_yield_leg_unmeasured` — Eris's screen adds a leg on single
+gauges beyond incentive − take (xASTRO 15.4 vs 33.08, ampCAPA 14.8 vs 19.65)
+that the source-confirmed formula does not carry.
+
+Gates: mock M7c (+7, suite 71/71); real-fixture gate on the committed
+2026-09-10 products vs the owner's screen 40/40 — 18 Astroport rows
+byte-identical (regression), SS/Credia staked within 0.5% of Eris (ATOM-LUNA
+1.35%), APR within 0.4 pp, all six within 1.5% of member-data's independent
+figure, 26/26 fully priced (was 20/26). Clears the product's "pending
+ground-truth reconciliation" marker for pair pools; singles carry the gap flag.
+
 # 1.3.1 — 2026-08-02 — eris-apr resilience: token-catalog price fallback (labeled)
 
 First live run (during a live astroport tRPC outage — their backend 500ing on

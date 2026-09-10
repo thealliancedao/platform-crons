@@ -371,6 +371,46 @@ NET.pools_list = () => ([
         E.CH.fetchJson = async () => { throw new Error('catalog down too'); };
         const doc4 = await E.runErisApr(noAstroPools, {});
         assert(doc4.meta.luna_price_used_usd === null && doc4.pools.every(p => p.eris_apy_pct === null || p.incentive_apr_pct === 0), 'catalog ALSO down -> honest nulls everywhere, run survives');
+
+        console.log('\nM7c — SkeletonSwap staked basis (1.3.3): reserves × catalog prices, labeled; any unpriced asset → null');
+        // The 2026-09-10 audit finding: SS adapter defers TVL by design
+        // (reserves captured, prices are the catalog's domain) and eris-apr
+        // never performed that join -> every SS pool published $0 / 0%.
+        // Catalog identity lives under `effective` (its stated contract).
+        const CAT3 = { tokens: [
+            { denom: 'uluna', effective: { symbol: 'LUNA', decimals: 6 }, prices: { tla: { usd: 0.10, status: 'ok' } } },
+            { denom: 'terra1solidtoken', effective: { symbol: 'SOLID', decimals: 6 }, prices: { tla: { usd: 0.50, status: 'ok' } } },
+            { denom: 'terra1xastro', effective: { symbol: 'xASTRO', decimals: 6 }, prices: { coingecko: { usd: 0.02, status: 'ok' } } },
+            { denom: 'ibc/WBTC', effective: { symbol: 'wBTC.atom', decimals: 8 }, prices: { tla: { usd: 100000, status: 'ok' } } },
+        ] };
+        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT3; throw new Error('unexpected fetch ' + url); };
+        const ssBase = dexPools.find(p => p.raw && p.raw.gauge && p.raw.gauge.gauge_pool_id === K.ssPool);
+        // 1,000 LUNA ($100) + 200 SOLID ($100) reserves, supply 1,000 LP; gauge stakes 500 LP → $100
+        const ssPriced = { ...ssBase, tvl_usd: null, lp_total_supply: '1000000000', assets: [
+            { symbol: 'LUNA', denom: 'uluna', amount_raw: '1000000000', decimals: 6, price_usd: null },
+            { symbol: 'SOLID', denom: 'terra1solidtoken', amount_raw: '200000000', decimals: 6, price_usd: null } ] };
+        const ssUnpriced = { ...ssPriced, assets: [ssPriced.assets[0], { symbol: 'ZZZ', denom: 'terra1nosuch', amount_raw: '1', decimals: 6, price_usd: null }] };
+        const inputs5 = await E.captureInputs(E.CH);
+        inputs5.staked_by_gauge_asset.stable[K.ssPool] = 500000000;   // ssPool is distributed under the STABLE gauge above
+        const doc5 = E.composeErisApr(inputs5, [ssPriced], {}, CAT3);
+        const s5 = doc5.pools.find(p => p.gauge_pool_id === K.ssPool);
+        assert(Math.abs(s5.tla_staked_usd - 100) < 1e-9 && s5.tla_staked_usd_basis === 'staked_supply_ratio_x_reserve_implied_tvl (token-catalog/tla)', `SS staked = supply-ratio × Σ(reserve × catalog price), basis labeled (got $${s5.tla_staked_usd})`);
+        assert(Math.abs(s5.pool_tvl_usd_reserve_implied - 200) < 1e-9 && !(s5.flags || []).includes('staked_usd_unavailable') && s5.eris_apy_pct != null, 'reserve-implied pool TVL published beside it; figure fully computed');
+        const doc6 = E.composeErisApr(inputs5, [ssUnpriced], {}, CAT3);
+        const s6 = doc6.pools.find(p => p.gauge_pool_id === K.ssPool);
+        assert(s6.tla_staked_usd === null && s6.flags.includes('reserve_tvl_unpriced:price:ZZZ') && s6.flags.includes('staked_usd_unavailable'), 'one unpriced reserve → staked null WITH the offending asset named — never a partial sum');
+        const doc7 = E.composeErisApr(inputs5, [{ ...ssPriced, assets: [] }], {}, CAT3);
+        assert(doc7.pools.find(p => p.gauge_pool_id === K.ssPool).flags.includes('reserve_tvl_unpriced:no_assets'), 'no reserves captured → null with reason');
+        // singles: name from catalog `effective`, decimals honoured (8-dec wBTC not 100× off), gap flag named
+        const inputs8 = await E.captureInputs(E.CH);
+        inputs8.dist_by_gauge.single = [{ key: 'native:ibc/WBTC', distribution: 0.5 }, { key: K.xastro, distribution: 0.5 }];
+        inputs8.staked_by_gauge_asset.single = { 'native:ibc/WBTC': 100000000, [K.xastro]: 250000000000 };
+        inputs8.take_by_gauge_asset.single = { 'native:ibc/WBTC': 0.1, [K.xastro]: 0.1 };
+        const doc8 = E.composeErisApr(inputs8, [], {}, CAT3);
+        const wb8 = doc8.pools.find(p => p.gauge_pool_id === 'native:ibc/WBTC'), xa8 = doc8.pools.find(p => p.gauge_pool_id === K.xastro);
+        assert(wb8.pool_name === 'wBTC.atom' && wb8.pool_name_source === 'token-catalog symbol' && xa8.pool_name === 'xASTRO', 'single entries named from the catalog (effective layer)');
+        assert(Math.abs(wb8.tla_staked_usd - 100000) < 1e-9, `catalog fallback honours effective.decimals — 1.0 wBTC (8 dec) = $100,000, not $10,000,000,000 (got $${wb8.tla_staked_usd})`);
+        assert(wb8.flags.includes('single_asset_yield_leg_unmeasured') && xa8.flags.includes('single_asset_yield_leg_unmeasured'), 'single-asset yield leg gap is NAMED (flag), not guessed');
     }
 
     console.log('\n' + '='.repeat(60));
