@@ -10,7 +10,7 @@ const ADDR = 'terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw';
 const MEMO = 'thanks_defi';
 const LCDS = ['https://terra-lcd.publicnode.com', 'https://terra.publicnode.com'];
 const PRODUCT = 'member-data/supporters/current.json';
-const VERSION = 'supporters-1.0';
+const VERSION = 'supporters-1.1';   // 1.1 (2026-09-10): LCD answer visible in the log (rows/newest height/memo hits); second event key (coin_received.receiver) when transfer.recipient answers empty
 
 // pure: LCD /cosmos/tx/v1beta1/txs response → gifts [{tx_hash, height, ts, from, denom, amount_raw, kind}]
 function extractGifts(resp, addr = ADDR, memo = MEMO) {
@@ -38,21 +38,38 @@ function merge(existing, gifts, now = new Date()) {
     if (existing && Array.isArray(existing.gifts) && rows.length < existing.gifts.length) throw new Error('never-shrink: merged fewer rows than committed');
     return { product: { version: VERSION, address: ADDR, memo: MEMO, generated_at: now.toISOString(), count: rows.length, supporters: new Set(rows.map(r => r.from)).size, method: 'LCD tx search transfer.recipient=<address>, newest first, paged back to the last committed height; only txs whose memo equals the tag and whose code is 0; bank MsgSend amounts and cw20 transfers to the address; write-once per (tx, denom, amount, sender); never-shrink.', gifts: rows }, added };
 }
-async function fetchPage(fetchJson, offsetOrKey, params) {
-    for (const lcd of LCDS) for (const p of ['events', 'query']) {
-        const u = `${lcd}/cosmos/tx/v1beta1/txs?${p}=transfer.recipient%3D%27${ADDR}%27&order_by=ORDER_BY_DESC&limit=100${params}`;
-        try { const r = await fetchJson(u); if (r && Array.isArray(r.tx_responses)) return r; } catch (e) { /* next */ }
+// 1.1: the owner's 2026-09-10 test gift (50 LUNA, memo thanks_defi, block 22778110) did not appear after two hourly
+// runs while the parser accepts that exact tx — so the LCD event search must be answering empty. Two changes: every
+// answer is logged (rows, newest height, memo hits) so the log says WHY, and an empty first page under
+// transfer.recipient is retried under coin_received.receiver (same event, the key some indexers serve instead).
+const EVENT_KEYS = ['transfer.recipient', 'coin_received.receiver'];
+async function fetchPage(fetchJson, offsetOrKey, params, log = console) {
+    let empty = null;
+    for (const key of EVENT_KEYS) {
+        for (const lcd of LCDS) for (const p of ['events', 'query']) {
+            const u = `${lcd}/cosmos/tx/v1beta1/txs?${p}=${encodeURIComponent(key)}%3D%27${ADDR}%27&order_by=ORDER_BY_DESC&limit=100${params}`;
+            try {
+                const r = await fetchJson(u);
+                if (r && Array.isArray(r.tx_responses)) {
+                    const n = r.tx_responses.length, newest = n ? r.tx_responses[0].height : null;
+                    log.log(`  supporters: ${key} via ${new URL(lcd).host} (${p}) → ${n} tx${n === 1 ? '' : 's'}${newest ? `, newest height ${newest}` : ''}`);
+                    if (n) return r;
+                    empty = empty || r;   // an honest empty answer — keep it, but try the other key first
+                }
+            } catch (e) { /* next */ }
+        }
     }
-    return null;
+    return empty;
 }
 async function run({ fetchJson, readProduct, publish, log = console }) {
     const existing = await readProduct(PRODUCT).catch(() => null);
     const lastHeight = existing && existing.gifts && existing.gifts.length ? existing.gifts[0].height : 0;
     let gifts = [], page = 0, done = false;
     while (!done && page < 20) {                       // ≤ 2,000 newest transfers per run; the product carries the rest
-        const r = await fetchPage(fetchJson, null, page ? `&page=${page + 1}` : '');
+        const r = await fetchPage(fetchJson, null, page ? `&page=${page + 1}` : '', log);
         if (!r) { if (page === 0) throw new Error('LCD tx search unavailable on every endpoint'); break; }
-        gifts = gifts.concat(extractGifts(r));
+        const found = extractGifts(r); gifts = gifts.concat(found);
+        if (page === 0) log.log(`  supporters: page 1 → ${found.length} tx${found.length === 1 ? '' : 's'} with memo "${MEMO}" (last committed height ${lastHeight})`);
         const heights = (r.tx_responses || []).map(t => Number(t.height));
         if (!heights.length || Math.min(...heights) <= lastHeight || (r.tx_responses || []).length < 100) done = true;
         page++;
