@@ -155,6 +155,8 @@ const DATA_REPOS = {
     bribeStateMonthUrl: (d) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/bribe-state/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}.json`,
     pdBribesCurrentUrl: 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/pd-bribes/current.json',
     astroportBaseUrl:  'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/astroport/epochs',
+    crediaSnapshotUrl: 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/credia/snapshots/current.json',   // 1.1.2
+    tokenCatalogUrl:   'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json',    // 1.1.2 (names from `effective`)
     ssPoolBaseUrl:     'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/skeletonswap/rolling',
 };
 
@@ -352,14 +354,19 @@ async function loadAllInputs(currentEpoch) {
         return null;
     })();
 
-    const [networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv]
-        = await Promise.all([...tasks, astroportTask, ssTask]);
+    // 1.1.2 (2026-09-10): Credia market snapshot + org token-catalog — the Credia gauge entry is a cw20 RECEIPT
+    // token (vproxy) with no pair, so resolvePoolId's minter{} query fails and the row was DROPPED (67/68 pools;
+    // wBTC.creda.a — $80.7K staked, an active single gauge — absent from every tla-stats tab). Both reads isolated.
+    const crediaTask = (async () => { try { const d = await fetchJson(`${DATA_REPOS.crediaSnapshotUrl}`, 'credia'); console.log(`  ✓ credia: ${(d.pools || []).length} markets`); return d; } catch (e) { console.log(`  ⚠ credia: ${e.message.slice(0, 60)}`); return null; } })();
+    const catalogTask = (async () => { try { const d = await fetchJson(`${DATA_REPOS.tokenCatalogUrl}`, 'token-catalog'); console.log(`  ✓ token-catalog: ${(d.tokens || []).length} tokens`); return d; } catch (e) { console.log(`  ⚠ token-catalog: ${e.message.slice(0, 60)}`); return null; } })();
+    const [networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog]
+        = await Promise.all([...tasks, astroportTask, ssTask, crediaTask, catalogTask]);
 
     if (networkPrices) console.log(`  ✓ network-and-prices: ${Object.keys(networkPrices.token_prices || {}).length} tokens`);
     if (bribesCurrent)  console.log(`  ✓ bribes-current: ${bribesCurrent.active_bribes?.length || 0} active bribes`);
     if (bribesHistory)  console.log(`  ✓ bribes-history: ${bribesHistory.bribes?.length || 0} bribes`);
 
-    return { networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv };
+    return { networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog };
 }
 
 // -----------------------------------------------------------------------------
@@ -507,7 +514,15 @@ async function resolvePoolId(poolId) {
         if (poolId.startsWith('cw20:')) {
             const lpAddr = poolId.slice(5);
             // Query minter to get the pool address
-            const minterInfo = await queryContract(lpAddr, { minter: {} });
+            let minterInfo = null;
+            try { minterInfo = await queryContract(lpAddr, { minter: {} }); }
+            catch (e) {
+                // 1.1.2: a cw20 gauge entry with NO minter is a single-asset receipt token (Credia vproxy).
+                // token_info{} is the cw20 standard every such token answers; resolve it as a single.
+                const ti = await queryContract(lpAddr, { token_info: {} });
+                if (ti && ti.symbol) return { lpAddr: null, poolAddr: null, isLpPair: false, isSingle: true, sourceType: 'cw20-single', cw20Addr: lpAddr, tokenInfo: ti };
+                throw e;
+            }
             const poolAddr = minterInfo?.minter || null;
             return { lpAddr, poolAddr, isLpPair: true, isSingle: false, sourceType: 'cw20' };
         }
@@ -619,6 +634,9 @@ async function enrichPool(entry, ctx) {
     // Pool identity from astroport cron data (most reliable for LP names)
     const astroEntry = resolved.poolAddr ? astroportByPool.get(resolved.poolAddr) : null;
     const ssEntry = resolved.poolAddr ? ssByAddress.get(resolved.poolAddr) : null;
+    // 1.1.2: the org credia snapshot keyed by gauge_pool_id (raw.gauge) — only the receipt singles match
+    const crediaMarket = (resolved.cw20Addr && ctx.credia && Array.isArray(ctx.credia.pools))
+        ? ctx.credia.pools.find(p => p.raw && p.raw.gauge && p.raw.gauge.gauge_pool_id === `cw20:${resolved.cw20Addr}`) || null : null;
 
     // Status determination
     const isAstroportPool = !!astroEntry;
@@ -633,6 +651,7 @@ async function enrichPool(entry, ctx) {
     // ampLP info from staking contract
     let assetKey;
     if (resolved.lpAddr) assetKey = `cw20:${resolved.lpAddr}`;
+    else if (resolved.cw20Addr) assetKey = `cw20:${resolved.cw20Addr}`;   // 1.1.2
     else if (resolved.lpDenom) assetKey = `native:${resolved.lpDenom}`;
     const stakedEntry = assetKey ? stakedByAssetKey.get(assetKey) : null;
 
@@ -650,7 +669,11 @@ async function enrichPool(entry, ctx) {
         dexSubtype = null;  // could detect from name if needed
     } else if (resolved.isSingle) {
         // Single-sided gauges — derive name from denom/symbol
-        if (resolved.symbolFromDenom) {
+        if (resolved.cw20Addr) {
+            // 1.1.2: cw20 receipt token — catalog `effective.symbol` (its stated downstream contract), else token_info
+            const cat = (ctx.tokenCatalog && Array.isArray(ctx.tokenCatalog.tokens)) ? ctx.tokenCatalog.tokens.find(x => x.denom === resolved.cw20Addr) : null;
+            name = (cat && cat.effective && cat.effective.symbol) || (resolved.tokenInfo && resolved.tokenInfo.symbol) || null;
+        } else if (resolved.symbolFromDenom) {
             name = resolved.symbolFromDenom;
         } else if (resolved.lpDenom) {
             // Try to resolve the denom to a proper symbol via TokenResolver
@@ -664,8 +687,8 @@ async function enrichPool(entry, ctx) {
                 name = resolved.lpDenom.slice(0, 30);
             }
         }
-        dex = 'Single';
-        dexSubtype = 'single';
+        dex = crediaMarket ? 'Credia' : 'Single';
+        dexSubtype = crediaMarket ? 'lending_market' : 'single';
     }
     // Fallback name from pool_id if all else fails
     if (!name) name = poolId.slice(0, 50);
@@ -698,6 +721,13 @@ async function enrichPool(entry, ctx) {
             const stakedLpAmount = parseFloat(stakedEntry.asset.amount);
             const lpUnitValue = lpHealth.total_pool_usd / parseFloat(lpHealth.total_share);
             stakedInTlaUsd = stakedLpAmount * lpUnitValue;
+        } else if (resolved.isSingle && resolved.cw20Addr) {
+            // 1.1.2: Credia receipt — staked receipts / receipt supply × market TVL (org credia snapshot; the basis
+            // eris-apr 1.3.3 uses: 103,761,290 / 211,814,542 × $164,685 = $80,673 vs Eris $80.72K on 2026-09-10)
+            const cm = crediaMarket;
+            if (cm && cm.tvl_usd != null && cm.lp_total_supply != null && Number(cm.lp_total_supply) > 0) {
+                stakedInTlaUsd = (parseFloat(stakedEntry.asset.amount) / Number(cm.lp_total_supply)) * Number(cm.tvl_usd);
+            }
         } else if (resolved.isSingle) {
             // Single-sided path: query token decimals + price
             // For factory tokens, the symbol is at the end of the denom path
@@ -716,8 +746,8 @@ async function enrichPool(entry, ctx) {
         }
     }
 
-    // Pool depth (Astroport TVL or SS TVL)
-    const depthUsd = astroEntry?.astroportTvlUsd ?? ssEntry?.tvl_usd ?? null;
+    // Pool depth (Astroport TVL or SS TVL; Credia market TVL for the receipt single)
+    const depthUsd = astroEntry?.astroportTvlUsd ?? ssEntry?.tvl_usd ?? crediaMarket?.tvl_usd ?? null;
 
     return {
         // Identity
@@ -1643,6 +1673,8 @@ async function captureTlaSnapshot() {
         lstRatios,
         tokenResolver,
         priceResolver,
+        credia: inputs.credia || null,           // 1.1.2
+        tokenCatalog: inputs.tokenCatalog || null,
     };
 
     // ── PASS 1 — enrich all pools (this populates priceResolver.poolReserves) ──
@@ -1728,6 +1760,7 @@ async function captureTlaSnapshot() {
             bribes_current:     !!inputs.bribesCurrent,
             bribes_history:     !!inputs.bribesHistory,
             astroport:          !!inputs.astroport,
+            credia:             !!inputs.credia,      // 1.1.2
             skeleton_swap:      !!inputs.ssCsv,
         },
 
