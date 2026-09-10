@@ -10,10 +10,12 @@
 //       astroport       → tla-core dex-data/astroport/epochs (org fold;
 //                         shape gate-proven: poolContract/name/deprecated)
 //       skeletonswap    → tla-core dex-data/skeletonswap/rolling (org fold)
-//     votion stays on its ALIVE mid-fleet source (votion-data_2026) BY RULE:
-//     inputs migrate with their own strip — the site itself still reads that
-//     product directly; swapping here would invent per-pool data org doesn't
-//     emit yet (votion epoch-view is queued).
+//     votion: RETIRED here (2026-09-10). The mid-fleet source
+//     (defipatriot/votion-data_2026) is gone with the parallel-pair cleanup
+//     (404 for every epoch); the per-pool fields it attached
+//     (votion_current_vp / votion_optimized_vp / lockup_contributions) were
+//     never read by tla-stats (Rev T4.1 reads tla-core/votion/* directly).
+//     The org-votion cron is the ONLY votion source.
 //   - PUBLISH → tla-core member-data/tla-snapshot/{current.json,
 //     daily/<date>.json, heartbeat.json} (VP layer's fold absorber).
 //   - module.exports {main} for the member-data orchestrator (hourly host,
@@ -26,7 +28,7 @@
 // =============================================================================
 //
 // Unified TLA pool view. Consumer cron that reads all 5 producer data repos
-// (votion, bribes, astroport, ss, network-and-prices) AND performs live chain
+// (bribes, astroport, ss, network-and-prices) AND performs live chain
 // queries (gauge_infos, total_staked_balances, distributions) to produce the
 // dashboard's primary data file.
 //
@@ -152,8 +154,6 @@ const DATA_REPOS = {
     // org tla-voting products (see header): month file is a LIST of harvests.
     bribeStateMonthUrl: (d) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/bribe-state/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}.json`,
     pdBribesCurrentUrl: 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/pd-bribes/current.json',
-    // ALIVE mid-fleet source — migrates with the votion strip, not here.
-    votionBaseUrl:     'https://raw.githubusercontent.com/defipatriot/votion-data_2026/main/votion',
     astroportBaseUrl:  'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/astroport/epochs',
     ssPoolBaseUrl:     'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/skeletonswap/rolling',
 };
@@ -307,21 +307,6 @@ async function loadAllInputs(currentEpoch) {
         })(),
     ];
 
-    // Votion (epoch-numbered, try next/current/previous since the votion cron
-    // captures the UPCOMING epoch's optimization data — so when current=184,
-    // the latest votion file is for epoch 185 (the one being voted on right now).
-    const votionTask = (async () => {
-        for (const e of [currentEpoch + 1, currentEpoch, currentEpoch - 1]) {
-            try {
-                const data = await fetchJson(`${DATA_REPOS.votionBaseUrl}/votion-epoch-${e}.json`, `votion-${e}`);
-                console.log(`  ✓ votion: loaded epoch ${e}`);
-                return data;
-            } catch (err) { /* try next */ }
-        }
-        console.log(`  ⚠ votion: no recent file found`);
-        return null;
-    })();
-
     // Astroport (epoch-numbered, try current+previous epoch)
     const astroportTask = (async () => {
         for (const e of [currentEpoch, currentEpoch - 1]) {
@@ -367,14 +352,14 @@ async function loadAllInputs(currentEpoch) {
         return null;
     })();
 
-    const [networkPrices, bribesCurrent, bribesHistory, votion, astroport, ssCsv]
-        = await Promise.all([...tasks, votionTask, astroportTask, ssTask]);
+    const [networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv]
+        = await Promise.all([...tasks, astroportTask, ssTask]);
 
     if (networkPrices) console.log(`  ✓ network-and-prices: ${Object.keys(networkPrices.token_prices || {}).length} tokens`);
     if (bribesCurrent)  console.log(`  ✓ bribes-current: ${bribesCurrent.active_bribes?.length || 0} active bribes`);
     if (bribesHistory)  console.log(`  ✓ bribes-history: ${bribesHistory.bribes?.length || 0} bribes`);
 
-    return { networkPrices, bribesCurrent, bribesHistory, votion, astroport, ssCsv };
+    return { networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv };
 }
 
 // -----------------------------------------------------------------------------
@@ -1255,25 +1240,7 @@ function attachBribes(pools, bribesCurrent, bribesHistory) {
 }
 
 // -----------------------------------------------------------------------------
-// PHASE 7: VOTION VP DETAIL PER POOL
-// -----------------------------------------------------------------------------
-
-function attachVotionDetail(pools, votionData) {
-    if (!votionData?.pools) return;
-
-    // Votion uses "{name}|{dex}" as keys (e.g. "LUNA-USDC|Astroport")
-    for (const pool of pools) {
-        if (!pool.name || !pool.dex) continue;
-        const key = `${pool.name.replace(/ LP$/, '').trim()}|${pool.dex}`;
-        const votionEntry = votionData.pools[key];
-        if (votionEntry) {
-            pool.voting_power.lockup_contributions = votionEntry.lockup_contributions || [];
-            pool.voting_power.votion_current_vp = votionEntry.current_vp;
-            pool.voting_power.votion_optimized_vp = votionEntry.optimized_vp;
-        }
-    }
-}
-
+// PHASE 7: (retired 2026-09-10) votion VP detail — source gone, fields unread.
 // -----------------------------------------------------------------------------
 // PHASE 8: TOP-LEVEL ROLLUPS
 // -----------------------------------------------------------------------------
@@ -1565,7 +1532,7 @@ async function pushToGithub(filepath, content, message, maxAttempts = 5) {
 // =============================================================================
 //
 // Detects upstream-stuck or chain-stuck failures. TLA-snapshot is an aggregator
-// of votion, bribes, astroport, ss, and network-and-prices PLUS live chain
+// of bribes, astroport, ss, and network-and-prices PLUS live chain
 // queries. If everything froze at once (warlock-style), per-pool values would
 // be identical across runs.
 //
@@ -1736,10 +1703,6 @@ async function captureTlaSnapshot() {
     console.log('🎁 Attaching bribes...');
     attachBribes(pools, inputs.bribesCurrent, inputs.bribesHistory);
 
-    // Phase 7: votion VP detail
-    console.log('🗳️  Attaching votion VP detail...');
-    attachVotionDetail(pools, inputs.votion);
-
     // Phase 8: rollups
     console.log('📊 Computing rollups...');
     const { totals, byBucket } = computeRollups(pools, catalog.bucketVps);
@@ -1764,7 +1727,6 @@ async function captureTlaSnapshot() {
             network_and_prices: !!inputs.networkPrices,
             bribes_current:     !!inputs.bribesCurrent,
             bribes_history:     !!inputs.bribesHistory,
-            votion:             !!inputs.votion,
             astroport:          !!inputs.astroport,
             skeleton_swap:      !!inputs.ssCsv,
         },

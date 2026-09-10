@@ -1,5 +1,16 @@
 # member-data — changelog
 
+## 1.1.1 — 2026-09-10 — tla-snapshot: dead votion read retired
+
+`sources.votion` had been `false` on every run: tla-snapshot still fetched
+`votion-epoch-{N}.json` from the personal repo `defipatriot/votion-data_2026`,
+which is gone with the parallel-pair cleanup (404 for every epoch, incl. old
+ones). The three per-pool fields it attached (`votion_current_vp`,
+`votion_optimized_vp`, `lockup_contributions`) were never read by tla-stats
+(Rev T4.1 reads `tla-core/votion/*` directly). Removed the fetch, the phase-7
+attach, and the `sources.votion` key; org-votion is the only votion source.
+Removal only — no figure changes.
+
 ## 1.0.2 — 2026-06-29 — concurrent-write hardening
 
 - pushToGithub now retries on GitHub 409/422 sha-conflict (same fix as the other

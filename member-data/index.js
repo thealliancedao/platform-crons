@@ -34,7 +34,7 @@ const C = require('../config/contracts.js');
 const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-const VERSION = 'member-data-1.1.0';  // 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
+const VERSION = 'member-data-1.1.1';  // 1.1.1 (2026-09-10): tla-snapshot — dead votion read (retired personal repo, 404) removed; sources.votion key dropped · 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 
