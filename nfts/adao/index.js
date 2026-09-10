@@ -1302,6 +1302,54 @@ function mergeMarketplaceListings(records, marketplaces, priceData) {
 // AGGREGATE
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// DAO-CONTROLLED SET BY TOKEN ID (owner 2026-09-10) — nfts/adao/snapshots/dao-controlled.json
+// -----------------------------------------------------------------------------
+// The 1,000 governance NFTs the DAO holds broken, keyed by ID so pages and the
+// P&L never re-derive them from wallets: treasury (898), the enterprise-staked
+// hundred (100), the small DAO wallet (2). Two guards, both published:
+//   ids_total == 1000 (the documented governance count)
+//   enterprise `members{}` weight of the registered operator wallet == the
+//     enterprise-broken count (the DAO staked those 100 via that wallet — a
+//     member ever staking a broken NFT there would break this equality)
+// A failing guard sets status 'violation' and names it; the set still publishes
+// (never blank the page on a guard — decode it).
+const ENTERPRISE_OPERATOR_WALLET = 'terra1nn7yrgjzj6zvle7ms9vlpg4cj3kaxjls4g6ugw';   // aDAO Enterprise-governance operator (council, legacy) — owner-confirmed 2026-09-10; chain: funded 2024-10-31, staked the 100, voted Enterprise props 81–88
+const DAO_CONTROLLED_EXPECTED = 1000;
+function buildDaoControlled(records, enterpriseStakers, nowIso) {
+    const by = { treasury: [], enterprise: [], dao_wallet_8ywv: [] };
+    for (const r of records) {
+        if (r.treasury_held) by.treasury.push(String(r.id));
+        else if (r.enterprise_dao_broken) by.enterprise.push(String(r.id));
+        else if (r.dao_wallet_8ywv_held) by.dao_wallet_8ywv.push(String(r.id));
+    }
+    for (const k of Object.keys(by)) by[k].sort((a, b) => Number(a) - Number(b));
+    const total = by.treasury.length + by.enterprise.length + by.dao_wallet_8ywv.length;
+    const notBroken = records.filter(r => (r.treasury_held || r.enterprise_dao_broken || r.dao_wallet_8ywv_held) && !r.broken).length;
+    const operator = (enterpriseStakers || []).find(s => s.address === ENTERPRISE_OPERATOR_WALLET);
+    const operatorWeight = operator ? Number(operator.count) : null;
+    const guards = {
+        ids_total: { expected: DAO_CONTROLLED_EXPECTED, measured: total, ok: total === DAO_CONTROLLED_EXPECTED },
+        all_broken: { expected: 0, measured: notBroken, ok: notBroken === 0 },
+        enterprise_operator_weight: { expected: by.enterprise.length, measured: operatorWeight, ok: operatorWeight != null && operatorWeight === by.enterprise.length,
+            note: operatorWeight == null ? 'operator wallet absent from enterprise members{} this run (guard cannot judge)' : undefined },
+    };
+    const failed = Object.entries(guards).filter(([, g]) => !g.ok).map(([k]) => k);
+    return {
+        schemaVersion: 1, module: 'nft-inventory', product: 'dao-controlled', generatedAt: nowIso,
+        status: failed.length ? 'violation' : 'ok', failed_guards: failed,
+        note: 'The 1,000 governance NFTs the DAO holds broken, by token id. Custody: treasury contract, the enterprise-staked hundred (staked via the registered operator wallet), the small DAO wallet. Excluded from circulating/liquid supply everywhere; never double-counted as holder stakes.',
+        custody: {
+            treasury:        { address: DAO_TREASURY_CONTRACT, count: by.treasury.length },
+            enterprise:      { address: ENTERPRISE_NFT_STAKING, operator: ENTERPRISE_OPERATOR_WALLET, count: by.enterprise.length },
+            dao_wallet_8ywv: { address: DAO_WALLET_8YWV, count: by.dao_wallet_8ywv.length },
+        },
+        counts: { total, treasury: by.treasury.length, enterprise: by.enterprise.length, dao_wallet_8ywv: by.dao_wallet_8ywv.length },
+        guards,
+        ids: by,
+    };
+}
+
 function aggregate(records, daodaoStakers, enterpriseStakers, marketplaces, backing, priceData) {
     const total = records.length;
     let broken = 0, unbroken = 0;
@@ -2497,6 +2545,12 @@ async function captureSnapshot() {
         heartbeatDoc.nfts_last_published_at = nftsPublishedAt;
         heartbeatDoc.nfts_published_this_run = !(unchanged && !forcePublish);
 
+        // dao-controlled by ID (owner 2026-09-10) — guards published, never blanked
+        try {
+            const dc = buildDaoControlled(records, enterpriseStakers, new Date().toISOString());
+            await pushToGithub(`${OUTPUT_PATH}/dao-controlled.json`, JSON.stringify(dc, null, 1), `dao-controlled — ${dc.counts.total} ids (${dc.status}${dc.failed_guards.length ? ': ' + dc.failed_guards.join(',') : ''})`);
+            console.log(`  ${dc.status === 'ok' ? '✓' : '⚠'} dao-controlled: ${dc.counts.total} ids (treasury ${dc.counts.treasury} · enterprise ${dc.counts.enterprise} · 8ywv ${dc.counts.dao_wallet_8ywv}) — guards ${dc.status}${dc.failed_guards.length ? ' FAILED: ' + dc.failed_guards.join(', ') : ''}`);
+        } catch (e) { console.warn(`  ⚠ dao-controlled publish failed (isolated): ${e.message}`); }
         await pushToGithub(`${OUTPUT_PATH}/summary.json`,   JSON.stringify(summaryDoc, null, 2),     `nft summary — ${summary.broken_count} broken / ${summary.bbl_listed_count + summary.atrium_listed_count + summary.boost_listed_count} listed`);
         await pushToGithub(`${OUTPUT_PATH}/heartbeat.json`, JSON.stringify(heartbeatDoc, null, 2),   `📍 nft-inventory heartbeat — ${effectiveMode}/${status}`);
         // State-history: monthly rollup (daily state counts, live from chain). On
@@ -2605,6 +2659,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    buildDaoControlled, ENTERPRISE_OPERATOR_WALLET,   // dao-controlled by id (2026-09-10)
     parseClaimTx, captureClaims, CLAIMS_PATH,   // 6b
     sweepNftClaims,   // C.5
     captureSnapshot,
