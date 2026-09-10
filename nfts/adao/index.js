@@ -2588,6 +2588,11 @@ async function captureSnapshot() {
 
     const elapsed = (Date.now() - startedAt.getTime()) / 1000;
     console.log(`\n✅ Done (${elapsed.toFixed(1)}s)`);
+    // 2026-09-10 (foundations table): runWithAnalytics reads `result.runMode` to decide whether analytics +
+    // market-history run — but this function never returned anything, so `result` was undefined and both
+    // tails skipped on EVERY auto-escalated warm/full run (analytics-heartbeat and sales-enriched frozen at
+    // 2026-08-23 while full runs kept landing). Return the effective mode the heartbeat already records.
+    return { runMode: effectiveMode, status, elapsed };
 }
 
 // -----------------------------------------------------------------------------
