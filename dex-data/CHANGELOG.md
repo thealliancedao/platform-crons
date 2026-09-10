@@ -1,3 +1,10 @@
+# 1.3.5 — 2026-09-10 — eris-apr: validation marker cleared; Credia row named
+
+`meta.validation` had still read "pending ground-truth reconciliation" after 1.3.3/1.3.4 reconciled every row
+to the Eris screen — now states what was reconciled and when. Credia market rows take the catalog's effective
+symbol for the receipt token (`wBTC.creda.a`, `pool_name_source: token-catalog symbol (receipt)`) instead of
+the adapter's `ibc/88386A… (Credia market)` placeholder. No figure changes; mock 82/82, real-fixture 50/50.
+
 # 1.3.4 — 2026-09-10 — eris-apr: trading leg source-verbatim (single gauges = own yield; SS = 0 by source)
 
 The 1.3.3 gap flag is resolved from the source. Owner HAR of the liquidity-hub

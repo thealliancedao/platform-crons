@@ -40,7 +40,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const LOCAL_OUT = process.env.LOCAL_OUT || './out';
 
-const VERSION = 'dex-data-1.3.4';   // 1.3.4: eris-apr trading leg source-verbatim (single gauges = own yield: xASTRO tRPC stakingApy, ampCAPA hub exchange_rates apr, Credia supply_apy; SS = 0 by source) · 1.3.3: eris-apr staked basis for SkeletonSwap (reserve-implied TVL × catalog prices) + Credia (receipt supply) + single names; catalog decimals fix — audit 2026-09-10 vs Eris screen · 1.3.2: Credia rate-history sidecar (lib/credia-rates.js) — hourly indexer points kept grow-only, 7-day ranges in rates/current.json
+const VERSION = 'dex-data-1.3.5';   // 1.3.5: eris-apr meta.validation → reconciled 2026-09-10; Credia rows named from the catalog receipt symbol (wBTC.creda.a) · 1.3.4: eris-apr trading leg source-verbatim (single gauges = own yield: xASTRO tRPC stakingApy, ampCAPA hub exchange_rates apr, Credia supply_apy; SS = 0 by source) · 1.3.3: eris-apr staked basis for SkeletonSwap (reserve-implied TVL × catalog prices) + Credia (receipt supply) + single names; catalog decimals fix — audit 2026-09-10 vs Eris screen · 1.3.2: Credia rate-history sidecar (lib/credia-rates.js) — hourly indexer points kept grow-only, 7-day ranges in rates/current.json
 
 // TLA epoch math (epochs are weekly; used to tag snapshots).
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');
