@@ -102,6 +102,12 @@ async function capture() {
       tla_relevant: jb.tla_relevant,
       assets: [{ symbol: null, denom, amount_raw: a.total_supplied != null ? String(a.total_supplied) : null, decimals: null, price_usd: null }],
       tvl_usd: num(a.total_supplied_usd),
+      // 1.3.3: the gauge stakes the vproxy RECEIPT token; its supply is the
+      // market's supply_vtotal — the LP-supply analogue, so eris-apr's
+      // supply-ratio × TVL basis applies unchanged (2026-09-10: 103,761,290 /
+      // 211,814,542 × $164,685 = $80,673 vs Eris $80.72K).
+      lp_total_supply: (a.state && a.state.supply_vtotal != null) ? String(a.state.supply_vtotal)
+                     : (a.supply_vtotal != null ? String(a.supply_vtotal) : null),
       volume_24h_usd: null,                      // lending market — no swap volume, honest null
       raw,
     });
