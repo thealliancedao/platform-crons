@@ -411,6 +411,57 @@ NET.pools_list = () => ([
         assert(wb8.pool_name === 'wBTC.atom' && wb8.pool_name_source === 'token-catalog symbol' && xa8.pool_name === 'xASTRO', 'single entries named from the catalog (effective layer)');
         assert(Math.abs(wb8.tla_staked_usd - 100000) < 1e-9, `catalog fallback honours effective.decimals — 1.0 wBTC (8 dec) = $100,000, not $10,000,000,000 (got $${wb8.tla_staked_usd})`);
         assert(wb8.flags.includes('single_asset_yield_leg_unmeasured') && xa8.flags.includes('single_asset_yield_leg_unmeasured'), 'single-asset yield leg gap is NAMED (flag), not guessed');
+
+        console.log('\nM7d — trading leg source-verbatim (1.3.4): SS = 0 by source; singles = own yield; Credia = supply_apy');
+        // From the Eris liquidity-hub bundle (owner HAR 2026-09-10, getPoolInfo):
+        // SkeletonSwap → Promise.resolve(0); xASTRO → tRPC stakingApy weekApr;
+        // ampCAPA → hub exchange_rates(limit 14).apr × 365.25; Creda → supply_apy.
+        const XASTRO = 'native:ibc/65B3EB6263482979FD7A80E3FFB9D0C85CFBF6DB63EB8DDE918B2984A40CEAB6';
+        const AMPCAPA = 'native:factory/terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y/ampCAPA';
+        const CAT4 = { tokens: [
+            { denom: 'uluna', effective: { symbol: 'LUNA', decimals: 6 }, prices: { tla: { usd: 0.10, status: 'ok' } } },
+            { denom: XASTRO.slice(7), effective: { symbol: 'xASTRO', decimals: 6 }, prices: { tla: { usd: 0.02, status: 'ok' } } },
+            { denom: AMPCAPA.slice(7), effective: { symbol: 'ampCAPA', decimals: 6 }, prices: { tla: { usd: 0.0014, status: 'ok' } } },
+        ] };
+        const baseQC = E.CH.queryContract, baseFJ = E.CH.fetchJson;
+        E.CH.fetchJson = async (url) => {
+            if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT4;
+            if (/protocol\.stakingApy/.test(url)) return { result: { data: { json: { weekApr: 0.1767, dayApr: 0.2 } } } };   // fraction, as their API returns it
+            throw new Error('unexpected fetch ' + url);
+        };
+        E.CH.queryContract = async (addr, q) => {
+            if (q && q.exchange_rates) { assert(addr === AMPCAPA.slice(15, 15 + 64) && q.exchange_rates.limit === 14, 'ampCAPA read = hub exchange_rates{limit:14} (verbatim)'); return { exchange_rates: [], apr: '0.000132' }; }
+            if (q && q.distributions) return { distributions: [ { gauge: 'single', assets: [ { asset: { native: XASTRO.slice(7) }, distribution: '0.5' }, { asset: { native: AMPCAPA.slice(7) }, distribution: '0.5' } ] } ] };
+            if (q && q.total_staked_balances) return addr === A.single ? [ { asset: { native: XASTRO.slice(7) }, balance: '250000000000' }, { asset: { native: AMPCAPA.slice(7) }, balance: '1000000000000' } ] : [];
+            if (q && q.whitelisted_asset_details) return addr === A.single ? [ { info: { native: XASTRO.slice(7) }, whitelisted: true, config: { yearly_take_rate: '0.10' } }, { info: { native: AMPCAPA.slice(7) }, whitelisted: true, config: { yearly_take_rate: '0.10' } } ] : [];
+            return baseQC(addr, q);
+        };
+        const inputs9 = await E.captureInputs(E.CH);
+        assert(inputs9.single_yield_by_key[XASTRO] && Math.abs(inputs9.single_yield_by_key[XASTRO].pct - 17.67) < 1e-9 && /stakingApy weekApr/.test(inputs9.single_yield_by_key[XASTRO].source), 'xASTRO own yield = tRPC weekApr × 100, source labeled');
+        assert(inputs9.single_yield_by_key[AMPCAPA] && Math.abs(inputs9.single_yield_by_key[AMPCAPA].pct - 0.000132 * 365.25 * 100) < 1e-9, 'ampCAPA own yield = exchange_rates.apr × 365.25 × 100 (verbatim)');
+        const crediaPool = { dex: 'credia', pool_address: 'terra1vproxy', pool_name: 'wBTC (Credia market)', tvl_usd: 100000, lp_total_supply: '1000000000', fee_apr: null, assets: [], raw: { supply_apy: 0.0576, gauge: { gauge_pool_id: 'cw20:terra1vproxy' } } };
+        const ssPool = { ...ssPriced };
+        inputs9.dist_by_gauge.single.push({ key: 'cw20:terra1vproxy', distribution: 0.2 });
+        inputs9.staked_by_gauge_asset.single['cw20:terra1vproxy'] = 500000000;
+        inputs9.take_by_gauge_asset.single['cw20:terra1vproxy'] = 0.1;
+        inputs9.dist_by_gauge.stable = [{ key: K.ssPool, distribution: 0.9 }];
+        inputs9.staked_by_gauge_asset.stable = { [K.ssPool]: 500000000 };
+        inputs9.take_by_gauge_asset.stable = { [K.ssPool]: 0.1 };
+        const doc9 = E.composeErisApr(inputs9, [crediaPool, ssPool], {}, CAT4);
+        const by9 = Object.fromEntries(doc9.pools.map(p => [p.gauge_pool_id, p]));
+        const xa9 = by9[XASTRO], am9 = by9[AMPCAPA], cr9 = by9['cw20:terra1vproxy'], ss9 = by9[K.ssPool];
+        assert(Math.abs(xa9.trading_apr_pct - 17.67) < 1e-9 && /Staking APR/.test(xa9.trading_apr_source) && !(xa9.flags || []).includes('single_asset_yield_leg_unmeasured') && !(xa9.flags || []).includes('trading_apr_assumed_zero'), 'xASTRO row: trading = own staking yield, gap flag CLEARED');
+        assert(Math.abs(xa9.eris_apr_pct - (xa9.incentive_apr_pct - 10 + xa9.trading_apr_pct)) < 1e-9 && Math.abs(xa9.eris_apy_pct - (E.aprToApy(xa9.incentive_apr_pct * 0.92) + xa9.trading_apr_pct - 10)) < 1e-9, 'single composition = incentive − take + own yield (linear) / aprToApy(0.92·inc) + own yield − take');
+        assert(Math.abs(am9.trading_apr_pct - 4.8213) < 1e-9 && /exchange_rates/.test(am9.trading_apr_source) && am9.pool_name === 'ampCAPA', 'ampCAPA row: trading = hub apr leg, named');
+        assert(Math.abs(cr9.trading_apr_pct - 5.76) < 1e-9 && /supply_apy/.test(cr9.trading_apr_source) && Math.abs(cr9.tla_staked_usd - 50000) < 1e-9, 'Credia row: trading = supply_apy × 100 (Supply APR); staked via receipt-supply ratio');
+        assert(ss9.trading_apr_pct === 0 && /Promise\.resolve\(0\)/.test(ss9.trading_apr_source) && !(ss9.flags || []).includes('trading_apr_assumed_zero'), 'SkeletonSwap row: trading = 0 BY SOURCE (not "assumed") — no flag');
+        // source down → leg null + gap flag kept, incentive leg still published, run survives
+        E.CH.fetchJson = async (url) => { if (/token-catalog/.test(url)) return CAT4; throw new Error('tRPC down'); };
+        const inputs10 = await E.captureInputs(E.CH);
+        assert(!inputs10.single_yield_by_key[XASTRO] && /tRPC down/.test(inputs10.errors.single_yield_xastro), 'xASTRO source down → no leg, error named in inputs');
+        const xa10 = E.composeErisApr(inputs10, [], {}, CAT4).pools.find(p => p.gauge_pool_id === XASTRO);
+        assert(xa10.trading_apr_pct === null && xa10.flags.includes('single_asset_yield_leg_unmeasured') && xa10.flags.includes('trading_apr_assumed_zero') && xa10.incentive_apr_pct != null, 'source down → trading null + gap flag kept, incentive still published (honest)');
+        E.CH.queryContract = baseQC; E.CH.fetchJson = baseFJ;
     }
 
     console.log('\n' + '='.repeat(60));

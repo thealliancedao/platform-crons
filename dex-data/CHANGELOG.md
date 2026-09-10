@@ -1,3 +1,29 @@
+# 1.3.4 — 2026-09-10 — eris-apr: trading leg source-verbatim (single gauges = own yield; SS = 0 by source)
+
+The 1.3.3 gap flag is resolved from the source. Owner HAR of the liquidity-hub
+page (chunk 101.f44f1501107e40cb.js, `getPoolInfo`) shows the `trading` leg per
+pool kind: Astroport pair = 365 × dayLpFeesUSD / TVL (our fee_apr substitutes);
+SkeletonSwap pair = `Promise.resolve(0)` — a hard zero by THEIR source, so our
+SS rows now carry `trading_apr_source: "… 0 by Eris source"` and no "assumed"
+flag; single gauges = the asset's OWN yield labeled "Staking APR"/"Supply APR":
+xASTRO ← Astroport tRPC `protocol.stakingApy` (neutron-1) `weekApr`; ampCAPA ←
+hub `exchange_rates{limit:14}.apr × 365.25` (a frozen hub still reports >0
+because the last 14 stored points predate the freeze — that is the ~4.8 pp);
+Creda ← `metrics.assets[].supply_apy`; anything else 0. The composition itself
+is unchanged and re-confirmed verbatim: `apy = aprToApy(0.92·inc) + trading −
+take`, `total = inc − take + trading`.
+
+Implementation: `SINGLE_YIELD_SOURCES` (the two hardcoded assets, exactly as
+Eris hardcodes `j.TV.xastro` / `j.TV.ampcapa`) read in captureInputs →
+`single_yield_by_key`; compose publishes `trading_apr_source` on every row; a
+failed source read nulls the leg WITH the 1.3.3 flag kept — never borrowed.
+
+Gates: mock M7d (+11, suite 82/82) incl. source-down honesty; real-fixture gate
+50/50 — Credia via the committed supply_apy lands 5.85 vs Eris 5.76 (LUNA price
+differs 2.2%); with the screen's own-yield legs our incentive/staked inputs
+reproduce ampCAPA 19.65 and xASTRO 33.08 to 0.00 pp. First live run is the
+source-read reconcile for the two singles.
+
 # 1.3.3 — 2026-09-10 — eris-apr: SkeletonSwap + Credia staked basis, single names, catalog decimals
 
 Owner audit (Eris screen, 2026-09-10 15:xx UTC) vs the committed product: every
