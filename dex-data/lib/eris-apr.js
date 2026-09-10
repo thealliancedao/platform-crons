@@ -1,5 +1,5 @@
 // =============================================================================
-// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.4)
+// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.5)
 // =============================================================================
 // Implements AUDIT-eris-apr-pricing.md §Gauge-LP-APR — Eris's OWN displayed
 // APR pipeline, source-confirmed 2026-08-02 (Philipp shared the code). The
@@ -436,6 +436,10 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       const takePct = takeFrac != null ? takeFrac * 100 : null;
       if (takePct == null) flags.push('take_rate_unavailable');
 
+      // 1.3.5: Credia market rows — name from the catalog's effective symbol for the receipt token (wBTC.creda.a),
+      // not the adapter's "ibc/88386A… (Credia market)" placeholder; falls back to the adapter name.
+      let crediaName = null;
+      if (dexPool && dexPool.dex === 'credia' && key.startsWith('cw20:')) crediaName = catalogSymbol(catalog, key.slice(5));
       // 1.3.3: single-asset entries — name from the catalog, and the named gap
       let singleName = null;
       if (!dexPool) {
@@ -455,8 +459,8 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
         gauge_pool_id: key,
         gauge,
         pool_address: dexPool ? dexPool.pool_address : null,
-        pool_name: dexPool ? dexPool.pool_name : singleName,
-        pool_name_source: dexPool ? 'adapter' : (singleName ? 'token-catalog symbol' : null),
+        pool_name: dexPool ? (crediaName || dexPool.pool_name) : singleName,
+        pool_name_source: dexPool ? (crediaName ? 'token-catalog symbol (receipt)' : 'adapter') : (singleName ? 'token-catalog symbol' : null),
         dex: dexPool ? dexPool.dex : null,
         ...(poolTvlImplied != null ? { pool_tvl_usd_reserve_implied: poolTvlImplied } : {}),
         distribution: en.distribution,
@@ -488,7 +492,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       generated_at: inputs.captured_at || new Date().toISOString(),
       method: 'AUDIT-eris-apr-pricing §Gauge-LP-APR (source-confirmed 2026-08-02) — verbatim mixed convention: apy = aprToApy(incentive×0.92, 365.25) + trading − take; apr(linear total) = incentive − take + trading (no 0.92, per source); trading??0 in formula; edge cases verbatim (0/0→0, tvl==0→Infinity published null+flag); distributions raw, never normalized.',
       substitutions: 'trading_apr = dex-data fee_apr (their pool service not queryable); LUNA price + LP TVL from dex-data adapter captures.',
-      validation: 'pending ground-truth reconciliation (SPEC-lp-apr §7 4-pool + CRON-FIXES-BRIEF §2.10 19-pool) — run at deploy before pages consume.',
+      validation: 'reconciled 2026-09-10 vs the Eris liquidity-hub screen (owner screenshots + HAR): 18 Astroport rows within 1 pp, SkeletonSwap + Credia within 0.5% staked / 0.4 pp, singles within 0.15 pp with the source-verbatim own-yield leg (1.3.4). Residual = LUNA price at capture vs Eris /prices.',
       luna_price_used_usd: lunaUsd,
       luna_price_source: lunaSource,
       annual_provisions_luna: inputs.annual_provisions_luna ?? null,
