@@ -1,0 +1,5 @@
+network-and-prices 3.0.3 — delete these three files from platform-crons/network-and-prices/ (retired provenance layer):
+  fixtures/legacy-v2.js
+  apply-port-edits.js
+  apply-canary.js
+Keep fixtures/dex-astroport.json, dex-skeletonswap.json, token-prices.json (the behaviour gate reads them).

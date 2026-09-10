@@ -217,7 +217,6 @@ const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const OUT_BASE = 'network-and-prices';
 // Legacy home — MIGRATION READS ONLY (ratio-history seed + heartbeat
 // continuity on first org runs). Never written. Remove after cutover.
-const LEGACY_REPO_RAW = 'https://raw.githubusercontent.com/defipatriot/network-and-prices-data_2026/main';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
 // -----------------------------------------------------------------------------
@@ -853,11 +852,10 @@ function fetchJsonRaw(filepath) {
 }
 
 async function appendRatioHistory(ratiosObj, dateStr) {
-    let prev = await fetchJsonRaw(`${OUT_BASE}/ratio-history.json`);
-    if (!prev) {   // first org run: seed the series from the legacy repo so history never restarts
-        prev = await fetchJsonAbs(`${LEGACY_REPO_RAW}/data/ratio-history.json`);
-        if (prev) console.log('  ↪ ratio-history migrated from legacy repo (one-time seed)');
-    }
+    // 2026-09-10: the one-time legacy seed (defipatriot/network-and-prices-data_2026) is gone — the org series has
+    // carried its own history since 2026-05-13 and the personal repos are being deleted. A missing org file now
+    // starts an honest new series rather than reading a repo that no longer exists.
+    const prev = await fetchJsonRaw(`${OUT_BASE}/ratio-history.json`);
     const doc = (prev && prev.tokens) ? prev
         : { schemaVersion: 1, note: 'Daily LST exchange rates (chain-exact). USD: LST_USD(day) = base_USD(day) × rate(day), join against price-history daily-prices.json.', tokens: {} };
     let added = 0, updated = 0;
@@ -1050,11 +1048,9 @@ function applyCarryForward(tokenPrices, prevSnap, nowIso) {
 }
 
 async function fetchPreviousHeartbeat() {
-    const org = await fetchJsonRaw(`${OUT_BASE}/heartbeat.json`);
-    if (org) return org;
-    // First org runs: read the legacy heartbeat so consecutive-stuck counting
-    // stays continuous across the migration. Read-only; remove after cutover.
-    return fetchJsonAbs(`${LEGACY_REPO_RAW}/data/heartbeat.json`);
+    // 2026-09-10: cutover complete — the legacy-heartbeat fallback ("remove after cutover") is removed with the
+    // personal repos. Org heartbeat only; a missing one just restarts the consecutive-stuck counter.
+    return fetchJsonRaw(`${OUT_BASE}/heartbeat.json`);
 }
 function _legacyFetchPreviousHeartbeat_unused() {
     return new Promise((resolve) => {

@@ -2,20 +2,17 @@
 // network-and-prices mock gate — 3.0.0 (org port + price canary)
 // Run: node mock-run.js — file-based, no network, no env. Re-run after ANY change.
 //
-// Two-layer gate:
-//   LAYER 1 (provenance): rebuilds index.js from fixtures/legacy-v2.js (the
-//     frozen production source ported from) by re-running the two shipped edit
-//     scripts, then asserts BYTE-IDENTITY with the committed index.js — proving
-//     the port is exactly legacy + declared edits, nothing else. This is the
-//     org's diff-verify pattern applied to a migration.
-//   LAYER 2 (behavior): exercises the LIVE exported functions (no third copy)
-//     on trimmed-REAL fixtures captured live 2026-08-03/04:
-//     fixtures/dex-astroport.json, dex-skeletonswap.json, token-prices.json.
+// 2026-09-10: the provenance layer (legacy-v2 + declared edits === shipped) is RETIRED. It proved the
+// migration in August; it went red on 2026-08-21 when the F2b/E12 pricing edits (FUEL, dATOM, the ASTRO
+// repoint) landed in index.js without being declared, and stayed red unnoticed. With the personal repos
+// deleted there is no legacy referent left — index.js is the source; this gate is behaviour-only.
+// (fixtures/legacy-v2.js, apply-port-edits.js, apply-canary.js were removed with it.)
+//   BEHAVIOUR: exercises the LIVE exported functions (no third copy) on trimmed-REAL fixtures captured
+//     live 2026-08-03/04: fixtures/dex-astroport.json, dex-skeletonswap.json, token-prices.json.
 // =============================================================================
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 let passed = 0, failed = 0;
 function assert(cond, msg, detail) {
@@ -24,18 +21,8 @@ function assert(cond, msg, detail) {
 }
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps * Math.max(1, Math.abs(b));
 
-console.log('\n=== LAYER 1: provenance (legacy + declared edits === shipped index.js) ===');
-const tmp = fs.mkdtempSync('/tmp/nap-gate-');
-fs.copyFileSync(path.join(__dirname, 'fixtures/legacy-v2.js'), path.join(tmp, 'index.js'));
-fs.copyFileSync(path.join(__dirname, 'apply-port-edits.js'), path.join(tmp, 'apply-port-edits.js'));
-fs.copyFileSync(path.join(__dirname, 'apply-canary.js'), path.join(tmp, 'apply-canary.js'));
-execFileSync('node', ['apply-port-edits.js'], { cwd: tmp, stdio: 'pipe' });
-execFileSync('node', ['apply-canary.js'], { cwd: tmp, stdio: 'pipe' });
-const rebuilt = fs.readFileSync(path.join(tmp, 'index.js'), 'utf8');
 const shipped = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-assert(rebuilt === shipped, 'index.js is BYTE-IDENTICAL to legacy-v2 + the 16 declared edits');
-
-console.log('\n=== LAYER 2: behavior on trimmed-REAL fixtures ===');
+console.log('\n=== behaviour on trimmed-REAL fixtures ===');
 const M = require('./index.js');
 assert(typeof M.runPriceCanary === 'function' && typeof M.assemblePriceTable === 'function',
     'module loads under require.main guard; test surface exported');
@@ -45,9 +32,8 @@ assert(M.TOKEN_REGISTRY.EURE.cgId === 'monerium-eur-money-2',
     "3.0.1: EURE cgId is 'monerium-eur-money-2' (current Monerium token post-migration; 'euroe-stablecoin' was the wrong coin)",
     M.TOKEN_REGISTRY.EURE.cgId);
 assert(!/pushToGithub\('data\//.test(shipped), "no legacy 'data/' write paths remain");
-assert((shipped.match(/LEGACY_REPO_RAW/g) || []).length === 3,
-    'LEGACY_REPO_RAW appears exactly 3× (const + 2 migration reads — never a write)',
-    (shipped.match(/LEGACY_REPO_RAW/g) || []).length);
+const legacyReads = shipped.split('\n').filter(l => !/^\s*\/\//.test(l) && /LEGACY_REPO_RAW|raw\.githubusercontent\.com\/defipatriot\//.test(l)).length;   // code lines only — comments may cite history
+assert(legacyReads === 0, 'no legacy-repo reads remain in code (seed + heartbeat fallbacks removed 2026-09-10; personal repos deleted)', legacyReads);
 
 const J = (f) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', f), 'utf8'));
 const dexA = J('dex-astroport.json'), dexS = J('dex-skeletonswap.json');

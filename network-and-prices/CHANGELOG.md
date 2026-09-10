@@ -1,3 +1,11 @@
+# 3.0.3 — 2026-09-10 — legacy reads removed; provenance gate retired
+
+The two remaining reads of `defipatriot/network-and-prices-data_2026` (one-time ratio-history seed; heartbeat
+fallback marked "remove after cutover") are gone — the personal repos are being deleted and the org series has
+carried its own history since 2026-05-13. The mock gate's provenance layer (legacy-v2 + declared edits ===
+shipped) is retired with its three files: it had been red since 2026-08-21 (F2b/E12 pricing edits landed in
+index.js undeclared — 193 lines) and nobody ran it. index.js is the source; the gate is behaviour-only, 24/24.
+
 # network-and-prices CHANGELOG
 
 ## 3.0.1 — 2026-08-04 — EURE cgId correction (wrong coin)
