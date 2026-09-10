@@ -1,5 +1,5 @@
 // =============================================================================
-// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.3)
+// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.4)
 // =============================================================================
 // Implements AUDIT-eris-apr-pricing.md §Gauge-LP-APR — Eris's OWN displayed
 // APR pipeline, source-confirmed 2026-08-02 (Philipp shared the code). The
@@ -38,10 +38,19 @@
 //                                               every asset must price or null
 //   staked_units_x_asset_price                  single-asset gauge entries
 // Single entries with no pool record get their name from the catalog symbol.
-// KNOWN GAP (flag `single_asset_yield_leg_unmeasured`): Eris's screen adds a
-// leg for single-asset gauges beyond incentive − take (2026-09-10: xASTRO
-// +17.7 pp, ampCAPA +4.8 pp) that the source-confirmed formula does not carry;
-// we publish incentive − take and name the gap rather than guess it.
+// 1.3.4 — the `trading` leg, SOURCE-VERBATIM from the liquidity-hub bundle
+// (owner HAR 2026-09-10, chunk 101.f44f1501107e40cb.js, `getPoolInfo`):
+//   Astroport pair   365 × dayLpFeesUSD / TVL           → OUR dex-data fee_apr
+//   SkeletonSwap     Promise.resolve(0)                  → 0 BY THEIR SOURCE
+//   single gauges    the asset's OWN yield ("Staking APR" / "Supply APR"):
+//     xASTRO   Astroport tRPC protocol.stakingApy(neutron-1) → weekApr
+//     ampCAPA  hub exchange_rates{limit:14}.apr × 365.25   (a frozen hub still
+//              reports >0 because the last 14 stored points predate the freeze)
+//     Creda    metrics.assets[].supply_apy
+//     other    0
+// Every single-asset leg is published with `trading_apr_source`; a failed
+// source read nulls the leg WITH the flag `single_asset_yield_leg_unmeasured`
+// (kept from 1.3.3) — never a borrowed value.
 //
 // Honesty rules: components always published; a missing leg nulls the figure
 // WITH a reason, never a silent 0 and never a borrowed value. Validation
@@ -171,6 +180,20 @@ function reserveImpliedTvl(dexPool, assetPrices = {}, catalog = null) {
   return { tvl_usd: sum, sources };
 }
 
+// 1.3.4 — single-asset yield sources (verbatim Eris `getPoolInfo` branches).
+const ASTRO_STAKING_APY_URL = 'https://app.astroport.fi/api/trpc/protocol.stakingApy?input=%7B%22json%22%3A%7B%22chainId%22%3A%22neutron-1%22%7D%7D';
+const AMPCAPA_HUB = 'terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y';
+const SINGLE_YIELD_SOURCES = {
+  'native:ibc/65B3EB6263482979FD7A80E3FFB9D0C85CFBF6DB63EB8DDE918B2984A40CEAB6': {   // xASTRO (Neutron, IBC)
+    name: 'xastro', label: 'astroport tRPC protocol.stakingApy weekApr (Staking APR)',
+    read: async (T) => { const j = await T.fetchJson(ASTRO_STAKING_APY_URL); const v = j && j.result && j.result.data && j.result.data.json && j.result.data.json.weekApr; const n = Number(v); return isFinite(n) ? n * 100 : null; },
+  },
+  ['native:factory/' + AMPCAPA_HUB + '/ampCAPA']: {
+    name: 'ampcapa', label: 'ampCAPA hub exchange_rates(limit 14).apr × 365.25 (Staking APR)',
+    read: async (T) => { const r = await T.queryContract(AMPCAPA_HUB, { exchange_rates: { limit: 14 } }); const n = Number(r && r.apr); return isFinite(n) ? n * 365.25 * 100 : (r && r.apr == null ? 0 : null); },   // verbatim `apr ?? 0`
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Stage 1+2 capture — all chain inputs, defensively parsed, nothing inferred.
 // ---------------------------------------------------------------------------
@@ -279,9 +302,23 @@ async function captureInputs(T = CH) {
     } catch (e) { out.errors[`take_${gauge}`] = String(e && e.message || e); }
   }
 
+  // 1.3.4 — single-asset own-yield legs, one branch per asset EXACTLY as the
+  // Eris bundle hardcodes them (j.TV.xastro / j.TV.ampcapa). Percent out.
+  const distKeys = new Set(Object.values(distByGauge).flat().map(x => x.key));
+  const singleYield = {};
+  for (const [key, src] of Object.entries(SINGLE_YIELD_SOURCES)) {
+    if (!distKeys.has(key)) continue;
+    try {
+      const r = await src.read(T);
+      if (r != null && isFinite(r)) singleYield[key] = { pct: r, source: src.label };
+      else out.errors[`single_yield_${src.name}`] = 'unparseable';
+    } catch (e) { out.errors[`single_yield_${src.name}`] = String(e && e.message || e); }
+  }
+
   return {
     ...out,
     captured_at: new Date().toISOString(),
+    single_yield_by_key: singleYield,
     annual_provisions_uluna: annualProvisionsUluna,
     annual_provisions_luna: annualProvisionsUluna != null ? annualProvisionsUluna / 1e6 : null,
     total_reward_weight: totalRewardWeight,
@@ -380,9 +417,20 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
         else incentivePct = (incentivesUsdYear / stakedUsd) * 100;
       }
 
-      // trading leg: OUR fee_apr (percent). Verbatim `trading ?? 0` in the formula.
-      const tradingPct = dexPool && dexPool.fee_apr != null && isFinite(dexPool.fee_apr) ? Number(dexPool.fee_apr) : null;
-      if (tradingPct == null) flags.push('trading_apr_assumed_zero');
+      // trading leg (1.3.4, source-verbatim per pool kind — see header):
+      let tradingPct = null, tradingSource = null;
+      if (dexPool && dexPool.dex === 'skeletonswap') {
+        tradingPct = 0; tradingSource = 'skeletonswap: 0 by Eris source (Promise.resolve(0))';
+      } else if (dexPool && dexPool.dex === 'credia') {
+        const sa = dexPool.raw && dexPool.raw.supply_apy != null ? Number(dexPool.raw.supply_apy) : null;
+        if (sa != null && isFinite(sa)) { tradingPct = sa * 100; tradingSource = 'credia metrics supply_apy (Supply APR)'; }
+      } else if (dexPool) {
+        if (dexPool.fee_apr != null && isFinite(dexPool.fee_apr)) { tradingPct = Number(dexPool.fee_apr); tradingSource = 'dex-data fee_apr (substitutes 365 × dayLpFeesUSD / TVL)'; }
+      } else {
+        const sy = (inputs.single_yield_by_key || {})[key];
+        if (sy && sy.pct != null && isFinite(sy.pct)) { tradingPct = Number(sy.pct); tradingSource = sy.source; }
+      }
+      if (tradingPct == null) flags.push('trading_apr_assumed_zero');           // verbatim `trading ?? 0` in the formula
       const tradingForFormula = tradingPct != null ? tradingPct : 0;
 
       const takePct = takeFrac != null ? takeFrac * 100 : null;
@@ -393,7 +441,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       if (!dexPool) {
         const ident = key.startsWith('cw20:') ? key.slice(5) : key.startsWith('native:') ? key.slice(7) : null;
         singleName = ident != null ? catalogSymbol(catalog, ident) : null;
-        flags.push('single_asset_yield_leg_unmeasured');
+        if (tradingPct == null) flags.push('single_asset_yield_leg_unmeasured');   // 1.3.4: only when the own-yield read failed / no source
       }
 
       // Stage 4 — both variants, source-verbatim
@@ -420,6 +468,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
         tla_staked_usd_basis: stakedBasis,
         incentive_apr_pct: incentivePct,
         trading_apr_pct: tradingPct,
+        trading_apr_source: tradingSource,
         yearly_take_rate_pct: takePct,
         eris_cut_pct: ERIS_INCENTIVE_CUT * 100,
         eris_apr_pct: erisAprPct,
@@ -462,4 +511,4 @@ async function runErisApr(dexPools, assetPrices, T = CH) {
   return composeErisApr(inputs, dexPools, assetPrices || {}, catalog);
 }
 
-module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, CH, ERIS_INCENTIVE_CUT };
+module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, SINGLE_YIELD_SOURCES, CH, ERIS_INCENTIVE_CUT };
