@@ -1,5 +1,5 @@
 // =============================================================================
-// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.0)
+// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.3)
 // =============================================================================
 // Implements AUDIT-eris-apr-pricing.md §Gauge-LP-APR — Eris's OWN displayed
 // APR pipeline, source-confirmed 2026-08-02 (Philipp shared the code). The
@@ -26,6 +26,22 @@
 // Connector→gauge mapping is SELF-DISCOVERING: every alliance whose denom is
 // factory/<addr>/… gets its <addr> config-queried; contracts answering with a
 // TLA gauge name are ours — zero hardcoded connector addresses.
+//
+// 1.3.3 (audit 2026-09-10 vs Eris screen): the TLA-staked USD basis has THREE
+// labeled paths, tried in order —
+//   staked_supply_ratio_x_pool_tvl              adapter TVL (Astroport, Credia)
+//   staked_supply_ratio_x_reserve_implied_tvl   pool has reserves + supply but
+//                                               NO adapter TVL (SkeletonSwap by
+//                                               design: "TVL computed downstream
+//                                               from reserves × trusted prices")
+//                                               → Σ reserve × token-catalog price,
+//                                               every asset must price or null
+//   staked_units_x_asset_price                  single-asset gauge entries
+// Single entries with no pool record get their name from the catalog symbol.
+// KNOWN GAP (flag `single_asset_yield_leg_unmeasured`): Eris's screen adds a
+// leg for single-asset gauges beyond incentive − take (2026-09-10: xASTRO
+// +17.7 pp, ampCAPA +4.8 pp) that the source-confirmed formula does not carry;
+// we publish incentive − take and name the gap rather than guess it.
 //
 // Honesty rules: components always published; a missing leg nulls the figure
 // WITH a reason, never a silent 0 and never a borrowed value. Validation
@@ -92,18 +108,67 @@ async function fetchCatalog(T = CH) {
   try { return await T.fetchJson(TOKEN_CATALOG_URL + '?t=' + Date.now()); }
   catch (_) { return null; }
 }
-function catalogPrice(catalog, denomOrCw20) {
+// 1.3.3: identity lives under `effective` in the catalog schema (its stated
+// contract: "the ONE field downstream should read" — curated override wins,
+// discovered falls through). The top-level `decimals` read before this never
+// existed → every fallback priced at 6 decimals; wBTC-class assets would have
+// been 100× off on that path.
+function catalogToken(catalog, denomOrCw20) {
   if (!catalog || !Array.isArray(catalog.tokens)) return null;
-  const t = catalog.tokens.find(x => x.denom === denomOrCw20);
+  return catalog.tokens.find(x => x.denom === denomOrCw20) || null;
+}
+function catalogField(t, field) {
+  if (!t) return null;
+  for (const layer of [t.effective, t, t.discovered]) {
+    const v = layer && layer[field];
+    if (v != null && v !== '') return v;
+  }
+  return null;
+}
+function catalogDecimals(t) {
+  const d = catalogField(t, 'decimals');
+  return (d != null && isFinite(Number(d))) ? Number(d) : null;
+}
+function catalogSymbol(catalog, denomOrCw20) {
+  const s = catalogField(catalogToken(catalog, denomOrCw20), 'symbol');
+  return typeof s === 'string' && s ? s : null;
+}
+function catalogPrice(catalog, denomOrCw20) {
+  const t = catalogToken(catalog, denomOrCw20);
   const prices = t && t.prices;
   if (!prices) return null;
   for (const srcName of ['tla', 'coingecko', 'astroport', 'skeletonswap']) {
     const p = prices[srcName];
     if (p && p.status === 'ok' && p.usd != null && isFinite(Number(p.usd))) {
-      return { price_usd: Number(p.usd), decimals: t.decimals != null ? Number(t.decimals) : 6, source: `token-catalog/${srcName}` };
+      const dec = catalogDecimals(t);
+      return { price_usd: Number(p.usd), decimals: dec != null ? dec : 6, source: `token-catalog/${srcName}` };
     }
   }
   return null;
+}
+
+// Reserve-implied pool TVL (1.3.3) — for adapters that capture chain reserves
+// but defer pricing (SkeletonSwap). Σ reserve_i × price_i over the pool's
+// assets; adapter price → run asset prices → token-catalog, first hit wins and
+// is labeled. ANY unpriced asset → null with the offending denom (never a
+// partial sum). Returns { tvl_usd, sources[] } | { tvl_usd: null, missing }.
+function reserveImpliedTvl(dexPool, assetPrices = {}, catalog = null) {
+  const assets = Array.isArray(dexPool && dexPool.assets) ? dexPool.assets : [];
+  if (!assets.length) return { tvl_usd: null, missing: 'no_assets' };
+  let sum = 0; const sources = [];
+  for (const a of assets) {
+    const raw = a && a.amount_raw != null ? Number(a.amount_raw) : null;
+    if (raw == null || !isFinite(raw)) return { tvl_usd: null, missing: `reserve:${(a && (a.symbol || a.denom)) || '?'}` };
+    let price = null, dec = null, src = null;
+    if (a.price_usd != null && isFinite(Number(a.price_usd))) { price = Number(a.price_usd); dec = a.decimals; src = 'adapter'; }
+    else if (a.denom && assetPrices[a.denom] && assetPrices[a.denom].price_usd != null) { price = Number(assetPrices[a.denom].price_usd); dec = a.decimals != null ? a.decimals : assetPrices[a.denom].decimals; src = 'run-assets'; }
+    else if (a.denom && catalog) { const cp = catalogPrice(catalog, a.denom); if (cp) { price = cp.price_usd; dec = a.decimals != null ? a.decimals : cp.decimals; src = cp.source; } }
+    if (price == null || !isFinite(price)) return { tvl_usd: null, missing: `price:${a.symbol || a.denom}` };
+    const d = (dec != null && isFinite(Number(dec))) ? Number(dec) : 6;
+    sum += (raw / Math.pow(10, d)) * price;
+    sources.push(src);
+  }
+  return { tvl_usd: sum, sources };
 }
 
 // ---------------------------------------------------------------------------
@@ -272,12 +337,22 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       if (incentivesUsdYear == null) flags.push(lunaUsd == null ? 'luna_price_unavailable' : 'gauge_incentives_unavailable');
 
       // TLA-staked USD — supply-ratio × TVL (unit-free), else single-asset price
-      let stakedUsd = null, stakedBasis = null;
+      let stakedUsd = null, stakedBasis = null, poolTvlImplied = null;
       if (stakedRaw === 0) {
         stakedUsd = 0; stakedBasis = 'staked_zero';   // zero units = $0 by identity, no price needed
       } else if (stakedRaw != null && dexPool && dexPool.tvl_usd != null && dexPool.lp_total_supply != null && Number(dexPool.lp_total_supply) > 0) {
         stakedUsd = (stakedRaw / Number(dexPool.lp_total_supply)) * Number(dexPool.tvl_usd);
         stakedBasis = 'staked_supply_ratio_x_pool_tvl';
+      } else if (stakedRaw != null && dexPool && dexPool.tvl_usd == null && dexPool.lp_total_supply != null && Number(dexPool.lp_total_supply) > 0) {
+        // 1.3.3: adapter deferred pricing (SkeletonSwap) — reserves × trusted prices
+        const ri = reserveImpliedTvl(dexPool, assetPrices, catalog);
+        if (ri.tvl_usd != null) {
+          stakedUsd = (stakedRaw / Number(dexPool.lp_total_supply)) * ri.tvl_usd;
+          stakedBasis = `staked_supply_ratio_x_reserve_implied_tvl (${Array.from(new Set(ri.sources)).join('+')})`;
+          poolTvlImplied = ri.tvl_usd;
+        } else {
+          flags.push(`reserve_tvl_unpriced:${ri.missing}`);
+        }
       } else if (stakedRaw != null && !dexPool) {
         const ident = key.startsWith('cw20:') ? key.slice(5) : key.startsWith('native:') ? key.slice(7) : null;
         let ap = ident != null ? assetPrices[ident] : null;
@@ -313,6 +388,14 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       const takePct = takeFrac != null ? takeFrac * 100 : null;
       if (takePct == null) flags.push('take_rate_unavailable');
 
+      // 1.3.3: single-asset entries — name from the catalog, and the named gap
+      let singleName = null;
+      if (!dexPool) {
+        const ident = key.startsWith('cw20:') ? key.slice(5) : key.startsWith('native:') ? key.slice(7) : null;
+        singleName = ident != null ? catalogSymbol(catalog, ident) : null;
+        flags.push('single_asset_yield_leg_unmeasured');
+      }
+
       // Stage 4 — both variants, source-verbatim
       let erisAprPct = null, erisApyPct = null;
       if (incentivePct != null && takePct != null) {
@@ -324,8 +407,10 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
         gauge_pool_id: key,
         gauge,
         pool_address: dexPool ? dexPool.pool_address : null,
-        pool_name: dexPool ? dexPool.pool_name : null,
+        pool_name: dexPool ? dexPool.pool_name : singleName,
+        pool_name_source: dexPool ? 'adapter' : (singleName ? 'token-catalog symbol' : null),
         dex: dexPool ? dexPool.dex : null,
+        ...(poolTvlImplied != null ? { pool_tvl_usd_reserve_implied: poolTvlImplied } : {}),
         distribution: en.distribution,
         incentives_luna_per_year: incentivesLunaYear,
         incentives_luna_per_epoch: incentivesLunaYear != null ? incentivesLunaYear / 365 * EPOCH_DAYS : null,
@@ -377,4 +462,4 @@ async function runErisApr(dexPools, assetPrices, T = CH) {
   return composeErisApr(inputs, dexPools, assetPrices || {}, catalog);
 }
 
-module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, CH, ERIS_INCENTIVE_CUT };
+module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, CH, ERIS_INCENTIVE_CUT };
