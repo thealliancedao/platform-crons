@@ -22,7 +22,7 @@
 // crons as consumers, and the future live activity feed on top. Spec'd
 // separately; nothing here changes when that lands except the watch table.
 //
-// Env (Render): GITHUB_TOKEN (required), GITHUB_REPO/GITHUB_BRANCH,
+// Env (Render): GITHUB_TOKEN (required), GITHUB_REPO/GITHUB_BRANCH, NFT_AUX_REPO/NFT_AUX_ROOT (v3.3, NFT aux stream target),
 // RPC_PRIMARY / RPC_FALLBACK, WALK_CONCURRENCY (4), MAX_BLOCKS_PER_RUN
 // (4000), TLA_LOOKBACK (1200 blocks, first run only).
 // =============================================================================
@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.2.0';   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.3.0';   // v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -97,7 +97,15 @@ const AX = require('./lib/aux-classifiers.js');
 // failure disables aux for THIS run only (warned + heartbeat-noted) — core
 // flows capture is never blocked by the extension layer.
 let AUX = null;
-const AUX_DIRS = { votion: 'votion/events', dex: 'dex-liquidity/events', nft: 'nfts/adao/transfers', samples: 'price-history/reserve-implied' };
+// 2026-09-12 aDAO migration: the NFT aux stream (aDAO transfers) is an aDAO product, so it can live in the aDAO
+// collection folder of nft-collections while everything else this cron writes stays in tla-core.
+//   NFT_AUX_REPO = repo the NFT aux stream is read from / written to (default: GITHUB_REPO — unchanged behaviour)
+//   NFT_AUX_ROOT = folder for its YYYY/MM.json files inside that repo (default: nfts/adao/transfers)
+// The flip: NFT_AUX_REPO=thealliancedao/nft-collections · NFT_AUX_ROOT=adao/transfers (token needs write on both repos).
+const NFT_AUX_REPO = process.env.NFT_AUX_REPO || GITHUB_REPO;
+const NFT_AUX_ROOT = String(process.env.NFT_AUX_ROOT || 'nfts/adao/transfers').replace(/^\/+|\/+$/g, '');
+const AUX_DIRS = { votion: 'votion/events', dex: 'dex-liquidity/events', nft: NFT_AUX_ROOT, samples: 'price-history/reserve-implied' };
+const AUX_REPOS = { votion: GITHUB_REPO, dex: GITHUB_REPO, nft: NFT_AUX_REPO, samples: GITHUB_REPO };
 function parseAuxRegistry(reg) {
     const vaults = {}, pairs = {}, nfts = {}, markets = {}; const watch = new Set();
     for (const c of (reg && reg.contracts) || []) {
@@ -444,9 +452,9 @@ function classifyTransferTx(txr, watched) {
 
 
 // ----------------------------------------------------------------------------- GitHub publish (org standard + 409-retry from the proven harvester)
-async function publishFile(filePath, contentObj, message) {
+async function publishFile(filePath, contentObj, message, repo = GITHUB_REPO) {   // v3.3: repo — the NFT aux stream may publish elsewhere
   const content = typeof contentObj === 'string' ? contentObj : JSON.stringify(contentObj, null, 2);
-  const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
+  const apiPath = `/repos/${repo}/contents/${filePath}`;
   for (let attempt = 1; attempt <= 3; attempt++) {
     let sha = null;
     try { sha = (await T.githubApiRequest('GET', apiPath + `?ref=${GITHUB_BRANCH}`)).sha; } catch { /* new file */ }
@@ -474,10 +482,10 @@ async function apiGetJson(file) {
     return { ok: false, data: null };                            // UNKNOWN — not absent
   }
 }
-async function apiGetJsonAt(fullPath) {
-  // generic-path clone of apiGetJson (aux streams live outside OUT_DIR)
+async function apiGetJsonAt(fullPath, repo = GITHUB_REPO) {
+  // generic-path clone of apiGetJson (aux streams live outside OUT_DIR; v3.3: possibly outside the repo too)
   try {
-    const r = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${fullPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw+json');
+    const r = await T.githubApiRequest('GET', `/repos/${repo}/contents/${fullPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw+json');
     return { ok: true, data: typeof r === 'string' ? JSON.parse(r) : r };
   } catch (e) {
     if (e.statusCode === 404) return { ok: true, data: null };
@@ -653,14 +661,14 @@ async function run() {
       for (const r of j.recs) (byM[monthKey(r.timestamp)] ||= []).push(r);
       for (const mk of Object.keys(byM).sort()) {
         const path2 = `${j.dir}/${mk}.json`;
-        const mr = await apiGetJsonAt(path2);
+        const mr = await apiGetJsonAt(path2, AUX_REPOS[j.key]);
         if (!mr.ok) { addErr(`aux:${j.key}:${mk}`, new Error('read failed — skipping publish this run')); allComplete = false; continue; }
         const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
         if (existing === null) { addErr(`aux:${j.key}:${mk}`, new Error('existing is not an array — refusing to overwrite')); allComplete = false; continue; }
         const { merged, changed } = j.merge(existing, byM[mk]);
         if (merged.length < existing.length) { addErr(`aux:${j.key}:${mk}`, new Error('never-shrink violation')); allComplete = false; continue; }
         if (!changed) continue;
-        try { await publishFile(path2, JSON.stringify(merged), `${j.dir} ${mk}: +${changed} (${merged.length} total)`); auxCounts[j.key] += changed; }
+        try { await publishFile(path2, JSON.stringify(merged), `${j.dir} ${mk}: +${changed} (${merged.length} total)`, AUX_REPOS[j.key]); auxCounts[j.key] += changed; }
         catch (e) { addErr(`aux-publish:${j.key}:${mk}`, e); allComplete = false; }
       }
     }
@@ -725,4 +733,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
-module.exports = { run, classifyFlowTx, classifyTransferTx, flowsExtractFee, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, mergeSamples, monthKey, parseAuxRegistry, publishFile, T, WATCH, txHashOf, touchesWatched, touchesOf };
+module.exports = { AUX_DIRS, AUX_REPOS, run, classifyFlowTx, classifyTransferTx, flowsExtractFee, flowsExtractCost, flowsAttrs, flowsAttrsAll, flowsEventsOf, flowsParseCoinList, flowsParseReturned, mergeMonth, mergeSamples, monthKey, parseAuxRegistry, publishFile, T, WATCH, txHashOf, touchesWatched, touchesOf };

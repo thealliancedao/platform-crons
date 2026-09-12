@@ -1,5 +1,20 @@
 # tla-flows — changelog
 
+## 3.3.0 — 2026-09-12 — NFT aux stream may publish to a second repo (aDAO migration)
+
+- NEW env `NFT_AUX_REPO` (default = GITHUB_REPO) and `NFT_AUX_ROOT` (default `nfts/adao/transfers`): the aDAO
+  transfers aux stream — an aDAO product — reads its month file from and writes it to that repo/folder. Every other
+  write (events, cursor, index, heartbeat, votion / dex-liquidity / price-sample aux streams, pressure) is unchanged.
+- `publishFile` / `apiGetJsonAt` take an optional `repo` (default GITHUB_REPO); `AUX_REPOS` maps each aux stream
+  to its repo; both exported.
+- Gate: `gate-nft-aux.mjs` (10/10) drives the REAL run() over a synthetic 3-block chain holding one aDAO
+  transfer_nft tx with a capture-registry watching the contract — DEFAULT env: patched == live for every
+  (repo, path) read and written; FLIPPED env: the NFT month file is read from and written to
+  nft-collections/adao/transfers/, nothing under nfts/adao is touched, core + other aux traffic identical.
+  mock-run.js binding suite 11/11 on live and patched.
+- The flip (later, one Render env change on org-tla-flows): `NFT_AUX_REPO=thealliancedao/nft-collections`,
+  `NFT_AUX_ROOT=adao/transfers`; the service token needs contents:write on BOTH repos.
+
 Module changelog for the block-walker (index.js, lib/aux-classifiers.js) and its
 gates. Page-facing changelogs live in tla-core/docs/changelogs/ — this file is
 for capture-layer changes only.
