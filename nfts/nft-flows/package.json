@@ -1,0 +1,10 @@
+{
+  "name": "org-nft-flows",
+  "version": "1.0.0",
+  "description": "NFT + lock forward capture for every registered collection — walks new blocks, archives matched txs under tla-core/nfts/raw/<collection>/forward/, merges classified records into tla-core/nfts/<collection>/ledger/",
+  "main": "index.js",
+  "scripts": { "start": "node index.js", "mock": "node mock-run.js" },
+  "engines": { "node": ">=18.0.0" },
+  "license": "UNLICENSED",
+  "private": true
+}
