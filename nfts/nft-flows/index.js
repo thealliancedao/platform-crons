@@ -1,7 +1,9 @@
 'use strict';
-// org-nft-flows 1.0.0 — FORWARD CAPTURE for every collection in tla-core/docs/curated/nft-collections.json.
-// Render cron (hourly). Picks up where the backfill left off and keeps nfts/<collection>/ledger/ current, so the
-// archive node is never needed again: every matched tx is archived as it happens.
+// org-nft-flows 1.1.0 — FORWARD CAPTURE for ONE collection: Render cron `org-nft-flows-<slug>` (hourly), env COLLECTION=<slug>.
+// One service per collection: stop, delete or add a collection without touching the others. Reads the collection's own
+// config (nft-collections/<slug>/collection.json capture block + venues.json), walks new blocks from its own cursor,
+// and writes only inside its own folder (<slug>/raw/forward, <slug>/ledger, <slug>/nft-flows/heartbeat.json).
+// Picks up where the backfill left off; the archive node is never needed again.
 //
 //   reads  : tla-core/docs/curated/nft-collections.json (registry — the ONLY per-collection input)
 //            tla-core/nfts/ledger-cursor.json (global block cursor; first run derives it from each ledger's coverage)
@@ -20,7 +22,9 @@ const https = require('https'), zlib = require('zlib'), crypto = require('crypto
 const { classifyNftTx, buildIndex, recordKey } = require('./lib/classify.js');
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
-const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
+const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/nft-collections';
+const SLUG          = String(process.env.COLLECTION || '').trim();
+const TLA_CORE_RAW  = process.env.TLA_CORE_RAW || 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const RPC_PRIMARY   = process.env.RPC_PRIMARY   || 'https://terra-rpc.publicnode.com';
 const RPC_FALLBACK  = process.env.RPC_FALLBACK  || 'https://terra-rpc.polkachu.com';
@@ -29,7 +33,7 @@ const MAX_BLOCKS    = Number(process.env.MAX_BLOCKS_PER_RUN || 4000);
 const LAG           = Number(process.env.HEAD_LAG || 10);
 const PACE_MS       = Number(process.env.PACE_MS || 60);
 const DRY           = /^1|true$/i.test(String(process.env.DRY_RUN || ''));
-const CURSOR_PATH   = 'nfts/ledger-cursor.json', HB_PATH = 'nfts/nft-flows/heartbeat.json';
+const CURSOR_PATH   = `${SLUG}/ledger/cursor.json`, HB_PATH = `${SLUG}/nft-flows/heartbeat.json`, LEDGER = `${SLUG}/ledger`, RAWF = `${SLUG}/raw/forward`;
 const AGENT = new https.Agent({ keepAlive: true, maxSockets: 8 });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const t0 = Date.now(); const errors = [];
@@ -104,25 +108,28 @@ function usdAt(price, ts) {
 // ---------------------------------------------------------------- main
 (async () => {
   if (!GITHUB_TOKEN && !DRY) throw new Error('GITHUB_TOKEN missing — refusing to run (no publish target).');
-  const reg = (await readFile('docs/curated/nft-collections.json')); if (!reg) throw new Error('registry missing');
-  const R = reg.data; const idx = buildIndex(R);
-  const cols = Object.keys(R.collections);
+  if (!SLUG) throw new Error('COLLECTION missing — one service per collection (env COLLECTION=<slug>)');
+  const cj = await readFile(`${SLUG}/collection.json`); if (!cj || !cj.data.capture) throw new Error(`${SLUG}/collection.json missing or has no capture block`);
+  const vj = await readFile('venues.json'); if (!vj) throw new Error('venues.json missing');
+  const R = { venues: vj.data.venues, collections: { [SLUG]: Object.assign({ label: cj.data.name, collection: cj.data.nft_contract, supply: cj.data.supply, kind: cj.data.kind }, cj.data.capture) } };
+  const idx = buildIndex(R); const cols = [SLUG];
   // watch set = every collection contract + custodians + launchpads + distributors + every venue (offers/deposits are venue-only records)
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
-  for (const v of Object.values(R.venues || {})) if (v.address) WATCH.add(v.address);
-  try { LUNA = ((await readFile('nfts/adao/snapshots/luna-usd-daily.json')) || {}).data.daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }
+  for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
+  try { LUNA = (await httpGet(TLA_CORE_RAW + 'nfts/adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
   let cur = await readFile(CURSOR_PATH); let cursor = cur && Number(cur.data.height);
   if (!cursor) {
     const ends = [];
-    for (const k of cols) { const ix = await readFile(`nfts/${k}/ledger/index.json`); const full = ix ? (ix.data.coverage || []).filter(c => !c.partial) : []; if (full.length) ends.push(Math.max(...full.map(c => c.to))); }
-    if (!ends.length) throw new Error('no ledger coverage on main and no cursor — run the backfill first (SPEC-nft-flows)');
-    cursor = Math.min(...ends); console.log(`cursor bootstrapped from ledger coverage: ${cursor}`);
+    const ix = await readFile(`${LEDGER}/index.json`); const full = ix ? (ix.data.coverage || []).filter(c => !c.partial) : []; if (full.length) ends.push(Math.max(...full.map(c => c.to)));
+    if (!ends.length) { const g = Number(R.collections[SLUG].genesis_height); if (g) ends.push(g - 1); }
+    if (!ends.length) throw new Error(`no ledger coverage and no genesis_height for ${SLUG} — run the backfill (or set capture.genesis_height) first`);
+    cursor = Math.min(...ends); console.log(`cursor bootstrapped from ${SLUG} ledger coverage: ${cursor}`);
   }
   const head = await getHead() - LAG; const from = cursor + 1; const to = Math.min(head, cursor + MAX_BLOCKS);
-  console.log(`org-nft-flows · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
+  console.log(`org-nft-flows-${SLUG} · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
   if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
@@ -155,7 +162,7 @@ function usdAt(price, ts) {
   for (const [k, txs] of Object.entries(rawPer)) {
     const byDay = {}; txs.forEach(tx => (byDay[String(tx.t).slice(0, 10)] ||= []).push(tx));
     for (const [day, list] of Object.entries(byDay)) {
-      const p = `nfts/raw/${k}/forward/${day}.json.gz`; const ex = await readFile(p); const seen = new Set(((ex && ex.data) || []).map(t => t.x));
+      const p = `${RAWF}/${day}.json.gz`; const ex = await readFile(p); const seen = new Set(((ex && ex.data) || []).map(t => t.x));
       const merged = [...((ex && ex.data) || []), ...list.filter(t => !seen.has(t.x))].sort((a, b) => a.h - b.h);
       if (merged.length === ((ex && ex.data) || []).length) continue;
       await writeGz(p, merged, `nft-flows forward raw ${k} ${day} (+${merged.length - ((ex && ex.data) || []).length})`, ex && ex.sha); rawFiles++;
@@ -170,33 +177,33 @@ function usdAt(price, ts) {
     const byMonth = {}; list.forEach(r => { r.source = 'forward:org-nft-flows'; if (r.price) Object.assign(r, usdAt(r.price, r.ts)); (byMonth[String(r.ts).slice(0, 7).replace('-', '/')] ||= []).push(r); });
     const monthsTouched = {};
     for (const [mk, rs] of Object.entries(byMonth)) {
-      const p = `nfts/${k}/ledger/${mk}.json`; const ex = await readFile(p); const existing = (ex && Array.isArray(ex.data)) ? ex.data : []; const seen = new Set(existing.map(recordKey));
+      const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); const existing = (ex && Array.isArray(ex.data)) ? ex.data : []; const seen = new Set(existing.map(recordKey));
       const fresh = rs.filter(r => !seen.has(recordKey(r))); if (!fresh.length) continue;
       const merged = [...existing, ...fresh].sort((a, b) => a.height - b.height || a.msg_index - b.msg_index);
       await writeJson(p, merged, `nft-flows forward ${k} ${mk} (+${fresh.length})`, ex && ex.sha); added += fresh.length; perColAdded[k] = (perColAdded[k] || 0) + fresh.length; monthsTouched[mk] = merged;
     }
     if (Object.keys(monthsTouched).length) {
-      const ixf = await readFile(`nfts/${k}/ledger/index.json`); const ix = (ixf && ixf.data) || { product: `nfts/${k}/ledger`, schema: 'nft-flows-1.0', collection: k, total: 0, by_kind: {}, months: [], coverage: [], known_gaps: [] };
+      const ixf = await readFile(`${LEDGER}/index.json`); const ix = (ixf && ixf.data) || { product: `${k}/ledger`, schema: 'nft-flows-1.0', collection: k, total: 0, by_kind: {}, months: [], coverage: [], known_gaps: [] };
       for (const [mk, merged] of Object.entries(monthsTouched)) { if (!ix.months.includes(mk)) ix.months.push(mk); ix.months.sort(); }
-      const bk = {}; let total = 0; for (const mk of ix.months) { const m = monthsTouched[mk] || ((await readFile(`nfts/${k}/ledger/${mk}.json`)) || { data: [] }).data; total += m.length; m.forEach(r => { bk[r.kind] = (bk[r.kind] || 0) + 1; }); }
+      const bk = {}; let total = 0; for (const mk of ix.months) { const m = monthsTouched[mk] || ((await readFile(`${LEDGER}/${mk}.json`)) || { data: [] }).data; total += m.length; m.forEach(r => { bk[r.kind] = (bk[r.kind] || 0) + 1; }); }
       ix.total = total; ix.by_kind = bk;
       const fw = ix.coverage.find(c => c.source === 'forward:org-nft-flows'); if (fw) fw.to = Math.max(fw.to, processedTo); else ix.coverage.push({ source: 'forward:org-nft-flows', from: from, to: processedTo, parts: 0 });
-      ix.forward_stream = 'org-nft-flows (Render, hourly) → nfts/raw/<collection>/forward + this ledger'; ix.updatedAt = new Date().toISOString();
-      await writeJson(`nfts/${k}/ledger/index.json`, ix, `nft-flows forward ${k} index`, ixf && ixf.sha);
+      ix.forward_stream = `org-nft-flows-${k} (Render, hourly) → ${k}/raw/forward + this ledger`; ix.updatedAt = new Date().toISOString();
+      await writeJson(`${LEDGER}/index.json`, ix, `nft-flows forward ${k} index`, ixf && ixf.sha);
     }
   }
   // collections with nothing new still get their coverage edge moved (the walk covered them)
-  for (const k of cols) { if (perColAdded[k]) continue; const ixf = await readFile(`nfts/${k}/ledger/index.json`); if (!ixf) continue; const ix = ixf.data; const fw = ix.coverage.find(c => c.source === 'forward:org-nft-flows'); if (fw) { if (processedTo > fw.to) { fw.to = processedTo; ix.updatedAt = new Date().toISOString(); await writeJson(`nfts/${k}/ledger/index.json`, ix, `nft-flows forward ${k} coverage → ${processedTo}`, ixf.sha); } } else { ix.coverage.push({ source: 'forward:org-nft-flows', from, to: processedTo, parts: 0 }); ix.updatedAt = new Date().toISOString(); await writeJson(`nfts/${k}/ledger/index.json`, ix, `nft-flows forward ${k} coverage start`, ixf.sha); } }
+  for (const k of cols) { if (perColAdded[k]) continue; const ixf = await readFile(`${LEDGER}/index.json`); if (!ixf) continue; const ix = ixf.data; const fw = ix.coverage.find(c => c.source === 'forward:org-nft-flows'); if (fw) { if (processedTo > fw.to) { fw.to = processedTo; ix.updatedAt = new Date().toISOString(); await writeJson(`${LEDGER}/index.json`, ix, `nft-flows forward ${k} coverage → ${processedTo}`, ixf.sha); } } else { ix.coverage.push({ source: 'forward:org-nft-flows', from, to: processedTo, parts: 0 }); ix.updatedAt = new Date().toISOString(); await writeJson(`${LEDGER}/index.json`, ix, `nft-flows forward ${k} coverage start`, ixf.sha); } }
 
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
-  if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: 'global block cursor for org-nft-flows; every registered collection is walked together' }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
+  if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
   await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nfts', product: 'nft-flows', cron: 'org-nft-flows', version: '1.0.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
