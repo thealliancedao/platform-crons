@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.4';
+const VERSION       = 'org-system-health-1.0.5';   // 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -43,9 +43,9 @@ const T = { githubApiRequest: realGithubApiRequest, now: () => new Date() };
 
 // ALL reads via the authenticated Contents API with the raw media type —
 // never the raw CDN (stale/429), never base64 content (>1MB empty).
-async function apiGetJson(repoPath) {
+async function apiGetJson(repoPath, repo = GITHUB_REPO) {   // 1.0.5: `repo` — a product that lives outside tla-core (nft-collections) names its repo
     try {
-        const d = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${repoPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw');
+        const d = await T.githubApiRequest('GET', `/repos/${repo}/contents/${repoPath}?ref=${GITHUB_BRANCH}`, null, 'application/vnd.github.raw');
         return { ok: true, data: typeof d === 'string' ? JSON.parse(d) : d };
     } catch (e) {
         if (e.statusCode === 404) return { ok: true, data: null };   // genuinely absent
@@ -210,13 +210,18 @@ const FRESHNESS_MAP = [
     // the product itself (it carries capturedAt; no separate heartbeat).
     { product: 'capa-supply',        kind: 'cron',    path: 'token-catalog/supply/capa/current.json',     ts: ['capturedAt'],                max_age_h: 12 },
     { product: 'fuel-supply',        kind: 'cron',    path: 'token-catalog/supply/fuel/current.json',     ts: ['capturedAt'],                max_age_h: 12 },   // 2026-08-24: Boost DAO (Neutron) + Terra IBC map
+    // 2026-09-12 (NFT ledger milestone): one Render service per collection (org-nft-flows-<slug>, hourly, platform-crons/
+    // nfts/nft-flows) publishing into thealliancedao/nft-collections/<slug>/ — `repo` names where the heartbeat lives.
+    { product: 'nft-ledger-adao',        kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'adao/nft-flows/heartbeat.json',        ts: ['ran_at'], max_age_h: 6 },
+    { product: 'nft-ledger-pixel-lions', kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'pixel-lions/nft-flows/heartbeat.json', ts: ['ran_at'], max_age_h: 6 },
+    { product: 'nft-ledger-tla-locks',   kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'tla-locks/nft-flows/heartbeat.json',   ts: ['ran_at'], max_age_h: 6 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
 async function invHeartbeatFreshness(reader, now) {
     const rows = []; const stale = [];
     for (const spec of FRESHNESS_MAP) {
         const path = spec.pathFn ? spec.pathFn(now) : spec.path;
-        const r = await reader(path);
+        const r = spec.repo ? await reader(path, spec.repo) : await reader(path);
         if (!r.ok)        { rows.push({ product: spec.product, status: 'unreadable' }); stale.push({ product: spec.product, reason: 'read failed (not 404)' }); continue; }
         if (!r.data)      { rows.push({ product: spec.product, status: 'absent' });     stale.push({ product: spec.product, reason: 'file absent' }); continue; }
         let ts = null;

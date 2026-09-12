@@ -18,9 +18,11 @@ function check(name, cond, extra) {
 // ---------------------------------------------------------------------------- repo stub
 let REPO = {};
 let WRITES = {};
+let REPO_HITS = {};   // 1.0.5: path → repo the read was addressed to
 M.T.githubApiRequest = async (method, apiPath, body, accept) => {
     const m = apiPath.match(/\/contents\/([^?]+)/);
     const path = m && decodeURIComponent(m[1]);
+    const rm = apiPath.match(/^\/repos\/([^/]+\/[^/]+)\//); if (method === 'GET' && rm) REPO_HITS[path] = rm[1];
     if (method === 'GET') {
         if (accept === 'application/vnd.github.raw') {
             if (path in REPO) return JSON.stringify(REPO[path]);
@@ -68,6 +70,10 @@ function healthyRepo() {
         'dex-data/skeletonswap/rolling/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },
         'tla-voting/vote-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'tla-voting/bribe-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
+        // 1.0.5: the three nft-collections ledger crons (real shape: ran_at, status, cursor)
+        'adao/nft-flows/heartbeat.json':        { ran_at: '2026-07-16T11:04:00Z', status: 'ok', cursor: 1 },
+        'pixel-lions/nft-flows/heartbeat.json': { ran_at: '2026-07-16T11:24:00Z', status: 'ok', cursor: 1 },
+        'tla-locks/nft-flows/heartbeat.json':   { ran_at: '2026-07-16T11:44:00Z', status: 'ok', cursor: 1 },
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'nfts/adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),
         'nfts/adao/flows/heartbeat.json': H('2026-07-16T11:00:00Z'),
@@ -96,6 +102,12 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     check('R1 history appended', REPO['system-health/history/2026/07.json'].runs.length === 1);
     check('R1 heartbeat written', REPO['system-health/heartbeat.json'].version.includes('system-health'));
     check('R1 one-off exempt', JSON.stringify(out.invariants.heartbeat_freshness.measured).includes('exempt (one-off)'));
+    // 1.0.5: the three nft-collections ledger crons are rows, judged fresh, and READ FROM nft-collections (not tla-core)
+    { const rows = out.invariants.heartbeat_freshness.measured; const names = rows.map(r => r.product);
+      check('R1.5 nft-ledger rows present ×3', ['nft-ledger-adao', 'nft-ledger-pixel-lions', 'nft-ledger-tla-locks'].every(n => names.includes(n)), names);
+      check('R1.5 nft-ledger rows fresh', rows.filter(r => r.product.startsWith('nft-ledger-')).every(r => r.status === 'fresh'), rows.filter(r => r.product.startsWith('nft-ledger-')));
+      check('R1.5 nft-ledger read from nft-collections', REPO_HITS['pixel-lions/nft-flows/heartbeat.json'] === 'thealliancedao/nft-collections' && REPO_HITS['adao/nft-flows/heartbeat.json'] === 'thealliancedao/nft-collections', REPO_HITS['pixel-lions/nft-flows/heartbeat.json']);
+      check('R1.5 tla-core rows still read from tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json'] === 'thealliancedao/tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json']); }
 
     console.log('— R2: one violation per invariant —');
     // INV1 drift: member stable 1000 vs catalog 999 ok; bump member to 1200 (20% drift)
@@ -108,12 +120,15 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO['token-catalog/snapshots/current.json'].pools[0].bucket = 'project';
     // INV6: stale product
     REPO['token-catalog/snapshots/heartbeat.json'].capturedAt = '2026-07-15T00:00:00Z';   // 36h > 6h
+    // 1.0.5: a collection cron that stops (heartbeat absent — the exact 2026-09-12 failure: services misconfigured to another slug never wrote one) must be listed
+    delete REPO['tla-locks/nft-flows/heartbeat.json'];
     out = await M.run();
     check('R2 INV1 violation names #4', out.invariants.bucket_vp_consistency.status === 'violation' && /#4/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
     check('R2 INV2 violation lists pool', out.invariants.staked_le_depth.status === 'violation' && out.invariants.staked_le_depth.measured[0].pool === 'P1');
     check('R2 INV3 violation names bucket', out.invariants.distribution_fractions_sum.status === 'violation' && 'stable' in out.invariants.distribution_fractions_sum.measured);
     check('R2 INV5 violation carries both stamps', out.invariants.bucket_label_agreement.status === 'violation' && out.invariants.bucket_label_agreement.measured[0].catalog_as_of, out.invariants.bucket_label_agreement.measured);
     check('R2 INV6 violation lists stale product', out.invariants.heartbeat_freshness.status === 'violation' && JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('token-catalog'));
+    check('R2.5 INV6 absent collection heartbeat listed', JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('"product":"nft-ledger-tla-locks","reason":"file absent"'), out.invariants.heartbeat_freshness.measured.stale);
     check('R2 overall = violation', out.meta.status === 'violation');
     check('R2 history now 2 runs (never-shrink)', REPO['system-health/history/2026/07.json'].runs.length === 2);
 
