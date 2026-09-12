@@ -26,8 +26,15 @@ const https = require('https');
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
+// ---- 2026-09-12 aDAO migration (NFT_ROOT / DATA_REPO) --------------------------------
+// GITHUB_REPO = where THIS cron WRITES its aDAO products (today tla-core; becomes nft-collections).
+// DATA_REPO   = where the TLA-side products it READS live (network-and-prices, price-history,
+//               token-catalog, tla-voting) — always tla-core, never follows GITHUB_REPO.
+// NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
+// Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
+const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const NFT_PATH = process.env.NFT_PATH || 'nfts/adao/snapshots';
+const NFT_PATH = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 
 // Canonical rarity metadata (token_id -> grade 1-40, object trait, percentile).
 // ORG 2026-08-11: defipatriot/nft-metadata is DELETED (404). Rarity is a
@@ -39,7 +46,7 @@ const RARITY_URL = process.env.RARITY_URL ||
 const MIN_LISTINGS_FOR_FLOOR = 2;
 const MIN_SALES_FOR_AVG = 2;
 
-const VERSION = 'nft-analytics-1.0.0';
+const VERSION = 'nft-analytics-1.1.0';   // 1.1.0 (2026-09-12): NFT_ROOT env
 
 // ---- http ----
 function fetchJson(url) {
@@ -395,5 +402,5 @@ async function publish(filepath, obj, message, maxAttempts = 5) {
   return false;
 }
 
-module.exports = { main };
+module.exports = { main, PATHS: { GITHUB_REPO, NFT_ROOT, NFT_PATH } };
 if (require.main === module) main().catch(e => { console.error('fatal:', e); process.exit(1); });

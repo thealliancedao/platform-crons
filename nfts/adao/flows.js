@@ -39,14 +39,21 @@ const {
 // ---- config ----
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
+// ---- 2026-09-12 aDAO migration (NFT_ROOT / DATA_REPO) --------------------------------
+// GITHUB_REPO = where THIS cron WRITES its aDAO products (today tla-core; becomes nft-collections).
+// DATA_REPO   = where the TLA-side products it READS live (network-and-prices, price-history,
+//               token-catalog, tla-voting) — always tla-core, never follows GITHUB_REPO.
+// NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
+// Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
+const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const OUTPUT_PATH   = 'nfts/adao/flows';
+const OUTPUT_PATH   = `${NFT_ROOT}/flows`;
 const RUN_SPEED     = (process.env.RUN_SPEED || 'fast').toLowerCase(); // fast | state | rollup
 
 const RAW = (p) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`;
 const TODAY_PATH   = `${OUTPUT_PATH}/today.json`;
-const NFTS_URL     = RAW('nfts/adao/snapshots/nfts.json');
-const VERSION      = 'nft-flows-0.1.3';  // 0.1.3: self-heal stale baseline-dump events + refresh version on write
+const NFTS_URL     = RAW(`${NFT_ROOT}/snapshots/nfts.json`);
+const VERSION      = 'nft-flows-0.2.0';  // 0.2.0 (2026-09-12): NFT_ROOT env — paths resolve from the aDAO folder root (migration to nft-collections)   // 0.1.3: self-heal stale baseline-dump events + refresh version on write
 
 // ---- small utils ----
 function todayStr(d = new Date()) { return d.toISOString().slice(0, 10); }
@@ -274,7 +281,7 @@ async function upgradeDelistingsToSales(doc) {
   if (!ev.some(e => e.type === 'delisting')) return { upgraded: 0 };
   const [y, m] = doc.date.split('-');
   let month = null;
-  try { month = await httpGetJson(RAW(`nfts/adao/transfers/${y}/${m}.json`)); } catch { /* absent = nothing to join */ }
+  try { month = await httpGetJson(RAW(`${NFT_ROOT}/transfers/${y}/${m}.json`)); } catch { /* absent = nothing to join */ }
   if (!Array.isArray(month)) return { upgraded: 0 };
   const sales = month.filter(r => Number(r.schemaVersion) >= 2 && r.action === 'sale'
     && String(r.timestamp || '').slice(0, 10) === doc.date && r.resolution !== 'ambiguous');
@@ -400,4 +407,4 @@ async function run() {
 if (require.main === module) {
   run().catch(e => { console.error('FATAL', e); process.exit(1); });
 }
-module.exports = { run, upgradeDelistingsToSales, summarizeDay };
+module.exports = { run, upgradeDelistingsToSales, summarizeDay, PATHS: { GITHUB_REPO, NFT_ROOT, OUTPUT_PATH, NFTS_URL, transfersPath: (y, m) => `${NFT_ROOT}/transfers/${y}/${m}.json` } };

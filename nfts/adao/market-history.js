@@ -31,11 +31,19 @@ const https = require('https');
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
+// ---- 2026-09-12 aDAO migration (NFT_ROOT / DATA_REPO) --------------------------------
+// GITHUB_REPO = where THIS cron WRITES its aDAO products (today tla-core; becomes nft-collections).
+// DATA_REPO   = where the TLA-side products it READS live (network-and-prices, price-history,
+//               token-catalog, tla-voting) — always tla-core, never follows GITHUB_REPO.
+// NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
+// Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
+const DATA_REPO     = process.env.DATA_REPO || 'thealliancedao/tla-core';
+const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const NFT_PATH   = process.env.NFT_PATH || 'nfts/adao/snapshots';
-const TRANSFERS_PATH = 'nfts/adao/transfers';
+const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
+const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.1.0';
+const VERSION = 'nft-market-history-1.2.0';   // 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
@@ -63,6 +71,7 @@ function fetchJson(url) {
 }
 const bust = (u) => u + (u.includes('?') ? '&' : '?') + 't=' + Date.now();
 const RAW = (p) => bust(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}`);
+const RAW_DATA = (p) => bust(`https://raw.githubusercontent.com/${DATA_REPO}/${GITHUB_BRANCH}/${p}`);   // TLA-side reads
 
 function githubApiRequest(method, apiPath, body = null) {
   return new Promise((resolve, reject) => {
@@ -351,7 +360,7 @@ async function main() {
   const fromDay = lastLuna < lastBluna ? lastLuna : lastBluna;
   const months = monthsBetween(fromDay, today);
   const priceMonths = {};
-  await Promise.all(months.map(async m => { priceMonths[m] = await fetchJson(RAW(`${PRICE_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`)); }));
+  await Promise.all(months.map(async m => { priceMonths[m] = await fetchJson(RAW_DATA(`${PRICE_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`)); }));
 
   // 1) daily fills
   const f1 = fillDailyFromPriceHistory(lunaDaily, 'LUNA', priceMonths, today);
@@ -382,7 +391,7 @@ async function main() {
   // 4) unresolved-exit sentinel over the trailing window (registry marketplaces)
   let unresolved = [];
   try {
-    const reg = await fetchJson(RAW('tla-voting/capture-registry.json'));
+    const reg = await fetchJson(RAW_DATA('tla-voting/capture-registry.json'));
     const marketAddrs = new Set((reg && reg.contracts || []).filter(c => (c.streams || []).includes('nft_marketplace')).map(c => c.address));
     if (marketAddrs.size) {
       const sinceIso = new Date(Date.now() - SENTINEL_WINDOW_DAYS * 86400000).toISOString();
@@ -422,5 +431,5 @@ async function main() {
   console.log('  done');
 }
 
-module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP };
+module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, TRANSFERS_PATH, PRICE_PATH, RAW, RAW_DATA } };
 if (require.main === module) main().catch(e => { console.error('market-history failed:', e.message); process.exit(1); });

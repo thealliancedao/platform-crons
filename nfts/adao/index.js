@@ -1,5 +1,7 @@
 // =============================================================================
-// NFT Inventory Cron — Rev C.4
+// NFT Inventory Cron — Rev C.5
+// Rev C.5 (2026-09-12) — NFT_ROOT / DATA_REPO: every aDAO path resolves from NFT_ROOT (default nfts/adao);
+//   TLA-side reads (token-catalog, network-and-prices) pinned to DATA_REPO (tla-core). No-op until the env flips.
 //
 // [org-migrated v2, 2026-07-01] Price source repointed to the org token-catalog
 //   (thealliancedao/tla-core/token-catalog/snapshots/current.json). No old-system
@@ -117,6 +119,14 @@ const RETRIES              = 3;
 // GitHub publish (matches other crons' env contract)
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
+// ---- 2026-09-12 aDAO migration (NFT_ROOT / DATA_REPO) --------------------------------
+// GITHUB_REPO = where THIS cron WRITES its aDAO products (today tla-core; becomes nft-collections).
+// DATA_REPO   = where the TLA-side products it READS live (network-and-prices, price-history,
+//               token-catalog, tla-voting) — always tla-core, never follows GITHUB_REPO.
+// NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
+// Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
+const DATA_REPO     = process.env.DATA_REPO     || 'thealliancedao/tla-core';
+const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
 // Output path within the data repo. Rev B.2 (2026-06-07): moved from `data/` → `data/v2/`
@@ -125,14 +135,14 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 // abandoned but retained for archaeological purposes — see "Pre-Rev-B data" in README.
 //
 // To migrate: any consumer page should swap `/data/foo.json` → `/data/v2/foo.json`.
-const OUTPUT_PATH = 'nfts/adao/snapshots';
+const OUTPUT_PATH = `${NFT_ROOT}/snapshots`;
 
 // Sister cron data repos (read-only fetches for prices & catalog token metadata)
 // These are PUBLIC — no auth needed.
 // Price source: the org token-catalog (new system, denom-keyed multi-source prices).
 // No old-system dependency — token-catalog is the single source. If it's
 // unavailable, USD computation is skipped (honest null, never a stale fallback).
-const TOKEN_CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
+const TOKEN_CATALOG_URL = `https://raw.githubusercontent.com/${DATA_REPO}/main/token-catalog/snapshots/current.json`;
 
 // DAODAO pending-claim tracking (Rev B.3). Forward-only state persisted in the data repo.
 const PENDING_CLAIMS_PATH    = `${OUTPUT_PATH}/pending-claims.json`;
@@ -1660,13 +1670,13 @@ async function appendBackingHistory(summary, priceData) {
         // "avg daily gain" the owner spotted. Market prices are not hub rates (PRICING-DOCTRINE).
         let rate = null;
         try {
-            const np = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/network-and-prices/current.json?cb=${Date.now()}`, 'network-and-prices');
+            const np = await fetchJson(`https://raw.githubusercontent.com/${DATA_REPO}/${GITHUB_BRANCH}/network-and-prices/current.json?cb=${Date.now()}`, 'network-and-prices');
             const r = np && np.lst_ratios && np.lst_ratios.ampLUNA && Number(np.lst_ratios.ampLUNA.ratio);
             if (r && r > 1 && r < 10) rate = r;
         } catch (e) { /* fall through */ }
         if (!rate) { console.log('backing-history: no HUB rate today — skipping (honest gap beats a market-ratio row)'); return; }
         const date = new Date().toISOString().slice(0, 10);
-        const path = 'nfts/adao/snapshots/backing-history.json';
+        const path = `${OUTPUT_PATH}/backing-history.json`;
         const cur = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${path}?cb=${Date.now()}`, 'backing-history');
         const rows = (cur && cur.rows) || [];
         if (rows.some(r => r.date === date)) { console.log('backing-history: today already present'); return; }
@@ -1698,7 +1708,7 @@ async function appendBackingHistory(summary, priceData) {
 // 852.305 backing + 94.701 treasury. Captured forward via tx_search (public LCDs prune
 // ~2–3 weeks, so this ledger seeds from first run and tracks itself), merged write-once
 // by tx_hash. Amounts are chain units (uluna / ampLUNA micro) converted to human.
-const CLAIMS_PATH = 'nfts/adao/claims/history.json';
+const CLAIMS_PATH = `${NFT_ROOT}/claims/history.json`;
 function parseClaimTx(tx) {
     const res = tx && (tx.tx_response || tx); if (!res || !Array.isArray(res.events)) return null;
     const attr = (ev, k) => { const a = (ev.attributes || []).find(x => x.key === k); return a ? a.value : null; };
@@ -1744,7 +1754,7 @@ async function captureClaims() {
         const sum = (arr, f) => arr.reduce((s, r) => s + (r[f] || 0), 0);
         const win = (k) => { const a = days(k); return a.length ? { claims: a.length, luna_claimed: +sum(a, 'luna_claimed').toFixed(6), ampluna_to_backing: +sum(a, 'ampluna_to_backing').toFixed(6), ampluna_to_treasury: +sum(a, 'ampluna_to_treasury').toFixed(6), per_day_to_treasury: +(sum(a, 'ampluna_to_treasury') / a.length).toFixed(6), per_day_to_backing: +(sum(a, 'ampluna_to_backing') / a.length).toFixed(6) } : null; };
         const doc = {
-            schemaVersion: 1, product: 'nfts/adao/claims', updated_at: new Date().toISOString(),
+            schemaVersion: 1, product: `${NFT_ROOT}/claims`, updated_at: new Date().toISOString(),
             semantics: 'One row per daily alliance_claim_rewards tx on the aDAO NFT contract (chain events, write-once by tx_hash). luna_claimed → bonded to Eris → ampluna_minted, split ampluna_to_backing (NFT holders, 90%) + ampluna_to_treasury (aDAO treasury, 10%). Windows are sums of CAPTURED rows only; the ledger starts at first capture (public LCDs prune ~2–3 weeks) — never a projection.',
             count: n, first_date: rows[0] ? rows[0].date : null, last: last,
             windows: { d7: win(7), d30: win(30), d90: win(90), all: win(36500) },
@@ -2664,6 +2674,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, OUTPUT_PATH, CLAIMS_PATH, TOKEN_CATALOG_URL, stateHistoryPath },   // resolved paths (gate-nft-root)
     buildDaoControlled, ENTERPRISE_OPERATOR_WALLET,   // dao-controlled by id (2026-09-10)
     parseClaimTx, captureClaims, CLAIMS_PATH,   // 6b
     sweepNftClaims,   // C.5

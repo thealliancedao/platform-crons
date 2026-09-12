@@ -1,5 +1,25 @@
 # nfts/adao — changelog
 
+## NFT_ROOT / DATA_REPO — 2026-09-12 — aDAO migration step 1 (no-op until the env flips)
+
+- ALL FIVE modules resolve their aDAO paths from `NFT_ROOT` (default `nfts/adao`) instead of literal
+  strings: snapshots/, flows/, transfers/, claims/, state-history/. `GITHUB_REPO` stays the WRITE repo.
+- NEW `DATA_REPO` (default `thealliancedao/tla-core`, never follows GITHUB_REPO) for the TLA-side reads:
+  network-and-prices, token-catalog (was a hardcoded tla-core URL), price-history, tla-voting/capture-registry.
+- `NFT_PATH` env still honoured (market-history / analytics / compact-bundle), now defaulting to `${NFT_ROOT}/snapshots`.
+- Each module exports `PATHS` (its resolved paths) so gates can assert them without a third copy.
+- Gate: `gate-nft-root.mjs` (47/47) — DIFFERENTIAL: with default env the patched modules touch byte-for-byte the
+  same URL set as the live modules (reads and writes, three stub behaviours); FLIPPED (GITHUB_REPO=nft-collections,
+  NFT_ROOT=adao): no URL mentions nfts/adao, every aDAO read/write lands under nft-collections/adao/, every TLA-side
+  read still hits tla-core, every write goes to nft-collections; PATHS asserted directly for the constants the runtime
+  probe cannot reach (state-history, claims, price-history, tla-voting).
+- Versions: index.js (rev in header), flows 0.2.0, market-history 1.2.0, analytics 1.1.0, compact-bundle 1.1.0.
+- The flip (later, one Render env change on org-nft-inventory + org-nft-adao-daily):
+  `GITHUB_REPO=thealliancedao/nft-collections` · `NFT_ROOT=adao` (+ the token must have nft-collections write).
+- NOTE: mock-run-market-history / -compact-bundle / -custody fail identically on live main and on this patch
+  (dated fixture expectations, e.g. "19 stranded", "reaches yesterday") — fixture drift, not this change.
+
+
 ## compact-bundle 1.0.0 — 2026-08-23 — the first-paint product (explorer perf)
 
 - NEW compact-bundle.js in the warm/full pass (runs last — a derived view of

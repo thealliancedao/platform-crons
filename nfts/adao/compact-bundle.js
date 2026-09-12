@@ -27,12 +27,19 @@ const https = require('https');
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
+// ---- 2026-09-12 aDAO migration (NFT_ROOT / DATA_REPO) --------------------------------
+// GITHUB_REPO = where THIS cron WRITES its aDAO products (today tla-core; becomes nft-collections).
+// DATA_REPO   = where the TLA-side products it READS live (network-and-prices, price-history,
+//               token-catalog, tla-voting) — always tla-core, never follows GITHUB_REPO.
+// NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
+// Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
+const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const NFT_PATH = process.env.NFT_PATH || 'nfts/adao/snapshots';
+const NFT_PATH = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const SITE_RAW = 'https://raw.githubusercontent.com/thealliancedao/aDAO-links-site/main';
 const RARITY_URL = process.env.RARITY_URL ||
   'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/adao/rarity/adao-rarity-intended.json';
-const VERSION = 'nft-compact-bundle-1.0.0';
+const VERSION = 'nft-compact-bundle-1.1.0';   // 1.1.0 (2026-09-12): NFT_ROOT env
 
 // One bit per classification flag; the page ANDs against these names, so adding
 // a bit is additive and renaming one is a breaking change — don't.
@@ -178,5 +185,5 @@ async function main() {
   console.log('  done');
 }
 
-module.exports = { main, buildBundle, FLAG_BITS };
+module.exports = { main, buildBundle, FLAG_BITS, PATHS: { GITHUB_REPO, NFT_ROOT, NFT_PATH, RAW } };
 if (require.main === module) main().catch(e => { console.error('compact-bundle failed:', e.message); process.exit(1); });
