@@ -4,7 +4,8 @@
 // product); the ARCHIVE is a deterministic fake (smartAt/blockTime answer from the real epoch-202 file); reads and
 // writes go to an in-memory store. Usage: TLA_CORE_DIR=<tla-core checkout> node mock-run-state-history.js
 //   R1 nothing missing  → skipped fast, ZERO archive requests, nothing written
-//   R2 no ARCHIVE env   → skipped with the reason, nothing written
+//   R2 no ARCHIVE env   → PUBLIC mode: samples from PUBLIC_LCD, epoch/heartbeat labeled source:public, endpoint not masked
+//   R2b public mode + a `depth` answer → epoch kept INCOMPLETE (a pruned answer never freezes blanks)
 //   R3 boundary 203 started, missing → ONE epoch sampled from the fake archive, file complete, cursor/index/heartbeat
 //      written, index keeps every prior row + the new one, write-once: 97–202 untouched (0 reads of them)
 //   R4 transport failure mid-sample → epoch kept INCOMPLETE (visible, in cursor), index lists it, status partial
@@ -24,12 +25,12 @@ function store(seed = {}) { const S = new Map(Object.entries(seed)); const write
 const fetchJson = async (p) => { const d = J(p); if (p === 'tla-flows/events/2026/09.json') return [...d, { height: 22837990, timestamp: '2026-09-13T23:59:00Z' }, { height: 22838100, timestamp: '2026-09-14T00:11:00Z' }]; return d; };
 const publicGet = async () => ({ data: { minter: null } });
 // fake archive: answers every pair query with epoch 202's real answer for that pair (or a generic shape), hubs/compounder/staking likewise
-function fakeArchive({ failAfter = Infinity } = {}) {
+function fakeArchive({ failAfter = Infinity, depthFor = 0 } = {}) {
   let n = 0; const stats = { archive_requests: 0, archive_retries: 0, started: Date.now() };
   const byPair = new Map(Object.values(real202.pairs).filter(p => p.ok).map(p => [p.pair, p]));
   return { transport: 'lcd', reqDelayMs: 0, stats,
     async blockTime(h) { stats.archive_requests++; const T = Date.parse('2026-09-14T00:00:00Z'); return new Date(T + (h - 22838000) * 6000).toISOString(); },   // 6 s blocks; height 22838000 = the 203 boundary
-    async smartAt(addr, q, h) { stats.archive_requests++; if (++n > failAfter) return { ok: false, class: 'net', msg: 'simulated transport failure' };
+    async smartAt(addr, q, h) { stats.archive_requests++; if (++n > failAfter) return { ok: false, class: 'net', msg: 'simulated transport failure' }; if (q.pool && depthFor && n <= depthFor) return { ok: false, class: 'depth', msg: 'simulated: no state at height' };
       if (q.pool) { const p = byPair.get(addr); return p ? { ok: true, data: { assets: p.assets.map(a => ({ info: a.denom.startsWith('cw20:') ? { token: { contract_addr: a.denom.slice(5) } } : { native_token: { denom: a.denom.slice(7) } }, amount: a.amount })), total_share: p.total_share } } : { ok: false, class: 'absent', msg: 'contract not found' }; }
       if (q.asset_configs) return { ok: true, data: real202.compounder.ok ? real202.compounder.rates.map(r => ({ asset: r.asset, gauge: r.gauge })) : [] };
       if (q.user_infos || q.user_info) return { ok: true, data: [] };
@@ -39,13 +40,23 @@ function fakeArchive({ failAfter = Infinity } = {}) {
       return { ok: true, data: {} }; } };
 }
 const base = () => ({ 'dex-data/state-history/index.json': J('dex-data/state-history/index.json'), 'dex-data/state-history/cursor.json': J('dex-data/state-history/cursor.json') });
-const ENV = { ARCHIVE_LCD: 'https://archive.example', TIME_BUDGET_MIN: '5' };
+const ENV = { TIME_BUDGET_MIN: '5' };   // no archive env = PUBLIC mode (the forward default)
+const ARCH = { ...ENV, ARCHIVE_LCD: 'https://archive.example' };
 (async () => {
   console.log('— R1 nothing missing (now = inside epoch 202) —');
   { const st = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-10T00:00:00Z'), archiveFactory: () => arch, publicGet });
     check('skipped, reason names epoch 202', r.status === 'skipped' && /202 already complete/.test(r.reason), r); check('zero archive requests', arch.stats.archive_requests === 0); check('nothing written', st.writes.length === 0, st.writes); }
-  console.log('— R2 no archive env —');
-  { const st = store(base()); const r = await SH.runStateHistory({ ...st, fetchJson, env: {}, now: () => new Date('2026-09-15T00:00:00Z') }); check('skipped with reason', r.status === 'skipped' && /ARCHIVE_LCD/.test(r.reason), r); check('nothing written', st.writes.length === 0); }
+  console.log('— R2 public mode is the default; the factory is handed PUBLIC_LCD, unmasked —');
+  { const st = store(base()); let handed = null; const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: { ...ENV, PUBLIC_LCD: 'https://terra-lcd.publicnode.com' }, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: (o) => { handed = o; return { ...arch, source: o.secret ? 'archive' : 'public' }; }, publicGet });
+    check('factory called with the PUBLIC LCD, secret:false', handed && handed.lcd === 'https://terra-lcd.publicnode.com' && handed.secret === false && !handed.rpc, handed);
+    check('sampled 1, source public on epoch file + heartbeat', r.sampled === 1 && r.source === 'public' && st.S.get('dex-data/state-history/epochs/203.json').source === 'public' && st.S.get('dex-data/state-history/heartbeat.json').source === 'public', r);
+    check('public host NOT masked in logs', SH.mask('https://terra-lcd.publicnode.com/x') === 'https://terra-lcd.publicnode.com/x');
+    { let h = null; await SH.runStateHistory({ ...store(base()), fetchJson, env: { ...ARCH, EPOCH_FROM: '203', EPOCH_TO: '203' }, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: (o) => { h = o; return fakeArchive(); }, publicGet }); check('ARCHIVE env → factory gets the archive, secret:true', h && h.lcd === 'https://archive.example' && h.secret === true, h); } }
+  console.log('— R2b public mode + depth answer → incomplete, never frozen —');
+  { const st = store(base()); const arch = fakeArchive({ depthFor: 3 }); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });
+    const ep = st.S.get('dex-data/state-history/epochs/203.json'); check('depth>0 in public mode → complete:false, in cursor', ep && ep.complete === false && ep.tally.depth === 3 && r.incomplete[0] === 203, ep && ep.tally);
+    const st2 = store(base()); const r2 = await SH.runStateHistory({ ...st2, fetchJson, env: ARCH, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => fakeArchive({ depthFor: 3 }), publicGet });
+    check('same answers in ARCHIVE mode → complete (depth is an honest blank there)', r2.sampled === 1 && st2.S.get('dex-data/state-history/epochs/203.json').complete === true, r2); }
   console.log('— R3 epoch 203 started and missing —');
   let st3;
   { st3 = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st3, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });

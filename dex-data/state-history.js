@@ -23,9 +23,15 @@
 // Isolation: nothing here calls process.exit — fatals THROW (ArchiveFatal) so a failed duty never touches the
 // core dex-data run. Skips fast (no archive traffic) when index.json already covers the latest started boundary.
 //
-// runStateHistory({ readJson, writeJson, fetchJson, env, now, archiveFactory }) — env: ARCHIVE_LCD | ARCHIVE_RPC ·
-//   EPOCH_FROM / EPOCH_TO (backfill: set on the Render service + trigger; default = only what is missing) ·
-//   REQ_DELAY_MS (150) · REFINE_MAX (8) · TIME_BUDGET_MIN (20) · FORCE (0) · PUBLIC_LCD · STATE_HISTORY=0 disables.
+// FORWARD = PUBLIC ENDPOINTS ONLY. The archive node was for the backfill (epochs the public node cannot see). The
+// weekly boundary sample runs ~30 min after Monday 00:00, a few hundred blocks back — the public LCD serves that.
+// So the transport is PUBLIC_LCD unless ARCHIVE_LCD/ARCHIVE_RPC is set explicitly (a backfill/repair run, then removed).
+// In public mode a `depth` answer (node has no state at that height) is NOT accepted as a complete sample — the epoch
+// is kept incomplete and retried next run, so a pruned answer can never freeze blanks under write-once.
+//
+// runStateHistory({ readJson, writeJson, fetchJson, env, now, archiveFactory }) — env: PUBLIC_LCD (default publicnode) ·
+//   ARCHIVE_LCD | ARCHIVE_RPC (backfill only) · EPOCH_FROM / EPOCH_TO (backfill: set + trigger; default = only what is
+//   missing) · REQ_DELAY_MS (150) · REFINE_MAX (8) · TIME_BUDGET_MIN (20) · FORCE (0) · STATE_HISTORY=0 disables.
 
 const https = require('https');
 const http = require('http');
@@ -103,10 +109,10 @@ function classify(text) {
 }
 
 // ── The archive client ─────────────────────────────────────────────────────
-function makeArchive({ lcd, rpc, reqDelayMs = 150, breakerMax = 5 }) {
+function makeArchive({ lcd, rpc, reqDelayMs = 150, breakerMax = 5, secret = true }) {
   lcd = String(lcd || '').replace(/\/+$/, ''); rpc = String(rpc || '').replace(/\/+$/, '');
-  registerSecret(lcd); registerSecret(rpc);
-  if (!lcd && !rpc) fail('set repo secret ARCHIVE_LCD (cosmos REST, preferred) or ARCHIVE_RPC (Tendermint 26657)');
+  if (secret) { registerSecret(lcd); registerSecret(rpc); }   // public endpoints are not masked
+  if (!lcd && !rpc) fail('no endpoint: set PUBLIC_LCD (forward) or ARCHIVE_LCD / ARCHIVE_RPC (backfill)');
   const transport = lcd ? 'lcd' : 'rpc';
   const stats = { archive_requests: 0, archive_retries: 0, started: Date.now() };
   let streak = 0;
@@ -148,7 +154,7 @@ function makeArchive({ lcd, rpc, reqDelayMs = 150, breakerMax = 5 }) {
     if (transport === 'lcd') { const r = await get(`${lcd}/cosmos/base/tendermint/v1beta1/blocks/${height}`); return r.block.header.time; }
     const r = await get(`${rpc}/block?height=${height}`); return r.result.block.header.time;
   }
-  return { transport, stats, smartAt, blockTime, reqDelayMs };
+  return { transport, stats, smartAt, blockTime, reqDelayMs, source: secret ? 'archive' : 'public' };
 }
 
 // ── Committed inputs: epoch table, snapshot, event corpus (anchors + pool set) ──
@@ -285,7 +291,7 @@ const OUT = 'dex-data/state-history';
 async function runStateHistory({ readJson, writeJson, fetchJson, env = process.env, now = () => new Date(), archiveFactory = makeArchive, publicGet = httpGet }) {
   const t0 = Date.now(); const out = { status: 'skipped', sampled: 0, skipped: 0, incomplete: [], reason: null };
   if (env.STATE_HISTORY === '0') { out.reason = 'STATE_HISTORY=0'; return out; }
-  if (!env.ARCHIVE_LCD && !env.ARCHIVE_RPC) { out.reason = 'ARCHIVE_LCD / ARCHIVE_RPC not set on this service'; return out; }
+  const archiveMode = !!(env.ARCHIVE_LCD || env.ARCHIVE_RPC);   // backfill/repair only; forward is public
   const FORCE = env.FORCE === '1', REFINE_MAX = Number(env.REFINE_MAX || 8), BUDGET_MS = Number(env.TIME_BUDGET_MIN || 20) * 60000;
   const PUBLIC_LCD = String(env.PUBLIC_LCD || 'https://terra-lcd.publicnode.com').replace(/\/+$/, '');
   // 1. committed inputs (raw reads — public data)
@@ -302,8 +308,9 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
   const months = []; for (const [y, ms_] of Object.entries(evIndex.months_present || {})) for (const m of ms_) months.push(`${y}/${m}`);
   const eventMonths = []; for (const mo of months.sort()) eventMonths.push(await fetchJson(`tla-flows/events/${mo}.json`, `events ${mo}`));
   const corpus = buildCorpus({ epochTable, snapshot, eventMonths });
-  const archive = archiveFactory({ lcd: env.ARCHIVE_LCD, rpc: env.ARCHIVE_RPC, reqDelayMs: Number(env.REQ_DELAY_MS || 150) });
-  log(`  ${VERSION} · transport=${archive.transport} · spacing=${archive.reqDelayMs}ms · serial${FORCE ? ' · FORCE' : ''}`);
+  const archive = archiveMode ? archiveFactory({ lcd: env.ARCHIVE_LCD, rpc: env.ARCHIVE_RPC, reqDelayMs: Number(env.REQ_DELAY_MS || 150), secret: true })
+                            : archiveFactory({ lcd: PUBLIC_LCD, reqDelayMs: Number(env.REQ_DELAY_MS || 150), secret: false });
+  log(`  ${VERSION} · source=${archive.source} · transport=${archive.transport} · spacing=${archive.reqDelayMs}ms · serial${FORCE ? ' · FORCE' : ''}`);
   const targets = await buildTargets(corpus, { publicLcd: PUBLIC_LCD, reqDelayMs: archive.reqDelayMs, stats: archive.stats, getJson: publicGet });
   const pairs = targets.filter(t => t.kind === 'pair'), unresolved = targets.filter(t => t.kind === 'unresolved');
   log(`  ${corpus.anchors.length} anchors · ${targets.length} pools in events · ${pairs.length} pairs · ${unresolved.length} unresolved`);
@@ -321,12 +328,13 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
     const hr = await resolveHeight(corpus, archive, ep, REFINE_MAX);
     if (hr.error) { log(`  epoch ${ep}: ${hr.error}`); continue; }
     const s = await sampleHeight(archive, targets, hr.height, { skipBornLater: true, boundaryIso: hr.start_time });
-    const complete = s.tally.net === 0;
+    // complete = no transport failures; in PUBLIC mode a depth answer also blocks completion (pruned node — not the truth)
+    const complete = s.tally.net === 0 && (archiveMode || s.tally.depth === 0);
     const rec = { schemaVersion: 1, product: OUT, version: VERSION, epoch: ep, start_time: hr.start_time, height: hr.height, height_time: hr.height_time, delta_sec: hr.delta_sec, block_reads: hr.block_reads, resolve_note: hr.note || null,
-      sampled_at: now().toISOString(), transport: archive.transport, complete,
+      sampled_at: now().toISOString(), transport: archive.transport, source: archive.source, complete,
       method: { height: 'last block at or before the epoch start_time; bracketed by tla-flows/events anchors, refined by block reads', pairs: '{pool:{}} on the pair contract at height — assets (denom, amount) + total_share; only pairs with a TLA flow event on or before the boundary are queried', compounder: 'asset_configs at height → user_infos totals per gauge; lp_per_amplp = total_lp / total_amplp (the amplified exchange rate)', classes: 'absent = contract not instantiated at height · depth = node has no state at height · query = message rejected · shape = answered without assets+total_share · net = transport (blocks completion)' },
       pairs: s.pairs, not_sampled: s.not_sampled, compounder: s.compounder, staking: s.staking, lst_hubs: s.lst_hubs, tally: s.tally };
-    log(`  epoch ${ep} ${hr.start_time.slice(0, 10)} h=${hr.height} (${hr.delta_sec}s, ${hr.block_reads} reads) · pairs ok ${s.tally.pair_ok} · absent ${s.tally.absent} · depth ${s.tally.depth} · query ${s.tally.query} · net ${s.tally.net} → ${complete ? 'COMPLETE' : 'INCOMPLETE (kept, resampled next run)'}`);
+    log(`  epoch ${ep} ${hr.start_time.slice(0, 10)} h=${hr.height} (${hr.delta_sec}s, ${hr.block_reads} reads) · pairs ok ${s.tally.pair_ok} · absent ${s.tally.absent} · depth ${s.tally.depth} · query ${s.tally.query} · net ${s.tally.net} → ${complete ? 'COMPLETE' : 'INCOMPLETE (kept, resampled next run)'}${!complete && !archiveMode && s.tally.depth ? ' — public node has no state at this height; if it persists, run once with ARCHIVE_LCD' : ''}`);
     if (complete) { await writeJson(`${OUT}/epochs/${ep}.json`, rec); incomplete.delete(ep); have.add(ep); out.sampled++; }
     else { incomplete.add(ep); if (!existing) await writeJson(`${OUT}/epochs/${ep}.json`, rec); }
     cursor.last_attempted = ep; cursor.incomplete = [...incomplete].sort((a, b) => a - b); cursor.updatedAt = now().toISOString();
@@ -342,8 +350,8 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
     pairs: targets.filter(t => t.kind !== 'single').map(t => ({ key: t.key, kind: t.kind, pair: t.pair, lp: t.lp, name: t.name, dex: t.dex, bucket: t.bucket, pair_via: t.pair_via, events: t.events, first_event: t.first, last_event: t.last })),
     singles: targets.filter(t => t.kind === 'single').map(t => ({ key: t.key, name: t.name, events: t.events, first_event: t.first, last_event: t.last })), epochs };
   await writeJson(`${OUT}/index.json`, idx);
-  await writeJson(`${OUT}/heartbeat.json`, { schemaVersion: 1, product: OUT, version: VERSION, capturedAt: now().toISOString(), status: incomplete.size ? 'partial' : 'ok', sampled: out.sampled, skipped: out.skipped, incomplete: [...incomplete], budget_stop: stoppedForBudget, archive_requests: archive.stats.archive_requests, archive_retries: archive.stats.archive_retries, runner: 'org-dex-data (folded, 1.4.0)' });
-  out.incomplete = [...incomplete]; out.budget_stop = stoppedForBudget; out.archive_requests = archive.stats.archive_requests;
+  await writeJson(`${OUT}/heartbeat.json`, { schemaVersion: 1, product: OUT, version: VERSION, capturedAt: now().toISOString(), status: incomplete.size ? 'partial' : 'ok', sampled: out.sampled, skipped: out.skipped, incomplete: [...incomplete], budget_stop: stoppedForBudget, source: archive.source, requests: archive.stats.archive_requests, retries: archive.stats.archive_retries, runner: 'org-dex-data (folded, 1.4.0)' });
+  out.incomplete = [...incomplete]; out.budget_stop = stoppedForBudget; out.source = archive.source; out.requests = archive.stats.archive_requests;
   return out;
 }
 

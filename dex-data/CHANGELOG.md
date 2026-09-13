@@ -1,169 +1,29 @@
 # 1.3.5 — 2026-09-10 — eris-apr: validation marker cleared; Credia row named
 
-## 1.4.0 — 2026-09-13 — state-history duty folded in (moved from the tla-core Action)
+## 1.4.0 — 2026-09-13 — state-history duty folded in (moved from the tla-core Action) — PUBLIC endpoints forward
 
-- `lib/state-history.js` — the per-epoch pool-state sampler from the ARCHIVE node, MOVED from
-  `tla-core/.github/scripts/dex-state-history/{lib,sample}.js` (logic verbatim; those files + the two workflows are deleted —
-  no second copy). It was born as a backfill Action (104 epochs under a 5-hour budget); forward it is one epoch a week,
-  which is this job's business. LAW: Actions = one-time, Render = scheduled.
+- `lib/state-history.js` — the per-epoch pool-state sampler, MOVED from `tla-core/.github/scripts/dex-state-history/
+  {lib,sample}.js` (logic verbatim; those files + the two workflows are deleted — no second copy). It was born as a backfill
+  Action (104 epochs from the archive node); forward it is one epoch a week, which is this job's business.
+  LAW: Actions = one-time, Render = scheduled. LAW: forward capture uses PUBLIC endpoints — the archive was for history
+  the public node cannot see, and is not used by this cron.
+- Transport: `PUBLIC_LCD` (default terra-lcd.publicnode.com) — the boundary sample runs ~30 min after Monday 00:00, a few
+  hundred blocks back, inside the public node's window. `ARCHIVE_LCD`/`ARCHIVE_RPC` are backfill/repair knobs only (set,
+  trigger, remove). In public mode a `depth` answer never completes an epoch (kept incomplete, retried next run) — a
+  pruned answer can never freeze blanks under write-once; in archive mode depth stays an honest blank as before.
+  Every epoch file and the heartbeat carry `source: public | archive`.
 - Folded module after the core snapshots, isolated like credia-rates: fatals THROW (`ArchiveFatal`), never exit.
-  Fast exit with ZERO archive traffic unless a started boundary is missing / incomplete (index.json is the truth).
-  API reads/writes (readJson / writeJson) replace the checkout + git checkpoints; corpus (epoch table, tla-snapshot,
-  tla-flows/events months) via raw reads. Index rows keep the Action's exact shape.
-- Service env: `ARCHIVE_LCD` (or `ARCHIVE_RPC`) — REQUIRED on org-dex-data for the duty to run (without it: logged
-  skip, nothing else affected); optional `REQ_DELAY_MS` (150), `REFINE_MAX` (8), `TIME_BUDGET_MIN` (20), `PUBLIC_LCD`,
-  `STATE_HISTORY=0` to disable. Backfill / force = set `EPOCH_FROM`/`EPOCH_TO` (+ `FORCE=1`) on the service and trigger
-  a run; remove them after. Products unchanged: `dex-data/state-history/{epochs/<n>.json, index.json, cursor.json,
-  heartbeat.json}` (heartbeat.runner now says org-dex-data).
-- Gate `mock-run-state-history.js` 20/20 on real committed inputs + a deterministic fake archive: skip-fast with zero
-  requests · no-env skip · one missing epoch sampled complete with exactly {epoch, cursor, index, heartbeat} written and
-  every prior index row byte-equal · write-once (no prior epoch read or written) · transport failure → incomplete kept,
-  cursor/heartbeat/index say so · next run completes it · fatal throws · FORCE resamples. `mock-run.js` 82/82 unchanged.
-
-
-`meta.validation` had still read "pending ground-truth reconciliation" after 1.3.3/1.3.4 reconciled every row
-to the Eris screen — now states what was reconciled and when. Credia market rows take the catalog's effective
-symbol for the receipt token (`wBTC.creda.a`, `pool_name_source: token-catalog symbol (receipt)`) instead of
-the adapter's `ibc/88386A… (Credia market)` placeholder. No figure changes; mock 82/82, real-fixture 50/50.
-
-# 1.3.4 — 2026-09-10 — eris-apr: trading leg source-verbatim (single gauges = own yield; SS = 0 by source)
-
-The 1.3.3 gap flag is resolved from the source. Owner HAR of the liquidity-hub
-page (chunk 101.f44f1501107e40cb.js, `getPoolInfo`) shows the `trading` leg per
-pool kind: Astroport pair = 365 × dayLpFeesUSD / TVL (our fee_apr substitutes);
-SkeletonSwap pair = `Promise.resolve(0)` — a hard zero by THEIR source, so our
-SS rows now carry `trading_apr_source: "… 0 by Eris source"` and no "assumed"
-flag; single gauges = the asset's OWN yield labeled "Staking APR"/"Supply APR":
-xASTRO ← Astroport tRPC `protocol.stakingApy` (neutron-1) `weekApr`; ampCAPA ←
-hub `exchange_rates{limit:14}.apr × 365.25` (a frozen hub still reports >0
-because the last 14 stored points predate the freeze — that is the ~4.8 pp);
-Creda ← `metrics.assets[].supply_apy`; anything else 0. The composition itself
-is unchanged and re-confirmed verbatim: `apy = aprToApy(0.92·inc) + trading −
-take`, `total = inc − take + trading`.
-
-Implementation: `SINGLE_YIELD_SOURCES` (the two hardcoded assets, exactly as
-Eris hardcodes `j.TV.xastro` / `j.TV.ampcapa`) read in captureInputs →
-`single_yield_by_key`; compose publishes `trading_apr_source` on every row; a
-failed source read nulls the leg WITH the 1.3.3 flag kept — never borrowed.
-
-Gates: mock M7d (+11, suite 82/82) incl. source-down honesty; real-fixture gate
-50/50 — Credia via the committed supply_apy lands 5.85 vs Eris 5.76 (LUNA price
-differs 2.2%); with the screen's own-yield legs our incentive/staked inputs
-reproduce ampCAPA 19.65 and xASTRO 33.08 to 0.00 pp. First live run is the
-source-read reconcile for the two singles.
-
-# 1.3.3 — 2026-09-10 — eris-apr: SkeletonSwap + Credia staked basis, single names, catalog decimals
-
-Owner audit (Eris screen, 2026-09-10 15:xx UTC) vs the committed product: every
-SkeletonSwap gauge pool and the Credia market published `tla_staked_usd = null`
-→ APR/APY null (5 SS pools $44.7K/$30.4K/$8.0K/$13.2K/$40.3K + wBTC.creda.a
-$80.7K on Eris), and the two single-asset rows had `pool_name: null`. Causes,
-one per leg: (1) the SS adapter defers TVL by design ("computed downstream from
-reserves × trusted prices") and eris-apr never performed that join; (2) the
-Credia adapter left `lp_total_supply` null although the gauge stakes the
-vproxy RECEIPT token whose supply is `state.supply_vtotal`; (3) single entries
-have no pool record and nothing named them; (4) latent: `catalogPrice` read a
-top-level `decimals` that the catalog schema never had → every catalog
-fallback priced at 6 decimals (8-dec wBTC would have been 100× off on that
-path).
-
-Fix, all labeled: new staked basis
-`staked_supply_ratio_x_reserve_implied_tvl (<price source>)` — Σ reserve ×
-token-catalog price over the pool's assets, tried ONLY when the adapter TVL is
-null and reserves + supply exist; ANY unpriced asset nulls the whole leg with
-`reserve_tvl_unpriced:<reason>` (never a partial sum); implied pool TVL
-published beside it (`pool_tvl_usd_reserve_implied`). Credia adapter publishes
-`lp_total_supply = supply_vtotal` so the standard basis applies. Singles named
-from the catalog's `effective` layer (its stated downstream contract;
-`pool_name_source`), decimals read from the same layer. NAMED GAP, not guessed:
-`single_asset_yield_leg_unmeasured` — Eris's screen adds a leg on single
-gauges beyond incentive − take (xASTRO 15.4 vs 33.08, ampCAPA 14.8 vs 19.65)
-that the source-confirmed formula does not carry.
-
-Gates: mock M7c (+7, suite 71/71); real-fixture gate on the committed
-2026-09-10 products vs the owner's screen 40/40 — 18 Astroport rows
-byte-identical (regression), SS/Credia staked within 0.5% of Eris (ATOM-LUNA
-1.35%), APR within 0.4 pp, all six within 1.5% of member-data's independent
-figure, 26/26 fully priced (was 20/26). Clears the product's "pending
-ground-truth reconciliation" marker for pair pools; singles carry the gap flag.
-
-# 1.3.1 — 2026-08-02 — eris-apr resilience: token-catalog price fallback (labeled)
-
-First live run (during a live astroport tRPC outage — their backend 500ing on
-an internal 403) proved two things: every chain-input shape parsed (status ok,
-28 gauge entries) AND the product's USD legs all rode the astroport adapter
-(LUNA price + asset prices), so one upstream DEX outage nulled 28/28. Fix:
-token-catalog (the org price home, PRICING-DOCTRINE priority tla > coingecko >
-astroport > skeletonswap) now backs up the LUNA price and single-asset prices
-— adapter prices stay PRIMARY, every fallback use is source-labeled
-(`token-catalog/<src> (fallback)` in `luna_price_source` / staked basis).
-Pair-pool TVL legs have no substitute and stay honestly null when astroport is
-down. Gate: M7b, full suite 64/64 (incl. catalog-also-down -> honest nulls,
-run survives).
-
-# 1.3.0 — 2026-08-02 — eris-apr rider: cron-published Eris-convention APR (audit fix #4)
-
-- **eris-apr rider (AUDIT-eris-apr-pricing fix #4):** new `lib/eris-apr.js` +
-  orchestrator stage publishing `dex-data/eris-apr/{current,daily/<date>,heartbeat}`.
-  Implements Eris's OWN displayed-APR pipeline source-confirmed via Philipp
-  (audit §Gauge-LP-APR), VERBATIM mixed convention: `eris_apy_pct =
-  aprToApy(incentive×0.92, 365.25) + trading − take` and `eris_apr_pct =
-  incentive − take + trading` (their linear `total`, no 0.92 — per source).
-  Inputs: `/terra/alliances` + `annual_provisions` (LCD), connector→gauge
-  SELF-DISCOVERED from alliance factory denoms via `{config:{}}` probes (zero
-  hardcoded connector addresses), controller `distributions` raw (never
-  normalized; sum deviations reported), per-bucket `total_staked_balances` +
-  `yearly_take_rate` from `whitelisted_asset_details` configs. TLA-staked USD =
-  staked/lp-supply ratio × pool TVL (unit-free); single-asset entries priced
-  via adapter asset prices; zero staked = $0 by identity. Edge cases verbatim
-  (0/0→0; tvl==0→Infinity published null+flag). Honest nulls with reasons,
-  components always published; substitution stated (trading = our fee_apr).
-  Stage isolated like a DEX — its failure never touches per-DEX products.
-  Gate: mock-run M7, 21 asserts on hand-computed fixtures, full suite 59/59.
-  ⚠ Deploy step: reconcile against BOTH ground-truth tables (SPEC-lp-apr §7 +
-  §2.10) before any page consumes the figures — `meta.validation` carries the
-  pending marker until then.
-
-# 1.1.0 — 2026-07-15 — bucket labels now GAUGE TRUTH (defect register #8, closed)
-
-The bug, found by cross-checking tonight's committed snapshots against
-token-catalog's gauge truth (join on pair_address): Astroport derived buckets
-from `total_staked_balances` MEMBERSHIP — where LP happens to be STAKED — which
-disagrees with the gauge's own classification exactly where cross-bucket strays
-exist. Three live mislabels: LUNA-SOLID stable→project, USDC-USDT
-bluechip→single, LUNA-WHALE null→project. SkeletonSwap labeled NOTHING (27
-gauge pools bucket:null — "join is downstream" was a gap, not a design).
-
-The fix — `lib/bucket-truth.js`, shared by both adapters:
-- Truth source: `whitelisted_asset_details` on the 4 bucket contracts (the
-  COMPLETE gauge set, active + below-threshold + dewhitelisted, each flagged
-  whitelisted:true|false — the same source token-catalog's discovery uses).
-  Contracts now imported from config/contracts.js (EDIT RULE honored; the
-  adapter's hardcoded copy retired).
-- Pair resolution, self-contained: cw20 LP → `{minter:{}}` → pair address;
-  native factory LP → denom parse. Both adapters join on pool_address; no
-  reads of other crons' output.
-- Honesty rules: multi-bucket appearances keep ALL of them — whitelisted wins,
-  canonical order breaks ties, `ambiguous_buckets` DECLARED (the USDC-USDT
-  bluechip stray is now data, not a mislabel). Dewhitelisted-only assets keep
-  their bucket with whitelisted:false (ghosts visible, not hidden). Total
-  truth failure → bucket:null + meta.bucket_errors — NEVER a fallback to
-  staked-membership; a missing label is honest, a wrong one is not.
-- `raw.gauge` per TLA pool: gauge_pool_id, whitelisted, ambiguity.
-  meta.bucket_source declared in both adapters.
-- Memoized per process — one truth fetch serves both adapters per run.
-
-Mock gate NEW (mock-run.js, binding for future main-loop changes): 31/31 —
-pure resolution rules, the crafted chain reproducing all three real mislabels
-+ ghost + factory-native + minter-failure + total-failure paths, both
-adapters end-to-end on stubbed network.
-
-Deploy: commit the folder — no schedule/env change. Verify next run:
-LUNA-SOLID shows project, USDC-USDT single, SS pools carry buckets.
-
----
-
-# dex-data — changelog
+  Fast exit with ZERO chain traffic unless a started boundary is missing / incomplete (index.json is the truth).
+  API reads/writes replace the checkout + git checkpoints; corpus (epoch table, tla-snapshot, tla-flows/events months)
+  via raw reads. Index rows keep the Action's exact shape.
+- Env: none required. Optional `REQ_DELAY_MS` (150), `REFINE_MAX` (8), `TIME_BUDGET_MIN` (20), `PUBLIC_LCD`,
+  `STATE_HISTORY=0`; backfill = `EPOCH_FROM`/`EPOCH_TO` (+ `FORCE=1`, + `ARCHIVE_LCD` when the span is beyond the
+  public window). Products unchanged: `dex-data/state-history/{epochs/<n>.json, index.json, cursor.json, heartbeat.json}`.
+- Gate `mock-run-state-history.js` 24/24 on real committed inputs + a deterministic fake node: skip-fast with zero
+  requests · public mode default (factory handed PUBLIC_LCD, unmasked; archive mode only with ARCHIVE env) · depth in
+  public mode → incomplete, same answers in archive mode → complete · one missing epoch sampled with exactly {epoch,
+  cursor, index, heartbeat} written and every prior index row byte-equal · write-once · transport failure kept
+  incomplete then completed next run · fatal throws · FORCE resamples. `mock-run.js` 82/82 unchanged.
 
 ## 1.0.2 — 2026-06-29 — concurrent-write hardening
 
