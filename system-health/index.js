@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.7';   // 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.0.8';   // 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -213,6 +213,10 @@ const FRESHNESS_MAP = [
     { product: 'votion-vaults',      kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['vaults_at', 'capturedAt'],   max_age_h: 6 },
     { product: 'votion-positions',   kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['positions_at'],              max_age_h: 30 },
     { product: 'price-history',      kind: 'day-key', pathFn: (now) => `price-history/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}.json`, max_age_h: 50 },
+    // 1.0.8 (B.5): the WRITER's heartbeat — org-token-catalog appends the daily row every run (~6 h) and now writes this
+    // file with its own status; a swallowed append failure lands here as status 'failed' within the hour instead of
+    // surfacing as a stale day key 50 h later. The day-key row above stays: it is the data's own freshness truth.
+    { product: 'price-history-writer', kind: 'cron', path: 'price-history/heartbeat.json',                ts: ['capturedAt'],                max_age_h: 12 },
     // 2026-08-24 (capa-supply v2): the CAPA custody map rides org-token-catalog
     // (~5h observed cadence) but is its own product — its own row, read from
     // the product itself (it carries capturedAt; no separate heartbeat).

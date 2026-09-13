@@ -24,11 +24,11 @@ product is ever written to.
    Proven live: caught the SS LUNA-SOLID stale entry on its first dry run.
 6. `heartbeat_freshness` — per-product FRESHNESS_MAP with product-appropriate
    signals: cron heartbeats vs cadence-aware max ages; price-history = latest
-   day key of the current month file (its heartbeat is a backfill fossil);
+   day key of the current month file (data truth) PLUS, since 1.0.8, the
+   writer's own heartbeat (`price-history/heartbeat.json`, written by
+   org-token-catalog each run — a swallowed append failure is raised within
+   the hour instead of as a stale day key 50 h later);
    one-offs (nfts provenance) exempt.
-   1.0.7: age is not health — a heartbeat whose own `status` is `failed`/`error` is a violation even when fresh
-   (tla-locks failed every run for 13 h on 2026-09-13 behind a green row); every row carries `hb_status`;
-   `partial`/`degraded` are surfaced, not raised.
 7. `identity_resolution` — informational: unresolved pools + tokens without
    `discovered.symbol` (cross-checked against the catalog's own
    identity_stats). A shrinking number, tracked.

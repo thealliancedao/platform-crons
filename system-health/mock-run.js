@@ -81,7 +81,8 @@ function healthyRepo() {
         'price-history/2026/07.json': { meta: {}, days: { '2026-07-14': {}, '2026-07-15': {} } },
         'dex-data/credia/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
         'votion/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', vaults_at: '2026-07-16T11:00:00Z', positions_at: '2026-07-16T02:00:00Z' },   // latest day 26h < 50h → fresh
-        'token-catalog/supply/capa/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },   // capa-supply v2 row (2026-08-24): the product IS the heartbeat
+        'token-catalog/supply/capa/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },
+        'price-history/heartbeat.json': { product: 'price-history', cron: 'token-catalog', capturedAt: '2026-07-16T10:00:00Z', status: 'ok', day: '2026-07-16', tokens_appended: 36 },   // 1.0.8 (B.5): writer heartbeat   // capa-supply v2 row (2026-08-24): the product IS the heartbeat
         'token-catalog/supply/fuel/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },   // fuel-supply v1 row (2026-08-24)
     };
 }
@@ -152,6 +153,18 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       check('R2.7 one-off with status failed stays exempt (reported, not raised)', row('nfts-provenance').status === 'exempt (one-off)' && row('nfts-provenance').hb_status === 'failed', row('nfts-provenance'));
       check('R2.7 every non-day-key row carries hb_status', rows.filter(r => r.product !== 'price-history' && r.last).every(r => 'hb_status' in r), rows.filter(r => !('hb_status' in r)).map(r => r.product));
       check('R2.7 overall = violation', out.meta.status === 'violation'); }
+
+    console.log('— R2.9 (1.0.8, B.5): price-history WRITER heartbeat — failed append raised within the hour, day key untouched —');
+    REPO = fixNotTla(healthyRepo());
+    REPO['price-history/heartbeat.json'] = { product: 'price-history', cron: 'token-catalog', capturedAt: '2026-07-16T11:40:00Z', status: 'failed', reason: 'GitHub PUT price-history/2026/07.json: 500', tokens_appended: 0 };
+    out = await M.run();
+    { const inv = out.invariants.heartbeat_freshness; const rows = inv.measured.all; const row = p => rows.find(r => r.product === p);
+      check('R2.9 writer row raised: status failed, fresh by age', inv.status === 'violation' && row('price-history-writer').status === 'FAILED' && row('price-history-writer').hb_status === 'failed' && row('price-history-writer').age_h < 1, row('price-history-writer'));
+      check('R2.9 day-key row still fresh (data is 26h old, band 50h)', row('price-history').status === 'fresh', row('price-history'));
+      check('R2.9 only the writer is listed', inv.measured.stale.length === 1 && inv.measured.stale[0].product === 'price-history-writer', inv.measured.stale); }
+    REPO = fixNotTla(healthyRepo()); delete REPO['price-history/heartbeat.json'];
+    out = await M.run();
+    check('R2.9 writer heartbeat absent → listed (the pre-1.0.8 fossil state must not pass silently)', JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('"product":"price-history-writer","reason":"file absent"'));
 
     console.log('— R2.8: stale AND failed → one entry, reason names the status —');
     REPO = fixNotTla(healthyRepo());
