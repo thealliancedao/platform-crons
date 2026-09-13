@@ -41,6 +41,8 @@
 //   price-history/{YYYY}/{MM}.json               forward rich price capture (canonical)
 //   token-catalog/snapshots/index.json          manifest
 //   token-catalog/snapshots/heartbeat.json      standard heartbeat
+//   price-history/heartbeat.json                 (2026-09-14) writer heartbeat for the daily price-history append —
+//                                                 status ok|failed + reason; a swallowed append failure is no longer silent
 //
 // Structural addresses come from config/contracts.js (single source). Reuses the
 // shared engine (capture-engine: queryContract, parallelMap, currentEpochInfo).
@@ -965,7 +967,7 @@ async function appendToPriceHistory(catalog, dayStr) {
       if (usd == null) continue; // no price today → skip token (honest: no fabrication)
       row[sym] = { usd, src, confidence: t.price_confidence || null, sources };
     }
-    if (Object.keys(row).length === 0) { console.log('  (price-history: no priced tokens to append)'); return; }
+    if (Object.keys(row).length === 0) { console.log('  (price-history: no priced tokens to append)'); return { status: 'failed', reason: 'no priced tokens to append', day: dayStr, tokens: 0, file: filePath }; }
 
     // Read existing month-file (if any), merge today's day (per-token merge-safe).
     let monthDoc = null;
@@ -989,9 +991,33 @@ async function appendToPriceHistory(catalog, dayStr) {
     await publishFile(filePath, JSON.stringify(monthDoc, null, 2),
       `price-history: append ${dayStr} (${Object.keys(row).length} tokens)`);
     console.log(`  ✓ price-history/${year}/${month}.json — appended ${dayStr} (${Object.keys(row).length} tokens)`);
+    return { status: 'ok', reason: null, day: dayStr, tokens: Object.keys(row).length, file: filePath };
   } catch (e) {
     // NEVER let this break the core cron.
     console.warn(`  ⚠ price-history append skipped: ${e.message}`);
+    return { status: 'failed', reason: String(e.message || e).slice(0, 200), day: dayStr, tokens: 0, file: null };
+  }
+}
+
+// ── price-history writer heartbeat (2026-09-14, CHANGES_PENDING B.5) ────────
+// price-history/heartbeat.json was the July backfill's fossil: token-catalog
+// appended the daily rows but never touched it, so a swallowed append failure
+// left no signal until the day-key row went stale 50 h later. Now every run
+// writes it — status ok on append, failed + reason otherwise — which
+// org-system-health 1.0.7 raises within the hour. Isolated like the append.
+async function publishPriceHistoryHeartbeat(result, startedAt) {
+  try {
+    const hb = {
+      schemaVersion: 1, product: 'price-history', cron: 'token-catalog',
+      capturedAt: new Date().toISOString(), startedAt: startedAt.toISOString(),
+      status: result.status, reason: result.reason || null,
+      day: result.day, tokens_appended: result.tokens, month_file: result.file,
+      note: 'writer heartbeat for the daily price-history append (the month files are the data; the day key is the freshness truth)',
+    };
+    await publishFile('price-history/heartbeat.json', JSON.stringify(hb, null, 2), `price-history heartbeat ${result.status}`);
+    console.log(`  ✓ price-history/heartbeat.json (${result.status})`);
+  } catch (e) {
+    console.warn(`  ⚠ price-history heartbeat skipped: ${e.message}`);
   }
 }
 
@@ -1136,7 +1162,8 @@ async function run() {
     console.log('  ✓ token-catalog/snapshots/current.json');
     // (daily/ snapshot retired — price-history/ is the canonical forward capture.)
     // Forward-append today's rich price row into canonical price-history (isolated).
-    await appendToPriceHistory(catalog, dayStr);
+    const phResult = await appendToPriceHistory(catalog, dayStr);
+    await publishPriceHistoryHeartbeat(phResult, startedAt);
     await publishFile('token-catalog/snapshots/index.json', idxContent, `token-catalog index — ${dayStr}`);
     console.log('  ✓ token-catalog/snapshots/index.json');
     await publishFile('token-catalog/snapshots/heartbeat.json', hbContent, `heartbeat ${status}`);
@@ -1215,4 +1242,6 @@ async function run() {
   if (status === 'error') process.exitCode = 1;
 }
 
-run().catch(e => { console.error('FATAL', e); process.exit(1); });
+// 2026-09-14: guarded so the mock gate can require() the live functions (no third copy).
+if (require.main === module) run().catch(e => { console.error('FATAL', e); process.exit(1); });
+module.exports = { run, appendToPriceHistory, publishPriceHistoryHeartbeat, _test: { setPublishFile: (fn) => { publishFile = fn; } } };
