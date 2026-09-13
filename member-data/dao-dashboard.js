@@ -709,10 +709,11 @@ async function main() {
     let totalValue = null, nftStrip = null;
     try {
         const RAW = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
+        const NFTC = 'https://raw.githubusercontent.com/thealliancedao/nft-collections/main';   // 2026-09-13: aDAO products live here
         const [pos, nftSum, nftAn] = await Promise.all([
             fetchJson(`${RAW}/member-data/positions/current.json?t=${Date.now()}`, 'positions'),
-            fetchJson(`${RAW}/nfts/adao/snapshots/summary.json?t=${Date.now()}`, 'nft summary'),
-            fetchJson(`${RAW}/nfts/adao/snapshots/nft-analytics.json?t=${Date.now()}`, 'nft analytics'),
+            fetchJson(`${NFTC}/adao/snapshots/summary.json?t=${Date.now()}`, 'nft summary'),
+            fetchJson(`${NFTC}/adao/snapshots/nft-analytics.json?t=${Date.now()}`, 'nft analytics'),
         ]);
         const tsum = pos && pos.treasury && pos.treasury.summary || {};
         const tokensUsd = (treasury && Array.isArray(treasury.tokens)) ? treasury.tokens.reduce((a, t) => a + (Number(t.usd) || 0), 0) : null;
@@ -746,7 +747,7 @@ async function main() {
 
     const payload = {
         meta: {
-            version: 'dao-dashboard-1.6-strips',
+            version: 'dao-dashboard-1.7-nftc',   // 1.7 (2026-09-13): NFT strips read nft-collections/adao/
             epoch,
             phase: 'live',
             generated_at: new Date().toISOString(),

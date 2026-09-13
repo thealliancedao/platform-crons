@@ -1,5 +1,9 @@
 # member-data — changelog
 
+## 1.1.3 — 2026-09-13 — dao-dashboard reads the aDAO NFT products from nft-collections/adao/
+
+- dao-dashboard 1.7: `summary.json` + `nft-analytics.json` (the NFT strips) now come from `thealliancedao/nft-collections/adao/snapshots/`; tla-core/nfts/adao is gone. No other change. mock-run-last-claims identical to 1.1.2.
+
 ## 1.1.1 — 2026-09-10 — tla-snapshot: dead votion read retired
 
 `sources.votion` had been `false` on every run: tla-snapshot still fetched

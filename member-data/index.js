@@ -34,7 +34,7 @@ const C = require('../config/contracts.js');
 const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-const VERSION = 'member-data-1.1.2';  // 1.1.2 (2026-09-10): tla-snapshot — Credia receipt single (cw20 with no minter) resolved via token_info, named from the org catalog, staked/depth from the org credia snapshot (row was dropped: 67/68) · 1.1.1 (2026-09-10): tla-snapshot — dead votion read (retired personal repo, 404) removed; sources.votion key dropped · 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
+const VERSION = 'member-data-1.1.3';  // 1.1.3 (2026-09-13): dao-dashboard NFT strips read nft-collections/adao/ (aDAO migration) · 1.1.2 (2026-09-10): tla-snapshot — Credia receipt single (cw20 with no minter) resolved via token_info, named from the org catalog, staked/depth from the org credia snapshot (row was dropped: 67/68) · 1.1.1 (2026-09-10): tla-snapshot — dead votion read (retired personal repo, 404) removed; sources.votion key dropped · 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 
