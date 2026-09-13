@@ -1,5 +1,8 @@
 'use strict';
-// org-nft-flows 1.1.1 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.1.2 — FORWARD CAPTURE for ONE collection
+// 1.1.2 (2026-09-14): luna-usd-daily read repointed to nft-collections/adao/snapshots/ (tla-core/nfts/adao was deleted
+//   2026-09-13; every run since answered `degraded · luna-usd-daily: HTTP 404` and any LUNA-priced sale would have landed
+//   usd:null). New NFTC_RAW base (env NFTC_RAW). Surfaced by system-health 1.0.7's hb_status column.
 // 1.1.1 (2026-09-13): GitHub response bodies collected as BYTES — reading an existing raw/forward/<day>.json.gz part was
 //   utf8-mangling the gzip → 'incorrect header check' on every run after a collection's 2nd match of a UTC day
 //   (tla-locks stuck from 08:45 with a fresh 'failed' heartbeat; mock-run R3 regression added).: Render cron `org-nft-flows-<slug>` (hourly), env COLLECTION=<slug>.
@@ -10,7 +13,7 @@
 //
 //   reads  : tla-core/docs/curated/nft-collections.json (registry — the ONLY per-collection input)
 //            tla-core/nfts/ledger-cursor.json (global block cursor; first run derives it from each ledger's coverage)
-//            tla-core/nfts/adao/snapshots/luna-usd-daily.json (USD at the day)
+//            nft-collections/adao/snapshots/luna-usd-daily.json (USD at the day — 1.1.2; was tla-core/nfts/adao)
 //   walks  : cursor+1 → head-LAG on RPC_PRIMARY (fallback RPC_FALLBACK), /block + /block_results, concurrency 4,
 //            MAX_BLOCKS_PER_RUN cap (a long outage catches up over several runs, never one giant run)
 //   writes : tla-core/nfts/raw/<collection>/forward/YYYY-MM-DD.json.gz  — every matched tx's events, same {h,x,t,c,e}
@@ -28,6 +31,7 @@ const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/nft-collections';
 const SLUG          = String(process.env.COLLECTION || '').trim();
 const TLA_CORE_RAW  = process.env.TLA_CORE_RAW || 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/';
+const NFTC_RAW      = process.env.NFTC_RAW     || 'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/';   // 1.1.2: aDAO products live here now
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const RPC_PRIMARY   = process.env.RPC_PRIMARY   || 'https://terra-rpc.publicnode.com';
 const RPC_FALLBACK  = process.env.RPC_FALLBACK  || 'https://terra-rpc.polkachu.com';
@@ -121,7 +125,7 @@ function usdAt(price, ts) {
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
-  try { LUNA = (await httpGet(TLA_CORE_RAW + 'nfts/adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }
+  try { LUNA = (await httpGet(NFTC_RAW + 'adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }   // 1.1.2: repointed (nft-collections/adao/snapshots)
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
   let cur = await readFile(CURSOR_PATH); let cursor = cur && Number(cur.data.height);
@@ -207,7 +211,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.2', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
