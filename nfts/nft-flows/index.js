@@ -7,7 +7,7 @@
 //
 //   reads  : tla-core/docs/curated/nft-collections.json (registry — the ONLY per-collection input)
 //            tla-core/nfts/ledger-cursor.json (global block cursor; first run derives it from each ledger's coverage)
-//            tla-core/nfts/adao/snapshots/luna-usd-daily.json (USD at the day)
+//            nft-collections/adao/snapshots/luna-usd-daily.json (USD at the day; moved from tla-core 2026-09-13)
 //   walks  : cursor+1 → head-LAG on RPC_PRIMARY (fallback RPC_FALLBACK), /block + /block_results, concurrency 4,
 //            MAX_BLOCKS_PER_RUN cap (a long outage catches up over several runs, never one giant run)
 //   writes : tla-core/nfts/raw/<collection>/forward/YYYY-MM-DD.json.gz  — every matched tx's events, same {h,x,t,c,e}
@@ -25,6 +25,7 @@ const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/nft-collections';
 const SLUG          = String(process.env.COLLECTION || '').trim();
 const TLA_CORE_RAW  = process.env.TLA_CORE_RAW || 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/';
+const NFTC_RAW      = process.env.NFTC_RAW || 'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/';   // 2026-09-13: aDAO products (luna-usd-daily) live here
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const RPC_PRIMARY   = process.env.RPC_PRIMARY   || 'https://terra-rpc.publicnode.com';
 const RPC_FALLBACK  = process.env.RPC_FALLBACK  || 'https://terra-rpc.polkachu.com';
@@ -117,7 +118,7 @@ function usdAt(price, ts) {
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
-  try { LUNA = (await httpGet(TLA_CORE_RAW + 'nfts/adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }
+  try { LUNA = (await httpGet(NFTC_RAW + 'adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
   let cur = await readFile(CURSOR_PATH); let cursor = cur && Number(cur.data.height);
