@@ -9,13 +9,13 @@ const put = (p, obj) => { files[p] = p.endsWith('.gz') ? zlib.gzipSync(Buffer.fr
 put('venues.json', venues); put('pixel-lions/collection.json', plc);
 put('pixel-lions/ledger/index.json', { collection: 'pixel-lions', total: 0, by_kind: {}, months: [], coverage: [{ source: 'pixel-lions/raw:1-1000', from: 1, to: 1000 }], known_gaps: [] });
 const ev = (c, o) => ({ type: 'wasm', attributes: Object.entries(Object.assign({ _contract_address: c }, o)).map(([k, v]) => ({ key: k, value: String(v) })) });
-const blocks = {}; const results = {};
+const blocks = {}; const results = {}; let HEAD = 1020;
 blocks[1003] = { txs: ['dHgx'] }; results[1003] = [{ code: 0, events: [ev(PL, { action: 'send_nft', sender: 'terra1me', recipient: PLV, token_id: 42 }), ev(PLV, { action: 'stake', from: 'terra1me', token_id: 42 })] }];
 blocks[1007] = { txs: ['dHgy', 'dHgz'] }; results[1007] = [{ code: 0, events: [ev(BBL, { action: 'deposit', amount: 5000000, from: 'terra1w2', token: 'terra1bluna' })] }, { code: 0, events: [ev('terra1unrelated', { action: 'swap' })] }];
 const gh = []; const ghs = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { const m = req.url.match(/\/contents\/([^?]+)/); const p = m && decodeURIComponent(m[1]); gh.push(req.method + ' ' + p);
   if (req.method === 'GET') { if (!files[p]) { res.statusCode = 404; return res.end('{}'); } if ((req.headers.accept || '').includes('raw')) return res.end(files[p]); return res.end(JSON.stringify({ sha: 'sha-' + p, size: files[p].length })); }
   const body = JSON.parse(b); files[p] = Buffer.from(body.content, 'base64'); res.end('{}'); }); });
-const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req.url); if (u.pathname.endsWith('luna-usd-daily.json')) return res.end(JSON.stringify({ daily: { '2026-09-13': 0.05 } })); if (u.pathname === '/status') return res.end(JSON.stringify({ result: { sync_info: { latest_block_height: '1020' } } })); const h = Number(u.searchParams.get('height')); if (u.pathname === '/block') return res.end(JSON.stringify({ result: { block: { header: { time: '2026-09-13T01:00:00Z' }, data: { txs: (blocks[h] || {}).txs || [] } } } })); if (u.pathname === '/block_results') return res.end(JSON.stringify({ result: { txs_results: results[h] || [] } })); res.end('{}'); });
+const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req.url); if (u.pathname.endsWith('luna-usd-daily.json')) return res.end(JSON.stringify({ daily: { '2026-09-13': 0.05 } })); if (u.pathname === '/status') return res.end(JSON.stringify({ result: { sync_info: { latest_block_height: String(HEAD) } } })); const h = Number(u.searchParams.get('height')); if (u.pathname === '/block') return res.end(JSON.stringify({ result: { block: { header: { time: '2026-09-13T01:00:00Z' }, data: { txs: (blocks[h] || {}).txs || [] } } } })); if (u.pathname === '/block_results') return res.end(JSON.stringify({ result: { txs_results: results[h] || [] } })); res.end('{}'); });
 (async () => {
   await new Promise(r => ghs.listen(0, r)); await new Promise(r => rpc.listen(0, r));
   const env = Object.assign({}, process.env, { GITHUB_TOKEN: 'x', COLLECTION: 'pixel-lions', TLA_CORE_RAW: 'http://127.0.0.1:' + rpc.address().port + '/', GITHUB_API: 'http://127.0.0.1:' + ghs.address().port, RPC_PRIMARY: 'http://127.0.0.1:' + rpc.address().port, RPC_FALLBACK: 'http://127.0.0.1:' + rpc.address().port, PACE_MS: '1', HEAD_LAG: '0' });
@@ -32,5 +32,13 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   const order = gh.filter(x => x.startsWith('PUT')).map(x => x.slice(4)); ok(order.indexOf('pixel-lions/raw/forward/2026-09-13.json.gz') < order.indexOf('pixel-lions/ledger/2026/09.json') && order.indexOf('pixel-lions/ledger/cursor.json') > order.lastIndexOf('pixel-lions/ledger/index.json'), 'write order: raw → ledger → index → cursor');
   const hb = J('pixel-lions/nft-flows/heartbeat.json'); ok(hb.status === 'ok' && hb.matched === 2 && hb.cron === 'org-nft-flows-pixel-lions', 'heartbeat ok, matched 2 (unrelated swap ignored), cron named per collection');
   const r2 = await run(); ok(r2.status === 0 && /nothing new/.test(r2.stdout), 'second run: nothing new, exits clean'); ok(J('pixel-lions/ledger/2026/09.json').length === led.length, 'ledger unchanged on re-run');
+  // 1.1.1 regression — the 2026-09-13 tla-locks failure: a SECOND match on the same UTC day makes the cron READ the
+  // existing raw/forward/<day>.json.gz through the raw media type; bodies must arrive as bytes (utf8-mangled gzip →
+  // 'incorrect header check', every run failed, cursor frozen at 08:45 while the heartbeat stayed fresh).
+  HEAD = 1030; blocks[1025] = { txs: ['dHg0'] }; results[1025] = [{ code: 0, events: [ev(PL, { action: 'send_nft', sender: 'terra1you', recipient: PLV, token_id: 77 }), ev(PLV, { action: 'stake', from: 'terra1you', token_id: 77 })] }];
+  const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
+  const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
+  ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
+  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.1.1' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.1.1 ok');
   ghs.close(); rpc.close(); console.log(`\n${pass}/${pass + fail} passed`); process.exit(fail ? 1 : 0);
 })();
