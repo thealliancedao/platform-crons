@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.5';   // 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.0.6';   // 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -198,9 +198,10 @@ const FRESHNESS_MAP = [
     { product: 'tla-voting-votestate', kind: 'cron',  path: 'tla-voting/vote-state/heartbeat.json',        ts: ['capturedAt'],                max_age_h: 216 },
     { product: 'tla-voting-bribestate', kind: 'cron', path: 'tla-voting/bribe-state/heartbeat.json',       ts: ['capturedAt'],                max_age_h: 216 },
     { product: 'tla-distributions',  kind: 'cron',    path: 'tla-voting/distributions/heartbeat.json',     ts: ['capturedAt'],                max_age_h: 216 },
-    { product: 'nfts-snapshots',     kind: 'cron',    path: 'nfts/adao/snapshots/heartbeat.json',          ts: ['capturedAt'],                max_age_h: 6 },
-    { product: 'nfts-flows',         kind: 'cron',    path: 'nfts/adao/flows/heartbeat.json',              ts: ['capturedAt'],                max_age_h: 6 },
-    { product: 'nfts-provenance',    kind: 'one-off', path: 'nfts/adao/provenance/heartbeat.json',         ts: ['ran_at'] },
+    // 2026-09-13 aDAO migration: these three products moved to nft-collections/adao/ (tla-core/nfts/adao is gone)
+    { product: 'nfts-snapshots',     kind: 'cron',    repo: 'thealliancedao/nft-collections', path: 'adao/snapshots/heartbeat.json',  ts: ['capturedAt'], max_age_h: 6 },
+    { product: 'nfts-flows',         kind: 'cron',    repo: 'thealliancedao/nft-collections', path: 'adao/flows/heartbeat.json',      ts: ['capturedAt'], max_age_h: 6 },
+    { product: 'nfts-provenance',    kind: 'one-off', repo: 'thealliancedao/nft-collections', path: 'adao/provenance/heartbeat.json', ts: ['ran_at'] },
     { product: 'dex-credia',         kind: 'cron',    path: 'dex-data/credia/snapshots/heartbeat.json',   ts: ['generated_at', 'capturedAt'], max_age_h: 6 },
     { product: 'votion-vaults',      kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['vaults_at', 'capturedAt'],   max_age_h: 6 },
     { product: 'votion-positions',   kind: 'cron',    path: 'votion/heartbeat.json',                       ts: ['positions_at'],              max_age_h: 30 },

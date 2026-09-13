@@ -75,9 +75,9 @@ function healthyRepo() {
         'pixel-lions/nft-flows/heartbeat.json': { ran_at: '2026-07-16T11:24:00Z', status: 'ok', cursor: 1 },
         'tla-locks/nft-flows/heartbeat.json':   { ran_at: '2026-07-16T11:44:00Z', status: 'ok', cursor: 1 },
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),
-        'nfts/adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),
-        'nfts/adao/flows/heartbeat.json': H('2026-07-16T11:00:00Z'),
-        'nfts/adao/provenance/heartbeat.json': { ran_at: '2026-07-08T00:00:00Z' },   // ancient — must be EXEMPT
+        'adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),      // 1.0.6: nft-collections paths
+        'adao/flows/heartbeat.json': H('2026-07-16T11:00:00Z'),
+        'adao/provenance/heartbeat.json': { ran_at: '2026-07-08T00:00:00Z' },   // ancient — must be EXEMPT
         'price-history/2026/07.json': { meta: {}, days: { '2026-07-14': {}, '2026-07-15': {} } },
         'dex-data/credia/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
         'votion/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', vaults_at: '2026-07-16T11:00:00Z', positions_at: '2026-07-16T02:00:00Z' },   // latest day 26h < 50h → fresh
@@ -107,7 +107,9 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       check('R1.5 nft-ledger rows present ×3', ['nft-ledger-adao', 'nft-ledger-pixel-lions', 'nft-ledger-tla-locks'].every(n => names.includes(n)), names);
       check('R1.5 nft-ledger rows fresh', rows.filter(r => r.product.startsWith('nft-ledger-')).every(r => r.status === 'fresh'), rows.filter(r => r.product.startsWith('nft-ledger-')));
       check('R1.5 nft-ledger read from nft-collections', REPO_HITS['pixel-lions/nft-flows/heartbeat.json'] === 'thealliancedao/nft-collections' && REPO_HITS['adao/nft-flows/heartbeat.json'] === 'thealliancedao/nft-collections', REPO_HITS['pixel-lions/nft-flows/heartbeat.json']);
-      check('R1.5 tla-core rows still read from tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json'] === 'thealliancedao/tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json']); }
+      check('R1.5 tla-core rows still read from tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json'] === 'thealliancedao/tla-core', REPO_HITS['token-catalog/snapshots/heartbeat.json']);
+      check('R1.6 aDAO product heartbeats read from nft-collections/adao', ['adao/snapshots/heartbeat.json', 'adao/flows/heartbeat.json', 'adao/provenance/heartbeat.json'].every(p => REPO_HITS[p] === 'thealliancedao/nft-collections'), REPO_HITS);
+      check('R1.6 no read of tla-core/nfts/adao', !Object.keys(REPO_HITS).some(p => p.startsWith('nfts/adao/')), Object.keys(REPO_HITS).filter(p => p.startsWith('nfts/'))); }
 
     console.log('— R2: one violation per invariant —');
     // INV1 drift: member stable 1000 vs catalog 999 ok; bump member to 1200 (20% drift)
