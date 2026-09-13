@@ -1,5 +1,26 @@
 # 1.3.5 — 2026-09-10 — eris-apr: validation marker cleared; Credia row named
 
+## 1.4.0 — 2026-09-13 — state-history duty folded in (moved from the tla-core Action)
+
+- `lib/state-history.js` — the per-epoch pool-state sampler from the ARCHIVE node, MOVED from
+  `tla-core/.github/scripts/dex-state-history/{lib,sample}.js` (logic verbatim; those files + the two workflows are deleted —
+  no second copy). It was born as a backfill Action (104 epochs under a 5-hour budget); forward it is one epoch a week,
+  which is this job's business. LAW: Actions = one-time, Render = scheduled.
+- Folded module after the core snapshots, isolated like credia-rates: fatals THROW (`ArchiveFatal`), never exit.
+  Fast exit with ZERO archive traffic unless a started boundary is missing / incomplete (index.json is the truth).
+  API reads/writes (readJson / writeJson) replace the checkout + git checkpoints; corpus (epoch table, tla-snapshot,
+  tla-flows/events months) via raw reads. Index rows keep the Action's exact shape.
+- Service env: `ARCHIVE_LCD` (or `ARCHIVE_RPC`) — REQUIRED on org-dex-data for the duty to run (without it: logged
+  skip, nothing else affected); optional `REQ_DELAY_MS` (150), `REFINE_MAX` (8), `TIME_BUDGET_MIN` (20), `PUBLIC_LCD`,
+  `STATE_HISTORY=0` to disable. Backfill / force = set `EPOCH_FROM`/`EPOCH_TO` (+ `FORCE=1`) on the service and trigger
+  a run; remove them after. Products unchanged: `dex-data/state-history/{epochs/<n>.json, index.json, cursor.json,
+  heartbeat.json}` (heartbeat.runner now says org-dex-data).
+- Gate `mock-run-state-history.js` 20/20 on real committed inputs + a deterministic fake archive: skip-fast with zero
+  requests · no-env skip · one missing epoch sampled complete with exactly {epoch, cursor, index, heartbeat} written and
+  every prior index row byte-equal · write-once (no prior epoch read or written) · transport failure → incomplete kept,
+  cursor/heartbeat/index say so · next run completes it · fatal throws · FORCE resamples. `mock-run.js` 82/82 unchanged.
+
+
 `meta.validation` had still read "pending ground-truth reconciliation" after 1.3.3/1.3.4 reconciled every row
 to the Eris screen — now states what was reconciled and when. Credia market rows take the catalog's effective
 symbol for the receipt token (`wBTC.creda.a`, `pool_name_source: token-catalog symbol (receipt)`) instead of

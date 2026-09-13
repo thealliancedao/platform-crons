@@ -40,7 +40,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const LOCAL_OUT = process.env.LOCAL_OUT || './out';
 
-const VERSION = 'dex-data-1.3.5';   // 1.3.5: eris-apr meta.validation → reconciled 2026-09-10; Credia rows named from the catalog receipt symbol (wBTC.creda.a) · 1.3.4: eris-apr trading leg source-verbatim (single gauges = own yield: xASTRO tRPC stakingApy, ampCAPA hub exchange_rates apr, Credia supply_apy; SS = 0 by source) · 1.3.3: eris-apr staked basis for SkeletonSwap (reserve-implied TVL × catalog prices) + Credia (receipt supply) + single names; catalog decimals fix — audit 2026-09-10 vs Eris screen · 1.3.2: Credia rate-history sidecar (lib/credia-rates.js) — hourly indexer points kept grow-only, 7-day ranges in rates/current.json
+const VERSION = 'dex-data-1.4.0';   // 1.4.0 (2026-09-13): state-history duty folded in (lib/state-history.js, moved from the tla-core Action — one epoch a week from the archive node; ARCHIVE_LCD on the service) · 1.3.5: eris-apr meta.validation → reconciled 2026-09-10; Credia rows named from the catalog receipt symbol (wBTC.creda.a) · 1.3.4: eris-apr trading leg source-verbatim (single gauges = own yield: xASTRO tRPC stakingApy, ampCAPA hub exchange_rates apr, Credia supply_apy; SS = 0 by source) · 1.3.3: eris-apr staked basis for SkeletonSwap (reserve-implied TVL × catalog prices) + Credia (receipt supply) + single names; catalog decimals fix — audit 2026-09-10 vs Eris screen · 1.3.2: Credia rate-history sidecar (lib/credia-rates.js) — hourly indexer points kept grow-only, 7-day ranges in rates/current.json
 
 // TLA epoch math (epochs are weekly; used to tag snapshots).
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');
@@ -189,6 +189,20 @@ async function main() {
         console.log(`  ${rr.status === 'ok' ? '✓' : '△'} credia-rates: ${rr.answered}/${rr.markets} markets · +${rr.added} points (${rr.kept} already held) · ${rr.files.length} files${rr.errors && rr.errors.length ? ' · errors ' + rr.errors.length : ''}`);
       } else console.log('  – credia-rates: no credia snapshot this run (skipped)');
     } catch (e) { console.error('  ✗ credia-rates failed (isolated, core snapshots unaffected):', e.message); }
+  }
+
+  // ---- Epoch-boundary pool state from the ARCHIVE node (1.4.0, folded from the tla-core Action) --
+  // Runs after the core snapshots, isolated; exits fast (no archive traffic) unless a started boundary is missing.
+  // Needs ARCHIVE_LCD (or ARCHIVE_RPC) on the Render service; STATE_HISTORY=0 disables. Backfill: EPOCH_FROM/EPOCH_TO.
+  if (process.env.STATE_HISTORY !== '0') {
+    try {
+      const { runStateHistory } = require('./lib/state-history');
+      const { fetchJsonWithRetry } = require('./lib/fetch');
+      const fetchJson = (p, label) => fetchJsonWithRetry(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`, label);
+      const sh = await runStateHistory({ readJson, writeJson, fetchJson, env: process.env, now: () => new Date() });
+      if (sh.status === 'skipped') console.log(`  – state-history: skipped (${sh.reason})`);
+      else console.log(`  ${sh.incomplete.length ? '△' : '✓'} state-history: ${sh.sampled} sampled · ${sh.skipped} write-once · ${sh.incomplete.length} incomplete${sh.budget_stop ? ' · budget stop' : ''} · ${sh.archive_requests} archive reads`);
+    } catch (e) { console.error('  ✗ state-history failed (isolated, core snapshots unaffected):', e.message); }
   }
 
   // ---- Eris-convention per-pool APR (1.3.0, AUDIT-eris-apr-pricing fix #4) --
