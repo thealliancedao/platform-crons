@@ -373,7 +373,7 @@ async function walletExtract(question, explicitWallet) {
 // hash, time, memo, per-msg action summary (wasm actions included), transfers.
 // Bounds: max 3 tool calls per question, 20 txs per search, 8s timeout each.
 const LCD = process.env.LCD_URL || 'https://terra-lcd.publicnode.com';
-const PRODUCT_PREFIXES = ['dao-originations/','member-data/','nfts/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/'];
+const PRODUCT_PREFIXES = ['dao-originations/','member-data/','nfts/','nft-collections/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/'];
 const CHAIN_TOOLS = [
   { name: 'read_product', /* input.key: pool/token name for surgical extraction from big keyed files (apr-history, pool-status-history, token-catalog…) — ALWAYS use key for per-pool questions */
     description: 'Fetch a data file from the public tla-core repo (the same files the site renders). Use for questions needing actual records: e.g. nfts/adao/transfers/2026/08.json for NFT transfer/stake/unstake events, nfts/adao/flows/2026/08.json for sales/listings, tla-voting/events/locks/2026/08.json for lock events, member-data/positions/current.json, lp-grades/snapshots/current.json, tla-voting/bribe-state/runway.json. Monthly streams use {yyyy}/{mm}.json. The REPO-CATALOG in your corpus maps everything.',
@@ -455,6 +455,7 @@ const AUDIT_SRC = {
 };
 const DAO_REGISTRIES = { 'AllianceDAO': 'adao', 'Lion DAO': 'lion-dao', 'Pixel Lions': 'pixel-lions', 'Capapult': 'capapult', 'Terra': 'terra' };
 const DAO_REPO = 'https://raw.githubusercontent.com/thealliancedao/dao-originations/main';
+const NFTC_REPO = 'https://raw.githubusercontent.com/thealliancedao/nft-collections/main';   // v1.13.3: aDAO + other collections' products
 let auditCache = { at: 0, reg: null }; let runwayCurrentPeriod = null;
 async function auditRegistries() {
   if (auditCache.reg && Date.now() - auditCache.at < 10 * 60 * 1000) return auditCache.reg;
@@ -648,7 +649,12 @@ async function runTool(name, input) {
     if (!PRODUCT_PREFIXES.some(pre => p.startsWith(pre))) return { error: 'path not in the public product set' };
     try {
       // v1.13.0: governance products live in the dao-originations repo (adao / lion-dao / pixel-lions folders only)
-      const url = p.startsWith('dao-originations/') ? (/^dao-originations\/(adao|lion-dao|pixel-lions)\//.test(p) ? `${DAO_REPO}/${p.slice('dao-originations/'.length)}` : null) : `${CORE}/${p}`;
+           // v1.13.3 (2026-09-13): aDAO products moved to nft-collections/adao/ — `nfts/adao/…` (the historic path the docs still use) and
+      // `nft-collections/<slug>/…` both route there; tla-core/nfts/adao no longer exists.
+      const url = p.startsWith('dao-originations/') ? (/^dao-originations\/(adao|lion-dao|pixel-lions)\//.test(p) ? `${DAO_REPO}/${p.slice('dao-originations/'.length)}` : null)
+                : p.startsWith('nfts/adao/') ? `${NFTC_REPO}/${p.slice('nfts/'.length)}`
+                : p.startsWith('nft-collections/') ? `${NFTC_REPO}/${p.slice('nft-collections/'.length)}`
+                : `${CORE}/${p}`;
       if (!url) return { error: 'dao-originations: only adao / lion-dao / pixel-lions are readable' };
       const r = await fetch(url, { headers: { 'User-Agent': 'tla-help-agent' } });
       if (!r.ok) return { error: 'not found (' + r.status + ') — check the path against REPO-CATALOG' };
