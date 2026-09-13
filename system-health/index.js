@@ -26,7 +26,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.6';   // 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.0.7';   // 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -184,6 +184,13 @@ function invBucketLabelAgreement(dexSnapshots, catalog) {
 // --------------------------------------------------------------------------- INV 6 — heartbeat_freshness (product-appropriate signals; addendum)
 // kind: 'cron' (heartbeat ts vs max_age_h) | 'day-key' (latest day in current
 // month file) | 'one-off' (exempt, reported informationally).
+// 1.0.7: age is not health. A cron that crashes still writes its heartbeat
+// (nft-flows FATAL → status 'failed'; tla-flows/tla-voting priors refusal →
+// 'error'), so a fresh timestamp can sit on a dead job. Every row now carries
+// the heartbeat's own `status` (hb_status), and failed/error is stale-
+// equivalent. 'partial'/'degraded' (run completed with issues) are surfaced in
+// the row, not raised — the fleet uses those for recoverable, retried work.
+const FAILED_STATUSES = new Set(['failed', 'error']);
 const FRESHNESS_MAP = [
     { product: 'member-data',        kind: 'cron',    path: 'member-data/snapshots/heartbeat.json',        ts: ['generated_at', 'capturedAt'], max_age_h: 30 },
     { product: 'token-catalog',      kind: 'cron',    path: 'token-catalog/snapshots/heartbeat.json',      ts: ['capturedAt', 'generated_at'], max_age_h: 6 },
@@ -234,13 +241,16 @@ async function invHeartbeatFreshness(reader, now) {
         }
         if (!ts) { rows.push({ product: spec.product, status: 'no timestamp' }); stale.push({ product: spec.product, reason: 'no usable timestamp field' }); continue; }
         const ageH = Math.round((now.getTime() - new Date(ts).getTime()) / 36e5 * 10) / 10;
-        if (spec.kind === 'one-off') { rows.push({ product: spec.product, status: 'exempt (one-off)', last: ts, age_h: ageH }); continue; }
-        const fresh = ageH <= spec.max_age_h;
-        rows.push({ product: spec.product, status: fresh ? 'fresh' : 'STALE', last: ts, age_h: ageH, max_age_h: spec.max_age_h });
-        if (!fresh) stale.push({ product: spec.product, age_h: ageH, max_age_h: spec.max_age_h });
+        const hbStatus = spec.kind === 'day-key' ? null : (typeof r.data.status === 'string' ? r.data.status.toLowerCase() : null);
+        if (spec.kind === 'one-off') { rows.push({ product: spec.product, status: 'exempt (one-off)', hb_status: hbStatus, last: ts, age_h: ageH }); continue; }
+        const fresh  = ageH <= spec.max_age_h;
+        const failed = hbStatus !== null && FAILED_STATUSES.has(hbStatus);
+        rows.push({ product: spec.product, status: failed ? 'FAILED' : fresh ? 'fresh' : 'STALE', hb_status: hbStatus, last: ts, age_h: ageH, max_age_h: spec.max_age_h });
+        if (failed)      stale.push({ product: spec.product, reason: `heartbeat status ${hbStatus}${fresh ? ' (fresh — job ran and failed)' : ''}`, hb_status: hbStatus, age_h: ageH, max_age_h: spec.max_age_h });
+        else if (!fresh) stale.push({ product: spec.product, age_h: ageH, max_age_h: spec.max_age_h });
     }
-    if (stale.length) return violation(`${stale.length} product(s) stale/absent`, { stale, all: rows }, 'age <= per-product max_age_h');
-    return ok('all products fresh (one-offs exempt)', rows, 'age <= per-product max_age_h');
+    if (stale.length) return violation(`${stale.length} product(s) stale/absent/failed`, { stale, all: rows }, 'age <= per-product max_age_h and heartbeat status not failed/error');
+    return ok('all products fresh and not failed (one-offs exempt)', rows, 'age <= per-product max_age_h and heartbeat status not failed/error');
 }
 
 // --------------------------------------------------------------------------- INV 7 — identity_resolution (informational, tracked)

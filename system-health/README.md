@@ -26,6 +26,9 @@ product is ever written to.
    signals: cron heartbeats vs cadence-aware max ages; price-history = latest
    day key of the current month file (its heartbeat is a backfill fossil);
    one-offs (nfts provenance) exempt.
+   1.0.7: age is not health — a heartbeat whose own `status` is `failed`/`error` is a violation even when fresh
+   (tla-locks failed every run for 13 h on 2026-09-13 behind a green row); every row carries `hb_status`;
+   `partial`/`degraded` are surfaced, not raised.
 7. `identity_resolution` — informational: unresolved pools + tokens without
    `discovered.symbol` (cross-checked against the catalog's own
    identity_stats). A shrinking number, tracked.

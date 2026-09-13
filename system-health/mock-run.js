@@ -5,7 +5,7 @@
 // In-memory REPO stub behind T.githubApiRequest. Covers: all-ok pass, one
 // violation per invariant, like-for-like skip, missing-input honesty,
 // price-history day-key freshness, one-off exemption, history append
-// never-shrink, coverage-drop alarm.
+// never-shrink, coverage-drop alarm, fresh-but-failed heartbeat (1.0.7).
 // =============================================================================
 const M = require('./index.js');
 
@@ -133,6 +133,32 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     check('R2.5 INV6 absent collection heartbeat listed', JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('"product":"nft-ledger-tla-locks","reason":"file absent"'), out.invariants.heartbeat_freshness.measured.stale);
     check('R2 overall = violation', out.meta.status === 'violation');
     check('R2 history now 2 runs (never-shrink)', REPO['system-health/history/2026/07.json'].runs.length === 2);
+
+    console.log('— R2.7: FRESH heartbeat with status failed/error is a violation (1.0.7) — the 2026-09-13 tla-locks case —');
+    REPO = fixNotTla(healthyRepo());
+    REPO['tla-locks/nft-flows/heartbeat.json'] = { ran_at: '2026-07-16T11:44:00Z', status: 'failed', cursor: 1 };   // 16 min old, green by age
+    REPO['tla-voting/events/heartbeat.json']   = { capturedAt: '2026-07-16T11:00:00Z', status: 'error' };            // priors refusal shape
+    REPO['dex-data/astroport/epochs/heartbeat.json'].status = 'partial';                                              // completed with issues — NOT a violation
+    REPO['adao/nft-flows/heartbeat.json'].status = 'degraded';
+    REPO['adao/provenance/heartbeat.json'].status = 'failed';                                                         // one-off stays exempt
+    out = await M.run();
+    { const inv = out.invariants.heartbeat_freshness; const st = JSON.stringify(inv.measured.stale); const rows = inv.measured.all;
+      const row = p => rows.find(r => r.product === p);
+      check('R2.7 INV6 violation on a fresh heartbeat with status failed', inv.status === 'violation' && st.includes('"product":"nft-ledger-tla-locks","reason":"heartbeat status failed (fresh — job ran and failed)"'), inv.measured.stale);
+      check('R2.7 INV6 status error also raised', st.includes('"product":"tla-voting","reason":"heartbeat status error (fresh — job ran and failed)"'), inv.measured.stale);
+      check('R2.7 row status FAILED carries hb_status + age', row('nft-ledger-tla-locks').status === 'FAILED' && row('nft-ledger-tla-locks').hb_status === 'failed' && row('nft-ledger-tla-locks').age_h < 1, row('nft-ledger-tla-locks'));
+      check('R2.7 exactly two failed products, nothing else raised', inv.measured.stale.length === 2, inv.measured.stale);
+      check('R2.7 partial/degraded are surfaced in the row but NOT violations', row('dex-astroport-series').status === 'fresh' && row('dex-astroport-series').hb_status === 'partial' && row('nft-ledger-adao').status === 'fresh' && row('nft-ledger-adao').hb_status === 'degraded', [row('dex-astroport-series'), row('nft-ledger-adao')]);
+      check('R2.7 one-off with status failed stays exempt (reported, not raised)', row('nfts-provenance').status === 'exempt (one-off)' && row('nfts-provenance').hb_status === 'failed', row('nfts-provenance'));
+      check('R2.7 every non-day-key row carries hb_status', rows.filter(r => r.product !== 'price-history' && r.last).every(r => 'hb_status' in r), rows.filter(r => !('hb_status' in r)).map(r => r.product));
+      check('R2.7 overall = violation', out.meta.status === 'violation'); }
+
+    console.log('— R2.8: stale AND failed → one entry, reason names the status —');
+    REPO = fixNotTla(healthyRepo());
+    REPO['tla-locks/nft-flows/heartbeat.json'] = { ran_at: '2026-07-14T11:44:00Z', status: 'failed', cursor: 1 };   // 48h old and failed
+    out = await M.run();
+    { const st = out.invariants.heartbeat_freshness.measured.stale.filter(s => s.product === 'nft-ledger-tla-locks');
+      check('R2.8 single entry, reason = heartbeat status failed (no fresh tag), age carried', st.length === 1 && st[0].reason === 'heartbeat status failed' && st[0].age_h > 6, st); }
 
     console.log('— R3: like-for-like skip + missing-input honesty —');
     REPO = fixNotTla(healthyRepo());
