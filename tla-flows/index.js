@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.3.0';   // v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.4.0';   // v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -718,6 +718,18 @@ async function run() {
     pressure = await runPressure({ fetchJson, publishFile, apiGetJsonMaybe: async (p) => { const r = await apiGetJsonAt(p); return r.ok ? r.data : null; } });
     console.log(`  pressure: ${pressure.epochs} epochs · ${pressure.written} written · ${pressure.events} events · ${pressure.unknown} unknown denoms`);
   } catch (e) { addErr('pressure', e); }
+
+  // 7c. P&L rollup duty (v3.4, 2026-09-13): the weekly Phase-A rollup + per-wallet epoch ledger, MOVED here from the
+  //     tla-core build-pnl.js Action (LAW: Actions = one-time, Render = scheduled). Once per epoch at/after Mon 03:30 UTC;
+  //     pure derive over committed files, zero chain access; writes only files whose content changed. Isolated.
+  try {
+    const { runPnlDuty } = require('./pnl.js');
+    const fetchJson = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error(`HTTP ${r.status} ${u}`); return r.json(); };
+    const listDir = async (dir) => { try { const d = await T.githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${dir}?ref=${GITHUB_BRANCH}`); return Array.isArray(d) ? d.map(f => ({ path: f.path, sha: f.sha })) : null; } catch (e) { if (e.statusCode === 404) return null; throw e; } };
+    const pnl = await runPnlDuty({ fetchJson, listDir, publishFile, rawBase: `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}`, env: process.env, now: () => T.now() });
+    if (pnl.status === 'skipped') console.log(`  pnl: skipped (${pnl.reason})`);
+    else console.log(`  pnl: epoch ${pnl.epoch} · ${pnl.summary.wallets} wallets · ${pnl.summary.events} events · ${pnl.written} written · ${pnl.unchanged} unchanged of ${pnl.files}`);
+  } catch (e) { addErr('pnl', e); }
 
   // 8. heartbeat
   await publishHeartbeat({
