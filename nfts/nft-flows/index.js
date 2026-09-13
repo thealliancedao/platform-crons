@@ -1,5 +1,10 @@
 'use strict';
-// org-nft-flows 1.1.2 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.1.3 — FORWARD CAPTURE for ONE collection
+// 1.1.3 (2026-09-14): same-day sales were never USD-priced — luna-usd-daily runs 1–2 days behind the chain and a record
+//   was priced ONCE at write, so a LUNA sale on the current UTC day landed usd:null/usd_reason:luna_usd_daily_missing
+//   forever. A re-price pass now runs at the start of every run over the current + previous month files: a record whose
+//   only defect is a missing day that the series now has gets its usd filled in and is LABELED (usd_repriced_at). The
+//   event itself is never touched; a month file is written only if something changed.
 // 1.1.2 (2026-09-14): luna-usd-daily read repointed to nft-collections/adao/snapshots/ (tla-core/nfts/adao was deleted
 //   2026-09-13; every run since answered `degraded · luna-usd-daily: HTTP 404` and any LUNA-priced sale would have landed
 //   usd:null). New NFTC_RAW base (env NFTC_RAW). Surfaced by system-health 1.0.7's hb_status column.
@@ -105,6 +110,30 @@ const writeGz   = (p, obj, msg, sha) => writeFile(p, zlib.gzipSync(Buffer.from(J
 // ---------------------------------------------------------------- USD at the day (same rule as derive.js)
 let LUNA = null;
 const USDC_IBC = /^ibc\/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB$/;
+// 1.1.3 — re-price pass. Scope: the current and previous UTC month files (a missing day is always recent: the series
+// lags the chain by 1–2 days). A record qualifies only when usd is null AND usd_reason is luna_usd_daily_missing:<day>
+// AND the series now has <day>. Nothing else on the record changes; the fill is labeled with usd_repriced_at. Returns
+// the number of records re-priced (0 when the series is unavailable — a missing series is never a reason to write).
+async function repriceMissingDays() {
+  if (!LUNA) return 0;
+  const now = new Date(); const months = [];
+  for (const back of [0, 1]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
+  let total = 0;
+  for (const mk of months) {
+    const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); if (!ex || !Array.isArray(ex.data)) continue;
+    let changed = 0; const stamp = new Date().toISOString();
+    for (const r of ex.data) {
+      if (r.usd != null || typeof r.usd_reason !== 'string' || !r.usd_reason.startsWith('luna_usd_daily_missing:') || !r.price) continue;
+      const day = r.usd_reason.slice('luna_usd_daily_missing:'.length); const px = LUNA[day]; if (px == null) continue;
+      const again = usdAt(r.price, r.ts); if (again.usd == null) continue;   // same rule as the first pricing — no second formula
+      r.usd = again.usd; r.luna_usd = again.luna_usd; delete r.usd_reason; r.usd_repriced_at = stamp; changed++;
+    }
+    if (!changed) continue;
+    await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} record${changed === 1 ? '' : 's'}, day now in luna-usd-daily)`, ex.sha);
+    console.log(`  repriced ${changed} record(s) in ${p}`); total += changed;
+  }
+  return total;
+}
 function usdAt(price, ts) {
   if (!price || price.amount == null || !price.denom) return { usd: null, usd_reason: 'no_price' };
   const day = String(ts).slice(0, 10); const amt = Number(price.amount) / 1e6;
@@ -126,6 +155,7 @@ function usdAt(price, ts) {
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
   try { LUNA = (await httpGet(NFTC_RAW + 'adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }   // 1.1.2: repointed (nft-collections/adao/snapshots)
+  const repriced = await repriceMissingDays();   // 1.1.3: fill USD on records whose day has since arrived in the series
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
   let cur = await readFile(CURSOR_PATH); let cursor = cur && Number(cur.data.height);
@@ -138,7 +168,7 @@ function usdAt(price, ts) {
   }
   const head = await getHead() - LAG; const from = cursor + 1; const to = Math.min(head, cursor + MAX_BLOCKS);
   console.log(`org-nft-flows-${SLUG} · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
-  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
+  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
   const matched = []; let processedTo = cursor;
@@ -205,13 +235,13 @@ function usdAt(price, ts) {
 
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
   if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
-  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, per_collection: perColAdded });
+  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.2', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.3', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
