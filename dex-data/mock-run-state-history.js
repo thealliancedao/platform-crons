@@ -2,7 +2,10 @@
 // mock-run-state-history.js — BINDING gate for dex-data 1.4.0's folded state-history duty (lib/state-history.js).
 // Real committed inputs from a tla-core checkout (epoch table, tla-snapshot, events, the existing state-history
 // product); the ARCHIVE is a deterministic fake (smartAt/blockTime answer from the real epoch-202 file); reads and
-// writes go to an in-memory store. Usage: TLA_CORE_DIR=<tla-core checkout> node mock-run-state-history.js
+// writes go to an in-memory store. Usage: TLA_CORE_DIR=<tla-core checkout> node --max-old-space-size=200 mock-run-state-history.js
+// 2026-09-14 (1.4.1): RUN WITH THE HEAP CAP — it is the gate. Render's instance has ~256 MB; 1.4.0 held every event month in
+// memory and died on the first real boundary (epoch 203, 00:30 UTC) with "heap out of memory", taking eris-apr down with
+// it. Under --max-old-space-size=200 the 1.4.0 lib aborts on these same real months; 1.4.1 folds month-by-month and passes.
 //   R1 nothing missing  → skipped fast, ZERO archive requests, nothing written
 //   R2 no ARCHIVE env   → PUBLIC mode: samples from PUBLIC_LCD, epoch/heartbeat labeled source:public, endpoint not masked
 //   R2b public mode + a `depth` answer → epoch kept INCOMPLETE (a pruned answer never freezes blanks)
