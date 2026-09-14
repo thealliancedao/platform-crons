@@ -158,14 +158,22 @@ function makeArchive({ lcd, rpc, reqDelayMs = 150, breakerMax = 5, secret = true
 }
 
 // ── Committed inputs: epoch table, snapshot, event corpus (anchors + pool set) ──
-function buildCorpus({ epochTable, snapshot, eventMonths }) {   // 1.4.0: inputs fetched by the caller (was loadCorpus(ROOT) on a checkout)
-  const anchors = []; const poolSeen = new Map();
-  for (const events of eventMonths) for (const e of events) {
-    if (e.height && e.timestamp) anchors.push([ms(e.timestamp), Number(e.height)]);
-    if (e.pool) { const s = poolSeen.get(e.pool) || { n: 0, first: e.timestamp, last: e.timestamp }; s.n++; if (e.timestamp < s.first) s.first = e.timestamp; if (e.timestamp > s.last) s.last = e.timestamp; poolSeen.set(e.pool, s); }
+// 1.4.1 (2026-09-14): the corpus is FOLDED one month at a time. 1.4.0 held every tla-flows/events month (26 files,
+// 273 MB of JSON) in memory at once — fine on the 7 GB GitHub runner the Action used, fatal on Render's ~256 MB heap:
+// the first real boundary run (2026-09-14 00:30, epoch 203) died with "JavaScript heap out of memory", and because
+// eris-apr runs after this duty in the same process, that product stopped too. Only (timestamp, height) anchors and
+// per-pool {n, first, last} survive the fold — a few MB — and each month is dropped as soon as it is folded.
+function newCorpus({ epochTable, snapshot }) { return { epochTable, snapshot, anchors: [], poolSeen: new Map(), months_folded: 0 }; }
+function foldMonth(corpus, events) {
+  for (const e of events) {
+    if (e.height && e.timestamp) corpus.anchors.push([ms(e.timestamp), Number(e.height)]);
+    if (e.pool) { const s = corpus.poolSeen.get(e.pool) || { n: 0, first: e.timestamp, last: e.timestamp }; s.n++; if (e.timestamp < s.first) s.first = e.timestamp; if (e.timestamp > s.last) s.last = e.timestamp; corpus.poolSeen.set(e.pool, s); }
   }
-  anchors.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  return { epochTable, snapshot, anchors, poolSeen };
+  corpus.months_folded++; return corpus;
+}
+function finishCorpus(corpus) { corpus.anchors.sort((a, b) => a[0] - b[0] || a[1] - b[1]); return corpus; }
+function buildCorpus({ epochTable, snapshot, eventMonths }) {   // kept for callers/gates that already hold the months — same fold, same result
+  const c = newCorpus({ epochTable, snapshot }); for (const events of eventMonths) foldMonth(c, events); return finishCorpus(c);
 }
 
 // ── Target set: every pool that ever appears in events → what to query ─────
@@ -286,7 +294,7 @@ async function sampleHeight(archive, targets, h, opts = {}) {
 
 
 // ── The duty (was sample.js) ────────────────────────────────────────────────
-const VERSION = 'dex-state-history-1.1.0';   // 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
+const VERSION = 'dex-state-history-1.1.1';   // 1.1.1 (2026-09-14): month-at-a-time corpus fold (heap OOM fix); 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
 const OUT = 'dex-data/state-history';
 async function runStateHistory({ readJson, writeJson, fetchJson, env = process.env, now = () => new Date(), archiveFactory = makeArchive, publicGet = httpGet }) {
   const t0 = Date.now(); const out = { status: 'skipped', sampled: 0, skipped: 0, incomplete: [], reason: null };
@@ -306,8 +314,10 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
   const snapshot = await fetchJson('member-data/tla-snapshot/current.json', 'tla-snapshot');
   const evIndex = await fetchJson('tla-flows/events/index.json', 'events index');
   const months = []; for (const [y, ms_] of Object.entries(evIndex.months_present || {})) for (const m of ms_) months.push(`${y}/${m}`);
-  const eventMonths = []; for (const mo of months.sort()) eventMonths.push(await fetchJson(`tla-flows/events/${mo}.json`, `events ${mo}`));
-  const corpus = buildCorpus({ epochTable, snapshot, eventMonths });
+  // 1.4.1: one month in memory at a time — fetch, fold, drop (never an array of every month)
+  const corpus = newCorpus({ epochTable, snapshot });
+  for (const mo of months.sort()) { const events = await fetchJson(`tla-flows/events/${mo}.json`, `events ${mo}`); foldMonth(corpus, events); }
+  finishCorpus(corpus); log(`  corpus: ${corpus.months_folded} event months folded → ${corpus.anchors.length} anchors, ${corpus.poolSeen.size} pools`);
   const archive = archiveMode ? archiveFactory({ lcd: env.ARCHIVE_LCD, rpc: env.ARCHIVE_RPC, reqDelayMs: Number(env.REQ_DELAY_MS || 150), secret: true })
                             : archiveFactory({ lcd: PUBLIC_LCD, reqDelayMs: Number(env.REQ_DELAY_MS || 150), secret: false });
   log(`  ${VERSION} · source=${archive.source} · transport=${archive.transport} · spacing=${archive.reqDelayMs}ms · serial${FORCE ? ' · FORCE' : ''}`);
@@ -355,4 +365,4 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
   return out;
 }
 
-module.exports = { VERSION, OUT, ArchiveFatal, COMPOUNDER, DAO_MAIN, STAKING, LST_HUBS, sleep, ms, num, mask, log, fail, httpGet, classify, makeArchive, buildCorpus, buildTargets, resolveHeight, sampleHeight, assetKey, runStateHistory };
+module.exports = { VERSION, OUT, ArchiveFatal, COMPOUNDER, DAO_MAIN, STAKING, LST_HUBS, sleep, ms, num, mask, log, fail, httpGet, classify, makeArchive, buildCorpus, newCorpus, foldMonth, finishCorpus, buildTargets, resolveHeight, sampleHeight, assetKey, runStateHistory };
