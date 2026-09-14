@@ -8,13 +8,17 @@
 //     (needs missing64.json — regenerate with the v2 gate if absent)
 //   • committed listing-history + real-shaped v2 list/cancel/sale lifecycle
 //
-// Usage: TLA_CORE_DIR=/path/to/tla-core [MISSING64=./missing64.json] node mock-run-market-history.js
+// Usage: TLA_CORE_DIR=/path/to/tla-core NFTC_DIR=/path/to/nft-collections [NFT_ROOT=adao] [MISSING64=./missing64.json] node mock-run-market-history.js
 'use strict';
 const fs = require('fs'), path = require('path');
 const CORE = process.env.TLA_CORE_DIR;
 if (!CORE) { console.error('TLA_CORE_DIR required'); process.exit(1); }
+// 2026-09-14 (B.7): aDAO fixtures read from a nft-collections checkout (NFTC_DIR) + NFT_ROOT (adao) — tla-core/nfts/adao was deleted 2026-09-13
+const NFTC = process.env.NFTC_DIR; if (!NFTC) { console.error('NFTC_DIR required (nft-collections checkout)'); process.exit(1); }
+const NFT_ROOT = process.env.NFT_ROOT || 'adao';
 const MH = require('./market-history.js');
 const P = (p) => JSON.parse(fs.readFileSync(path.join(CORE, p)));
+const N = (p) => JSON.parse(fs.readFileSync(path.join(NFTC, NFT_ROOT, p)));   // aDAO products
 
 let fails = 0;
 const check = (n, ok, d) => { console.log(`${ok ? '✓' : '✗'} ${n}${d ? ' — ' + d : ''}`); if (!ok) fails++; };
@@ -22,14 +26,15 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- G1/G2: daily fills against real committed dailies ----------------
 {
-  const luna = P('nfts/adao/snapshots/luna-usd-daily.json');
+  const luna = N('snapshots/luna-usd-daily.json');
   const priorLuna = JSON.parse(JSON.stringify(luna.daily));
   const lastBefore = Object.keys(priorLuna).sort().pop();
   const today = new Date().toISOString().slice(0, 10);
+  // 2026-09-14 (B.7): the month list was frozen at 06–08 of 2026 — load every month from the last committed day
+  // through today, the way the cron does, so the gate keeps working as the calendar moves.
   const months = {};
-  for (let y = 2026; y <= 2026; y++) for (const m of ['06', '07', '08']) {
-    try { months[`${y}-${m}`] = P(`price-history/${y}/${m}.json`); } catch {}
-  }
+  { const d = new Date(lastBefore.slice(0, 7) + '-01T00:00:00Z'); const end = today.slice(0, 7);
+    for (;;) { const ym = d.toISOString().slice(0, 7); try { months[ym] = P(`price-history/${ym.slice(0, 4)}/${ym.slice(5, 7)}.json`); } catch {} if (ym >= end) break; d.setUTCMonth(d.getUTCMonth() + 1); } }
   const r = MH.fillDailyFromPriceHistory(luna, 'LUNA', months, today);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   check('G1 luna fill: reaches yesterday', r.lastNow >= yesterday, `${lastBefore} → ${r.lastNow} (+${r.added})`);
@@ -37,7 +42,7 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   check('G1 luna fill: no fabricated days (every added day exists in price-history)',
     Object.keys(luna.daily).filter(d => !(d in priorLuna)).every(d => months[d.slice(0, 7)]?.days?.[d]?.LUNA?.usd === luna.daily[d]));
   check('G1 luna fill: idempotent', MH.fillDailyFromPriceHistory(luna, 'LUNA', months, today).added === 0);
-  const bluna = P('nfts/adao/snapshots/bluna-usd-daily.json');
+  const bluna = N('snapshots/bluna-usd-daily.json');
   const priorB = Object.keys(bluna.daily).length;
   const r2 = MH.fillDailyFromPriceHistory(bluna, 'bLUNA', months, today);
   check('G2 bluna fill: reaches yesterday', r2.lastNow >= yesterday, `+${r2.added}`);
@@ -49,7 +54,7 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- G3: sales append — the 64 real recovered sales -------------------
 {
-  const enr = P('nfts/adao/snapshots/sales-enriched.json');
+  const enr = N('snapshots/sales-enriched.json');
   const priorRows = JSON.parse(JSON.stringify(enr.sales));
   const m64path = process.env.MISSING64 || path.join(__dirname, 'missing64.json');
   let m64 = null;
@@ -65,7 +70,7 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const M = { [BBL]: { label: 'BBL', fee_wallet: 'terra1jgk8dhtv0qf5s08jxrwecf4a04hdmeznqpty75',
       royalty_recipients: ['terra1g0mfrpswewteaf9ky4rlj09wh5njp6u9xxk94uszplw4qz2f9mzq3k27fm', 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm'] } };
     const have = new Set(enr.sales.map(s => `${s.tx_hash}|${s.token_id}`));
-    const arch = path.join(CORE, 'archive/fcd/adao-collection');
+    const arch = path.join(NFTC, NFT_ROOT, 'archive/fcd/collection');   // 2026-09-14 (B.7): FCD archive is local to the collection (import v2, 2026-09-12)
     m64 = [];
     for (const p of fs.readdirSync(arch).filter(f => f.endsWith('.json.gz')).sort()) {
       const d = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(arch, p))));
@@ -74,32 +79,43 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
       }
     }
     console.log(`(fixture self-derived from FCD archive: ${m64.length} recovered sales)`);
-  }
-  {
-    check('G3 fixture: 64 real recovered sales, all uluna', m64.length === 64 && m64.every(r => r.denom === 'uluna'));
+    // 2026-09-14 (B.7): the 64-sale batch-settle recovery is APPLIED on main (recover-batch-sales retired), so
+    // "adds 64" can never be true again. What still needs gating: nothing is left to recover on live main; and the
+    // append path — pricing day-of from luna-usd-daily, legs arithmetic, repair label, prior-verbatim, idempotence —
+    // exercised by removing a sample of committed archive-era sales from a COPY and re-feeding them.
+    check('G3 live main: nothing left to recover from the FCD archive (recovery applied)', m64.length === 0, `${m64.length} unrecovered`);
     const luna = JSON.parse(fs.readFileSync('/tmp/mh-luna.json'));
     const bluna = JSON.parse(fs.readFileSync('/tmp/mh-bluna.json'));
+    const archSales = []; const seen = new Set();
+    for (const p of fs.readdirSync(arch).filter(f => f.endsWith('.json.gz')).sort()) {
+      const d = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(arch, p))));
+      for (const tx of d.txs) { if (tx.code) continue; for (const r of AX.classifyNftTx(tx, C, M)) if (r.action === 'sale' && r.denom === 'uluna' && !seen.has(`${r.txhash}|${r.token_id}`)) { seen.add(`${r.txhash}|${r.token_id}`); archSales.push(r); } }
+    }
+    const sample = archSales.slice(-8); const sampleKeys = new Set(sample.map(r => `${r.txhash}|${r.token_id}`));
+    check('G3 sample: 8 archive-era uluna sales, all present in sales-enriched today', sample.length === 8 && sample.every(r => have.has(`${r.txhash}|${r.token_id}`)));
+    const committed = new Map(enr.sales.filter(s => sampleKeys.has(`${s.tx_hash}|${s.token_id}`)).map(s => [`${s.tx_hash}|${s.token_id}`, s]));
+    const totalBefore = enr.sales.length; enr.sales = enr.sales.filter(s => !sampleKeys.has(`${s.tx_hash}|${s.token_id}`));
     const months = {};
-    for (const r of m64) { const k = r.timestamp.slice(0, 7); if (!months[k]) try { months[k] = P(`price-history/${k.slice(0, 4)}/${k.slice(5, 7)}.json`); } catch {} }
-    const res = MH.appendEnrichedSales(enr, m64, luna, bluna, months, {});
-    check('G3 all 64 appended', res.added === 64, `added ${res.added}`);
+    for (const r of sample) { const k = r.timestamp.slice(0, 7); if (!months[k]) try { months[k] = P(`price-history/${k.slice(0, 4)}/${k.slice(5, 7)}.json`); } catch {} }
+    const res = MH.appendEnrichedSales(enr, sample, luna, bluna, months, {});
+    check('G3 all 8 re-appended', res.added === 8, `added ${res.added}`);
     check('G3 none ambiguous/unpriced', res.skippedAmbiguous === 0 && res.unpriced === 0, `amb ${res.skippedAmbiguous} unpriced ${res.unpriced}`);
-    check('G3 total 1323', res.total === 1323, `${res.total}`);
-    const news = enr.sales.filter(s => s.repair === 'batch-settle-recovery');
-    check('G3 repair label on every recovered row', news.length === 64);
-    check('G3 recovered rows priced from luna-usd-daily day-of', news.every(s => s.price_source === 'luna-usd-daily' && s.price_usd_at_sale > 0 && s.notional_usd > 0));
+    check('G3 total restored', res.total === totalBefore, `${res.total} vs ${totalBefore}`);
+    const news = enr.sales.filter(s => sampleKeys.has(`${s.tx_hash}|${s.token_id}`));
+    check('G3 re-appended rows priced from luna-usd-daily day-of', news.every(s => s.price_source === 'luna-usd-daily' && s.price_usd_at_sale > 0 && s.notional_usd > 0));
     check('G3 legs arithmetic carried (net+fee+roy == gross where all present)', news.every(s => {
       if (s.seller_net == null || s.royalty_fee == null) return true;
       return Number(s.seller_net) + Number(s.marketplace_fee || 0) + Number(s.royalty_fee) === Number(s.gross_amount);
     }));
-    const priorInDoc = enr.sales.filter(s => !s.captured_by);
-    check('G3 prior 1,259 rows byte-verbatim', priorInDoc.length === 1259 &&
-      deep([...priorRows].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.tx_hash).localeCompare(String(b.tx_hash))), priorInDoc));
-    // idempotency: feeding the same 64 again adds 0
-    const res2 = MH.appendEnrichedSales(enr, m64, luna, bluna, months, {});
-    check('G3 idempotent (re-feed adds 0)', res2.added === 0 && res2.skippedDup === 64, `added ${res2.added} dup ${res2.skippedDup}`);
+    check('G3 re-appended rows reproduce the committed rows field-for-field (price, notional, legs, token, timestamp)', news.every(s => { const c = committed.get(`${s.tx_hash}|${s.token_id}`); return c && ['price_usd_at_sale', 'notional_usd', 'gross_amount', 'seller_net', 'royalty_fee', 'marketplace_fee', 'token_id', 'timestamp', 'denom', 'buyer', 'seller'].every(k => String(c[k] ?? '') === String(s[k] ?? '')); }),
+      news.map(s => { const c = committed.get(`${s.tx_hash}|${s.token_id}`); return ['price_usd_at_sale', 'notional_usd', 'gross_amount', 'seller_net', 'royalty_fee', 'marketplace_fee'].filter(k => String(c[k] ?? '') !== String(s[k] ?? '')).map(k => `${k}: ${c[k]} vs ${s[k]}`); }).flat().slice(0, 6));
+    const priorInDoc = enr.sales.filter(s => !sampleKeys.has(`${s.tx_hash}|${s.token_id}`));
+    check('G3 every untouched row byte-verbatim', priorInDoc.length === totalBefore - 8 && deep([...priorRows].filter(s => !sampleKeys.has(`${s.tx_hash}|${s.token_id}`)).sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.tx_hash).localeCompare(String(b.tx_hash))), [...priorInDoc].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.tx_hash).localeCompare(String(b.tx_hash)))));
+    // idempotency: feeding the same 8 again adds 0
+    const res2 = MH.appendEnrichedSales(enr, sample, luna, bluna, months, {});
+    check('G3 idempotent (re-feed adds 0)', res2.added === 0 && res2.skippedDup === 8, `added ${res2.added} dup ${res2.skippedDup}`);
     // ambiguous records are refused
-    const amb = [{ ...m64[0], k: m64[0].k + '|amb', txhash: 'F'.repeat(64), resolution: 'ambiguous' }];
+    const amb = [{ ...sample[0], k: sample[0].k + '|amb', txhash: 'F'.repeat(64), resolution: 'ambiguous' }];
     const res3 = MH.appendEnrichedSales(enr, amb, luna, bluna, months, {});
     check('G3 ambiguous sale refused', res3.added === 0 && res3.skippedAmbiguous === 1);
   }
@@ -107,9 +123,9 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- G4: listing-history lifecycle on committed doc -------------------
 {
-  const lh = P('nfts/adao/snapshots/listing-history.json');
+  const lh = N('snapshots/listing-history.json');
   const priorCount = lh.records.length;
-  const priorActive = lh.records.filter(r => r.outcome === 'active').length;
+  const priorActive = lh.records.filter(r => r.outcome === 'active' && !r.captured_by).length;   // 2026-09-14 (B.7): same filter as the check below (forward-captured actives carry captured_by now)
   const mk = (action, extra) => ({ schemaVersion: 2, k: `GATE|${action}|${extra.token_id}|${extra.auction_id}`,
     txhash: 'A'.repeat(64), height: 22600000, timestamp: '2026-08-23T12:00:00Z',
     contract: 'terra1ej4…', contract_label: 'BBL necropolis marketplace v2', action, resolution: 'attrs', ...extra });
@@ -138,7 +154,7 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const BBL6 = 'terra1ej4cv98e9g2zjefr5auf2nwtq4xl3dm7x0qml58yna2ml2hk595s7gccs9';
   const BO = 'terra1kj7pasyahtugajx9qud02r5jqaf60mtm7g5v9utr94rmdfftx0vqspf4at';
   const markets = new Set([ATR, BBL6, BO]);
-  const aug = P('nfts/adao/transfers/2026/08.json');
+  const aug = N('transfers/2026/08.json');
   const SALE_TX = '995038E56D407FAEDEDD49188C5E9E108B5425E896E3F03B8CF5B0DA5720E994';
   const hasV2ForSale = aug.some(r => Number(r.schemaVersion) >= 2 && r.txhash === SALE_TX && (r.action === 'sale' || r.action === 'cancel'));
   const un1 = MH.findUnresolvedExits({ '2026-08': aug }, markets, '2026-06-12T00:00:00Z');

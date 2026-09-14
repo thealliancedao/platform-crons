@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // mock-run-compact-bundle.js — BINDING gate for the first-paint bundle.
-// Real committed inputs: TLA_CORE_DIR nfts.json + SITE_DIR metadata/rarity.
-// Usage: TLA_CORE_DIR=... SITE_DIR=... node mock-run-compact-bundle.js
+// Real committed inputs: NFTC_DIR/<NFT_ROOT>/snapshots nfts.json + summary.json, SITE_DIR metadata/rarity.
+// Usage: NFTC_DIR=... SITE_DIR=... [NFT_ROOT=adao] node mock-run-compact-bundle.js
 'use strict';
 const fs = require('fs'), path = require('path');
-const CORE = process.env.TLA_CORE_DIR, SITE = process.env.SITE_DIR;
-if (!CORE || !SITE) { console.error('TLA_CORE_DIR and SITE_DIR required'); process.exit(1); }
+// 2026-09-14 (B.7): aDAO fixtures read from a nft-collections checkout (NFTC_DIR) + NFT_ROOT (adao) — tla-core/nfts/adao was deleted 2026-09-13
+const NFTC = process.env.NFTC_DIR, SITE = process.env.SITE_DIR, NFT_ROOT = process.env.NFT_ROOT || 'adao';
+if (!NFTC || !SITE) { console.error('NFTC_DIR and SITE_DIR required'); process.exit(1); }
 const CB = require('./compact-bundle.js');
-const nftsDoc = JSON.parse(fs.readFileSync(path.join(CORE, 'nfts/adao/snapshots/nfts.json')));
-const summaryDoc = JSON.parse(fs.readFileSync(path.join(CORE, 'nfts/adao/snapshots/summary.json')));
+const nftsDoc = JSON.parse(fs.readFileSync(path.join(NFTC, NFT_ROOT, 'snapshots/nfts.json')));
+const summaryDoc = JSON.parse(fs.readFileSync(path.join(NFTC, NFT_ROOT, 'snapshots/summary.json')));
 const meta = JSON.parse(fs.readFileSync(path.join(SITE, 'assets/nft-metadata/all_nfts_metadata.json')));
 const ri = JSON.parse(fs.readFileSync(path.join(SITE, 'assets/nft-metadata/adao-rarity-intended.json')));
 const rb = JSON.parse(fs.readFileSync(path.join(SITE, 'assets/nft-metadata/adao-rarity-bbl.json')));
@@ -37,7 +38,10 @@ check('flags: pending 17 + unattributed 2 carried', cnt(bit.daodao_pending_claim
 check('flags: unminted 5,828', cnt(bit.unminted) === S.unminted_count, `${cnt(bit.unminted)}`);
 // listing prices present for listed tokens
 const listedRows = b.rows.filter(r => r[F.flags] & (bit.bbl_listed | bit.boost_listed | bit.atrium_listed));
-check('listings: every listed row that has price_usd carries it', listedRows.length >= 60 && listedRows.some(r => r[F.listing_usd] != null), `${listedRows.length} listed, ${listedRows.filter(r => r[F.listing_usd] != null).length} priced`);
+// 2026-09-14 (B.7): '>= 60 listed' was a literal from the gate's writing day; the bundle's listed rows must equal the
+// snapshot summary's own per-venue counts (bbl + atrium + boost) — the same numbers the site's headline shows.
+const listedExpected = (S.bbl_listed_count || 0) + (S.atrium_listed_count || 0) + (S.boost_listed_count || 0);
+check('listings: listed rows = summary bbl+atrium+boost counts, and listed rows carry price_usd', listedRows.length === listedExpected && listedRows.some(r => r[F.listing_usd] != null), `${listedRows.length} listed vs summary ${listedExpected}, ${listedRows.filter(r => r[F.listing_usd] != null).length} priced`);
 // ranks: spot-check #100 and #6192 against the intended rarity records
 {
   const recs = ri.records;
