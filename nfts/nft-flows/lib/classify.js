@@ -149,7 +149,14 @@ function classifyNftTx(tx, reg, idx) {
         continue;
       }
       if (vOut) {  // ---- out of a venue = sale, delist, or 2023 settlement
-        const vw = venueW(from); const va = vw ? vw.a : {}; const vacts = vw ? actionsOf(vw) : [];
+        // 1.1.4 (2026-09-14): EVERY venue event in this msg, not the first. A BBL buy-now is place_bid + settle +
+        // settle_hook in ONE tx; venueW(from) returned place_bid, the settle test never fired, and every buy-now sale
+        // since 2023 was filed "venue release without a known verb (expiry?)" — 135 aDAO + 182 Pixel Lions sales missing
+        // from the ledgers while the older tla-flows classifier had them. The verb event supplies the attrs (amount,
+        // denom, seller, auction_id); the action list is the union across the venue's events.
+        const vws = W.filter(x => contractOf(x) === from);
+        const isVerb = (x) => actionsOf(x).some(a => ['settle', 'buy_nft', 'accept_offer'].includes(a) || /deposit_nft|cancel/.test(a));
+        const vw = vws.find(isVerb) || vws[0] || null; const va = vw ? vw.a : {}; const vacts = vws.flatMap(actionsOf);
         if (vacts.includes('settle') || vacts.includes('buy_nft') || vacts.some(x => /launch-nft\/deposit_nft/.test(x)) || vacts.includes('accept_offer')) {
           let price, split = null, id = {}, seller = first(va, 'seller') || null, buyer = to;
           if (vacts.includes('settle')) { price = { amount: first(va, 'amount'), denom: denomLabel(first(va, 'denom')) }; id = { auction_id: first(va, 'auction_id') }; const out3 = legs.filter(l => l.from === from); split = out3.length ? { legs: out3 } : null; }
