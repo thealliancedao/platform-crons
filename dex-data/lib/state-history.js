@@ -154,7 +154,12 @@ function makeArchive({ lcd, rpc, reqDelayMs = 150, breakerMax = 5, secret = true
     if (transport === 'lcd') { const r = await get(`${lcd}/cosmos/base/tendermint/v1beta1/blocks/${height}`); return r.block.header.time; }
     const r = await get(`${rpc}/block?height=${height}`); return r.result.block.header.time;
   }
-  return { transport, stats, smartAt, blockTime, reqDelayMs, source: secret ? 'archive' : 'public' };
+  // 1.1.2: the chain's latest block — the only height a pruned public node is guaranteed to hold
+  async function latestBlock() {
+    if (transport === 'lcd') { const r = await get(`${lcd}/cosmos/base/tendermint/v1beta1/blocks/latest`); return { height: Number(r.block.header.height), time: r.block.header.time }; }
+    const r = await get(`${rpc}/block`); return { height: Number(r.result.block.header.height), time: r.result.block.header.time };
+  }
+  return { transport, stats, smartAt, blockTime, latestBlock, reqDelayMs, source: secret ? 'archive' : 'public' };
 }
 
 // ── Committed inputs: epoch table, snapshot, event corpus (anchors + pool set) ──
@@ -294,7 +299,7 @@ async function sampleHeight(archive, targets, h, opts = {}) {
 
 
 // ── The duty (was sample.js) ────────────────────────────────────────────────
-const VERSION = 'dex-state-history-1.1.1';   // 1.1.1 (2026-09-14): month-at-a-time corpus fold (heap OOM fix); 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
+const VERSION = 'dex-state-history-1.1.2';   // 1.1.2 (2026-09-14): public mode samples LIVE at the first run after the boundary (pruned public nodes cannot serve the past), labeled sample_mode/boundary_height/delta_sec; 1.1.1 (2026-09-14): month-at-a-time corpus fold (heap OOM fix); 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
 const OUT = 'dex-data/state-history';
 async function runStateHistory({ readJson, writeJson, fetchJson, env = process.env, now = () => new Date(), archiveFactory = makeArchive, publicGet = httpGet }) {
   const t0 = Date.now(); const out = { status: 'skipped', sampled: 0, skipped: 0, incomplete: [], reason: null };
@@ -335,14 +340,39 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
     if (!FORCE && have.has(ep)) { out.skipped++; continue; }                                   // write-once (index says complete)
     const existing = await readEpoch(ep);
     if (existing && existing.complete && !FORCE) { out.skipped++; have.add(ep); continue; }
-    const hr = await resolveHeight(corpus, archive, ep, REFINE_MAX);
-    if (hr.error) { log(`  epoch ${ep}: ${hr.error}`); continue; }
-    const s = await sampleHeight(archive, targets, hr.height, { skipBornLater: true, boundaryIso: hr.start_time });
+    // 1.1.2 (2026-09-14): TWO ways to reach a boundary, both labeled on the record.
+    //   archive mode (backfill knob) — the exact boundary height, resolved from anchors + block reads, as before.
+    //   public mode (forward)        — a public node is PRUNED: on 2026-09-14 the first live boundary run asked
+    //     terra-lcd.publicnode.com for height 22827425 (90 min old) and 50/67 pairs answered "failed to load state at
+    //     height … version mismatch on immutable IAVL tree". The past is not available from a public node, so the
+    //     forward sample no longer asks for it: at the first run after the boundary it reads the chain's LATEST block
+    //     and records boundary_height (from anchors, if bracketed yet), sampled height, and delta_sec = seconds after
+    //     the boundary. org-dex-data runs at :01 (moved from :30 the same day) so delta_sec is ~60 s. A boundary older
+    //     than LIVE_MAX_AGE_SEC is never "sampled live" — that would be a phantom; it stays incomplete for the knob.
+    const LIVE_MAX_AGE_SEC = Number(env.LIVE_MAX_AGE_SEC || 6 * 3600);
+    const row = corpus.epochTable.find(r => r.epoch === ep);
+    let hr, s, methodHeight;
+    if (archiveMode) {
+      hr = await resolveHeight(corpus, archive, ep, REFINE_MAX);
+      if (hr.error) { log(`  epoch ${ep}: ${hr.error}`); continue; }
+      s = await sampleHeight(archive, targets, hr.height, { skipBornLater: true, boundaryIso: hr.start_time });
+      methodHeight = 'archive: last block at or before the epoch start_time; bracketed by tla-flows/events anchors, refined by block reads';
+    } else {
+      const ageSec = Math.round((now().getTime() - ms(row.start_time)) / 1000);
+      if (ageSec > LIVE_MAX_AGE_SEC) { log(`  epoch ${ep}: boundary is ${Math.round(ageSec / 3600)} h old — a public node cannot serve it and a live read would not be the boundary; left incomplete for the archive knob (ARCHIVE_LCD + EPOCH_FROM/TO)`); incomplete.add(ep); continue; }
+      const live = await archive.latestBlock();
+      const bh = await resolveHeight(corpus, archive, ep, REFINE_MAX);   // exact boundary height: block HEADERS survive pruning (state does not) — the 01:31 run resolved h=22827425 in 3 reads on the public node
+      s = await sampleHeight(archive, targets, live.height, { skipBornLater: true, boundaryIso: row.start_time });
+      hr = { start_time: row.start_time, height: live.height, height_time: live.time, delta_sec: Math.round((ms(live.time) - ms(row.start_time)) / 1000), block_reads: 0, note: null,
+             boundary_height: bh.error ? null : bh.height, boundary_note: bh.error || null };
+      methodHeight = `live: the chain's latest block at the first run after the boundary (public node — pruned, cannot serve the past); delta_sec = seconds after the epoch start_time; boundary_height resolved from block headers (kept by public nodes) when the anchors bracket it`;
+    }
     // complete = no transport failures; in PUBLIC mode a depth answer also blocks completion (pruned node — not the truth)
     const complete = s.tally.net === 0 && (archiveMode || s.tally.depth === 0);
     const rec = { schemaVersion: 1, product: OUT, version: VERSION, epoch: ep, start_time: hr.start_time, height: hr.height, height_time: hr.height_time, delta_sec: hr.delta_sec, block_reads: hr.block_reads, resolve_note: hr.note || null,
+      boundary_height: archiveMode ? hr.height : (hr.boundary_height ?? null), boundary_note: hr.boundary_note || null, sample_mode: archiveMode ? 'archive-exact' : 'live-after-boundary',
       sampled_at: now().toISOString(), transport: archive.transport, source: archive.source, complete,
-      method: { height: 'last block at or before the epoch start_time; bracketed by tla-flows/events anchors, refined by block reads', pairs: '{pool:{}} on the pair contract at height — assets (denom, amount) + total_share; only pairs with a TLA flow event on or before the boundary are queried', compounder: 'asset_configs at height → user_infos totals per gauge; lp_per_amplp = total_lp / total_amplp (the amplified exchange rate)', classes: 'absent = contract not instantiated at height · depth = node has no state at height · query = message rejected · shape = answered without assets+total_share · net = transport (blocks completion)' },
+      method: { height: methodHeight, pairs: '{pool:{}} on the pair contract at height — assets (denom, amount) + total_share; only pairs with a TLA flow event on or before the boundary are queried', compounder: 'asset_configs at height → user_infos totals per gauge; lp_per_amplp = total_lp / total_amplp (the amplified exchange rate)', classes: 'absent = contract not instantiated at height · depth = node has no state at height · query = message rejected · shape = answered without assets+total_share · net = transport (blocks completion)' },
       pairs: s.pairs, not_sampled: s.not_sampled, compounder: s.compounder, staking: s.staking, lst_hubs: s.lst_hubs, tally: s.tally };
     log(`  epoch ${ep} ${hr.start_time.slice(0, 10)} h=${hr.height} (${hr.delta_sec}s, ${hr.block_reads} reads) · pairs ok ${s.tally.pair_ok} · absent ${s.tally.absent} · depth ${s.tally.depth} · query ${s.tally.query} · net ${s.tally.net} → ${complete ? 'COMPLETE' : 'INCOMPLETE (kept, resampled next run)'}${!complete && !archiveMode && s.tally.depth ? ' — public node has no state at this height; if it persists, run once with ARCHIVE_LCD' : ''}`);
     if (complete) { await writeJson(`${OUT}/epochs/${ep}.json`, rec); incomplete.delete(ep); have.add(ep); out.sampled++; }
@@ -353,7 +383,7 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
   // index: coverage from the epoch files we know (existing index rows + what this run wrote/confirmed)
   const rows = new Map((index && index.epochs || []).map(e => [e.epoch, e]));
   for (const ep of [...have, ...incomplete]) { if (rows.has(ep) && rows.get(ep).complete === have.has(ep)) continue; const r = await readEpoch(ep); if (!r) continue;
-    rows.set(ep, { epoch: r.epoch, start_time: r.start_time, height: r.height, delta_sec: r.delta_sec, complete: r.complete, pairs_ok: r.tally.pair_ok, absent: r.tally.absent, depth: r.tally.depth, query: r.tally.query, shape: r.tally.shape, net: r.tally.net, skipped: r.tally.skipped, amp_rates: r.compounder && r.compounder.ok ? r.compounder.rates.length : 0, hubs_ok: Object.values(r.lst_hubs || {}).filter(x => x.ok).length }); }
+    rows.set(ep, { epoch: r.epoch, start_time: r.start_time, height: r.height, boundary_height: r.boundary_height ?? r.height, sample_mode: r.sample_mode || 'archive-exact', delta_sec: r.delta_sec, complete: r.complete, pairs_ok: r.tally.pair_ok, absent: r.tally.absent, depth: r.tally.depth, query: r.tally.query, shape: r.tally.shape, net: r.tally.net, skipped: r.tally.skipped, amp_rates: r.compounder && r.compounder.ok ? r.compounder.rates.length : 0, hubs_ok: Object.values(r.lst_hubs || {}).filter(x => x.ok).length }); }
   const epochs = [...rows.values()].sort((a, b) => a.epoch - b.epoch);
   const idx = { schemaVersion: 1, product: OUT, version: VERSION, updatedAt: now().toISOString(), epoch_span: epochs.length ? [epochs[0].epoch, epochs[epochs.length - 1].epoch] : null,
     epochs_complete: epochs.filter(e => e.complete).length, epochs_incomplete: epochs.filter(e => !e.complete).map(e => e.epoch),
