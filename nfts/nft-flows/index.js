@@ -1,5 +1,7 @@
 'use strict';
-// org-nft-flows 1.1.3 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.1.4 — FORWARD CAPTURE for ONE collection
+// 1.1.4 (2026-09-14): lib/classify.js reads EVERY venue event in a msg — BBL buy-now (place_bid + settle in one tx) is
+//   now a SALE; the first-event-only read had filed every buy-now since 2023 as a verb-less venue release (317 sales).
 // 1.1.3 (2026-09-14): same-day sales were never USD-priced — luna-usd-daily runs 1–2 days behind the chain and a record
 //   was priced ONCE at write, so a LUNA sale on the current UTC day landed usd:null/usd_reason:luna_usd_daily_missing
 //   forever. A re-price pass now runs at the start of every run over the current + previous month files: a record whose
@@ -241,7 +243,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.3', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.4', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
