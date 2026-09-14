@@ -32,6 +32,7 @@ function fakeArchive({ failAfter = Infinity, depthFor = 0 } = {}) {
   let n = 0; const stats = { archive_requests: 0, archive_retries: 0, started: Date.now() };
   const byPair = new Map(Object.values(real202.pairs).filter(p => p.ok).map(p => [p.pair, p]));
   return { transport: 'lcd', reqDelayMs: 0, stats,
+    async latestBlock() { stats.archive_requests++; return { height: 22838010, time: '2026-09-14T00:01:00Z' }; },   // 1.1.2: the live head, 60 s after the 203 boundary
     async blockTime(h) { stats.archive_requests++; const T = Date.parse('2026-09-14T00:00:00Z'); return new Date(T + (h - 22838000) * 6000).toISOString(); },   // 6 s blocks; height 22838000 = the 203 boundary
     async smartAt(addr, q, h) { stats.archive_requests++; if (++n > failAfter) return { ok: false, class: 'net', msg: 'simulated transport failure' }; if (q.pool && depthFor && n <= depthFor) return { ok: false, class: 'depth', msg: 'simulated: no state at height' };
       if (q.pool) { const p = byPair.get(addr); return p ? { ok: true, data: { assets: p.assets.map(a => ({ info: a.denom.startsWith('cw20:') ? { token: { contract_addr: a.denom.slice(5) } } : { native_token: { denom: a.denom.slice(7) } }, amount: a.amount })), total_share: p.total_share } } : { ok: false, class: 'absent', msg: 'contract not found' }; }
@@ -50,19 +51,29 @@ const ARCH = { ...ENV, ARCHIVE_LCD: 'https://archive.example' };
   { const st = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-10T00:00:00Z'), archiveFactory: () => arch, publicGet });
     check('skipped, reason names epoch 202', r.status === 'skipped' && /202 already complete/.test(r.reason), r); check('zero archive requests', arch.stats.archive_requests === 0); check('nothing written', st.writes.length === 0, st.writes); }
   console.log('— R2 public mode is the default; the factory is handed PUBLIC_LCD, unmasked —');
-  { const st = store(base()); let handed = null; const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: { ...ENV, PUBLIC_LCD: 'https://terra-lcd.publicnode.com' }, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: (o) => { handed = o; return { ...arch, source: o.secret ? 'archive' : 'public' }; }, publicGet });
+  { const st = store(base()); let handed = null; const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: { ...ENV, PUBLIC_LCD: 'https://terra-lcd.publicnode.com' }, now: () => new Date('2026-09-14T00:01:10Z'), archiveFactory: (o) => { handed = o; return { ...arch, source: o.secret ? 'archive' : 'public' }; }, publicGet });
     check('factory called with the PUBLIC LCD, secret:false', handed && handed.lcd === 'https://terra-lcd.publicnode.com' && handed.secret === false && !handed.rpc, handed);
     check('sampled 1, source public on epoch file + heartbeat', r.sampled === 1 && r.source === 'public' && st.S.get('dex-data/state-history/epochs/203.json').source === 'public' && st.S.get('dex-data/state-history/heartbeat.json').source === 'public', r);
     check('public host NOT masked in logs', SH.mask('https://terra-lcd.publicnode.com/x') === 'https://terra-lcd.publicnode.com/x');
+    { const ep = st.S.get('dex-data/state-history/epochs/203.json');   // 1.1.2 — the live record says exactly what it is
+      check('1.1.2 public = LIVE sample: height = the chain head at the run, sample_mode live-after-boundary, delta_sec ≈ 60', ep && ep.sample_mode === 'live-after-boundary' && ep.height === 22838010 && ep.delta_sec === 60 && /^live:/.test(ep.method.height), ep && [ep.sample_mode, ep.height, ep.delta_sec]);
+      check('1.1.2 boundary_height resolved from block headers (exact), distinct from the sampled height', ep && ep.boundary_height != null && ep.boundary_height <= 22838000 && ep.boundary_height < ep.height && ep.boundary_note == null, ep && [ep.boundary_height, ep.boundary_note]);
+      const ix = st.S.get('dex-data/state-history/index.json'); const row = ix.epochs.find(e => e.epoch === 203);
+      check('1.1.2 index row carries sample_mode + boundary_height; prior rows untouched (read archive-exact)', row && row.sample_mode === 'live-after-boundary' && row.boundary_height === ep.boundary_height && (ix.epochs.find(e => e.epoch === 202).sample_mode || 'archive-exact') === 'archive-exact', row); }   // prior rows are never rewritten (byte-equal law) — a missing sample_mode reads archive-exact
+    { const st = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });   // 28 h after the boundary
+      check('1.1.2 public mode, boundary 28 h old → NOT sampled live (a phantom), left incomplete for the archive knob, zero state reads', r.sampled === 0 && r.incomplete[0] === 203 && arch.stats.archive_requests === 0 && !st.S.get('dex-data/state-history/epochs/203.json'), [r.sampled, r.incomplete, arch.stats.archive_requests]); }
+    { const st = store(base()); const r = await SH.runStateHistory({ ...st, fetchJson, env: ARCH, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => fakeArchive(), publicGet });   // the knob: exact, any age
+      const ep = st.S.get('dex-data/state-history/epochs/203.json');
+      check('1.1.2 ARCHIVE mode is unchanged: exact boundary height, sample_mode archive-exact, boundary_height = height', r.sampled === 1 && ep.sample_mode === 'archive-exact' && ep.boundary_height === ep.height && ep.height <= 22838000 && /^archive:/.test(ep.method.height), ep && [ep.sample_mode, ep.height, ep.boundary_height]); }
     { let h = null; await SH.runStateHistory({ ...store(base()), fetchJson, env: { ...ARCH, EPOCH_FROM: '203', EPOCH_TO: '203' }, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: (o) => { h = o; return fakeArchive(); }, publicGet }); check('ARCHIVE env → factory gets the archive, secret:true', h && h.lcd === 'https://archive.example' && h.secret === true, h); } }
   console.log('— R2b public mode + depth answer → incomplete, never frozen —');
-  { const st = store(base()); const arch = fakeArchive({ depthFor: 3 }); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });
+  { const st = store(base()); const arch = fakeArchive({ depthFor: 3 }); const r = await SH.runStateHistory({ ...st, fetchJson, env: ENV, now: () => new Date('2026-09-14T00:01:10Z'), archiveFactory: () => arch, publicGet });
     const ep = st.S.get('dex-data/state-history/epochs/203.json'); check('depth>0 in public mode → complete:false, in cursor', ep && ep.complete === false && ep.tally.depth === 3 && r.incomplete[0] === 203, ep && ep.tally);
     const st2 = store(base()); const r2 = await SH.runStateHistory({ ...st2, fetchJson, env: ARCH, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => fakeArchive({ depthFor: 3 }), publicGet });
     check('same answers in ARCHIVE mode → complete (depth is an honest blank there)', r2.sampled === 1 && st2.S.get('dex-data/state-history/epochs/203.json').complete === true, r2); }
   console.log('— R3 epoch 203 started and missing —');
   let st3;
-  { st3 = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st3, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });
+  { st3 = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st3, fetchJson, env: ENV, now: () => new Date('2026-09-14T00:01:10Z'), archiveFactory: () => arch, publicGet });
     check('status ok, 1 sampled, 0 incomplete', r.status === 'ok' && r.sampled === 1 && r.incomplete.length === 0, r);
     const ep = st3.S.get('dex-data/state-history/epochs/203.json'); check('epochs/203.json written, complete, epoch 203', !!ep && ep.complete === true && ep.epoch === 203, ep && ep.tally);
     check('203 has pairs + compounder + staking + lst_hubs + tally', ep && ep.pairs && ep.compounder && ep.staking && ep.lst_hubs && ep.tally && Object.keys(ep.pairs).length >= 60, ep && Object.keys(ep.pairs || {}).length);
@@ -75,18 +86,18 @@ const ARCH = { ...ENV, ARCHIVE_LCD: 'https://archive.example' };
     check('cursor: last_attempted 203, incomplete []', st3.S.get('dex-data/state-history/cursor.json').last_attempted === 203 && st3.S.get('dex-data/state-history/cursor.json').incomplete.length === 0); }
   console.log('— R4 transport failure mid-sample → incomplete, kept —');
   let st4;
-  { st4 = store(base()); const arch = fakeArchive({ failAfter: 30 }); const r = await SH.runStateHistory({ ...st4, fetchJson, env: ENV, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => arch, publicGet });
+  { st4 = store(base()); const arch = fakeArchive({ failAfter: 30 }); const r = await SH.runStateHistory({ ...st4, fetchJson, env: ENV, now: () => new Date('2026-09-14T00:01:10Z'), archiveFactory: () => arch, publicGet });
     const ep = st4.S.get('dex-data/state-history/epochs/203.json');
     check('incomplete [203], file kept with complete:false', r.incomplete.length === 1 && r.incomplete[0] === 203 && ep && ep.complete === false && ep.tally.net > 0, r);
     check('cursor lists 203, heartbeat partial, index epochs_incomplete [203]', st4.S.get('dex-data/state-history/cursor.json').incomplete[0] === 203 && st4.S.get('dex-data/state-history/heartbeat.json').status === 'partial' && st4.S.get('dex-data/state-history/index.json').epochs_incomplete[0] === 203); }
   console.log('— R5 next run completes it —');
-  { const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st4, fetchJson, env: ENV, now: () => new Date('2026-09-15T04:31:00Z'), archiveFactory: () => arch, publicGet });
+  { const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st4, fetchJson, env: ENV, now: () => new Date('2026-09-14T01:01:10Z'), archiveFactory: () => arch, publicGet });
     check('resampled → complete, cursor cleared', r.sampled === 1 && r.incomplete.length === 0 && st4.S.get('dex-data/state-history/epochs/203.json').complete === true && st4.S.get('dex-data/state-history/cursor.json').incomplete.length === 0, r); }
   console.log('— R6 fatal throws, never exits —');
   { const st = store(base()); let err = null; try { await SH.runStateHistory({ ...st, fetchJson, env: { ...ENV, EPOCH_FROM: '1', EPOCH_TO: '5' }, now: () => new Date('2026-09-15T03:31:00Z'), archiveFactory: () => fakeArchive(), publicGet }); } catch (e) { err = e; }
     check('ArchiveFatal thrown for a range outside the span', err instanceof SH.ArchiveFatal && /outside the resolvable span/.test(err.message), err && err.message); check('nothing written', st.writes.length === 0); }
   console.log('— R7 FORCE=1 resamples a complete epoch —');
-  { const st = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: { ...ENV, FORCE: '1', EPOCH_FROM: '202', EPOCH_TO: '202' }, now: () => new Date('2026-09-10T00:00:00Z'), archiveFactory: () => arch, publicGet });
-    check('202 resampled under FORCE', r.sampled === 1 && st.writes.includes('dex-data/state-history/epochs/202.json'), r); }
+  { const st = store(base()); const arch = fakeArchive(); const r = await SH.runStateHistory({ ...st, fetchJson, env: { ...ARCH, FORCE: '1', EPOCH_FROM: '202', EPOCH_TO: '202' }, now: () => new Date('2026-09-10T00:00:00Z'), archiveFactory: () => arch, publicGet });
+    check('202 resampled under FORCE (archive knob — 1.1.2: public mode refuses to re-read a past boundary live)', r.sampled === 1 && st.writes.includes('dex-data/state-history/epochs/202.json'), r); }
   console.log(`\n=== MOCK GATE (state-history): ${pass} passed, ${fail} failed ===`); process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('GATE CRASH', e); process.exit(1); });
