@@ -25,7 +25,19 @@
 'use strict';
 
 const F = {
-  NEUTRON_LCD:      'https://neutron-rest.publicnode.com',
+  // 2026-09-14: neutron-rest.publicnode.com answered 404 on every path from 2026-08-27 (18 days of a partial FUEL map,
+  // stakers/staked/treasury/bridged all null) and is STILL listed in the chain-registry — so no single base is trusted.
+  // The run probes NEUTRON_LCD (env) then this registry-derived list in order, uses the first that answers node_info with
+  // network neutron-1, and records the winner in sources.neutron_lcd. Order = cosmos/chain-registry neutron/chain.json
+  // apis.rest, 2026-09-14, publicnode moved last.
+  NEUTRON_LCD:      'https://rest-lb.neutron.org',
+  NEUTRON_LCD_FALLBACKS: [
+    'https://rest-lb.neutron.org', 'https://rest-solara.neutron-1.neutron.org', 'https://rest-vertexa.neutron-1.neutron.org',
+    'https://rest-voidara.neutron-1.neutron.org', 'https://rest-pulsarix.neutron-1.neutron.org', 'https://rest.neutron.solva.solutions:443',
+    'https://api.novel.remedy.tm.p2p.org', 'https://rest.lavenderfive.com:443/neutron', 'https://lcd.neutron.bronbro.io:443',
+    'https://api.neutron.quokkastake.io', 'https://neutron-api.polkachu.com', 'https://neutron-rest.publicnode.com',
+  ],
+  NEUTRON_CHAIN_ID: 'neutron-1',
   BOOST_CORE:       'neutron1ej43fvrmw40dg6xj40mmh822a8xz98rt5ad2p9tj2tgtgxw0zalsvvzm43',
   BOOST_VOTING:     'neutron19740eh6mqdmgudy0y9at3a3sr54juu0p4lurt7asd5yx74wslycqrsdpy2',
   FUEL_NEUTRON:     'factory/neutron1zl2htquajn50vxu5ltz0y5hf2qzvkgnjaaza2rssef268xplq6vsjuruxm/fuel',
@@ -45,9 +57,23 @@ const chainOf = (addr) => addr.startsWith('neutron1') ? 'neutron' : addr.startsW
 // deps = { fetchJson, terraLcdBase, neutronLcdBase?, catalogPools? } — no queryContract: it is Terra-bound in the engine; smart queries here go through fetchJson so both chains use one path and the gate can stub both.
 async function captureFuelSupply(deps) {
   const { fetchJson, terraLcdBase } = deps;
-  const NL = deps.neutronLcdBase || F.NEUTRON_LCD;
   const errors = [];
-  const get = async (base, path, label) => { try { return await fetchJson(`${base}${path}`, label); } catch (e) { errors.push(`${label}: ${String(e.message || e).slice(0, 100)}`); return null; } };
+  // 2026-09-14: pick a LIVE Neutron REST base — env first, then the registry list. A base that 404s node_info or answers
+  // for another chain is skipped with the reason logged; none alive → every Neutron column nulls with one named reason.
+  const candidates = [...new Set([deps.neutronLcdBase, ...F.NEUTRON_LCD_FALLBACKS].filter(Boolean))];
+  let NL = null; const probes = [];
+  for (const base of candidates) {
+    try { const r = await fetchJson(`${base}/cosmos/base/tendermint/v1beta1/node_info`, `neutron node_info ${base}`); const net = r && r.default_node_info && r.default_node_info.network;
+      if (net === F.NEUTRON_CHAIN_ID) { NL = base; probes.push({ base, ok: true, network: net }); break; }
+      probes.push({ base, ok: false, reason: `network ${net || 'unknown'}` }); }
+    catch (e) { probes.push({ base, ok: false, reason: String(e.message || e).slice(0, 80) }); }
+  }
+  const neutronDown = !NL;
+  if (neutronDown) { errors.push(`neutron lcd: no live REST base among ${candidates.length} candidates (${probes.map(p => p.reason).join(' | ').slice(0, 200)})`); NL = candidates[0]; }
+  const neutronProbe = { selected: neutronDown ? null : NL, live: !neutronDown, tried: probes };
+  // a dead Neutron base is not queried — every Neutron read returns null under the ONE reason above (no 8-line 404 barrage,
+  // no phantom from a base that answers for the wrong chain)
+  const get = async (base, path, label) => { if (neutronDown && base === NL) return null; try { return await fetchJson(`${base}${path}`, label); } catch (e) { errors.push(`${label}: ${String(e.message || e).slice(0, 100)}`); return null; } };
   const smart = async (base, addr, msg) => { const r = await get(base, `/cosmwasm/wasm/v1/contract/${addr}/smart/${b64(msg)}`, `smart ${addr.slice(0, 14)} ${Object.keys(msg)[0]}`); return r ? r.data : null; };
   const supplyOf = async (base, denom) => { const r = await get(base, `/cosmos/bank/v1beta1/supply/by_denom?denom=${encodeURIComponent(denom)}`, `supply ${denom.slice(-10)}`); return r ? num(r.amount && r.amount.amount) : null; };
   const balanceOf = async (base, addr, denom) => { const r = await get(base, `/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=${encodeURIComponent(denom)}`, `balance ${addr.slice(0, 14)}`); return r ? num(r.balance && r.balance.amount) : null; };
@@ -171,7 +197,7 @@ async function captureFuelSupply(deps) {
   const doc = {
     schemaVersion: 1, module: 'token-catalog', product: 'supply/fuel', capturedAt, status,
     guard_failures: failed, incomplete_enumerations: incomplete, query_errors: errors.slice(0, 10),
-    sources: { neutron_lcd: NL, boost_core: F.BOOST_CORE, boost_voting: F.BOOST_VOTING, boost_name: boostName, fuel_neutron_denom: F.FUEL_NEUTRON, fuel_terra_ibc: F.FUEL_TERRA_IBC, escrow },
+    sources: { neutron_lcd: neutronDown ? null : NL, neutron_lcd_probe: neutronProbe, boost_core: F.BOOST_CORE, boost_voting: F.BOOST_VOTING, boost_name: boostName, fuel_neutron_denom: F.FUEL_NEUTRON, fuel_terra_ibc: F.FUEL_TERRA_IBC, escrow },
     neutron: {
       native_supply: nativeSupply,
       boost_staked: stakersWalk.complete ? walkSums.staked : null, boost_unbonding: claimsFailed ? null : claimsSum, boost_stakers: stakersWalk.complete ? stakersWalk.stakers.length : null,

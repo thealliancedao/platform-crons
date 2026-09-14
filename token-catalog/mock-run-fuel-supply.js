@@ -39,6 +39,13 @@ function makeWorld(opts = {}) {
   const calls = { owners: {} };
   async function fetchJson(url) {
     const neutron = url.startsWith('https://neutron');
+    if (url.endsWith('/cosmos/base/tendermint/v1beta1/node_info')) {   // 2026-09-14: REST-base probe
+      const base = url.slice(0, -'/cosmos/base/tendermint/v1beta1/node_info'.length); calls.probes = (calls.probes || []).concat(base);
+      if ((opts.deadBases || []).includes(base)) throw new Error('HTTP 404 404: Not Found');
+      if ((opts.wrongChain || []).includes(base)) return { default_node_info: { network: 'osmosis-1' } };
+      if (base === 'https://neutron.mock' || (opts.liveBases || []).includes(base)) return { default_node_info: { network: 'neutron-1' } };
+      throw new Error('HTTP 404 404: Not Found');
+    }
     if (url.includes('/smart/')) {
       const addr = /contract\/([^/]+)\/smart\/(.+)$/.exec(url); const q = JSON.parse(Buffer.from(decodeURIComponent(addr[2]), 'base64').toString()); const k = Object.keys(q)[0];
       if (addr[1] === F.BOOST_CORE && k === 'config') return { data: { name: 'Boost DAO' } };
@@ -60,7 +67,7 @@ function makeWorld(opts = {}) {
     if (url.includes('/channels/channel-25/ports/transfer/escrow_address')) { if (opts.noEscrow) throw new Error('HTTP 501'); return { escrow_address: ESCROW }; }
     throw new Error('mock unhandled ' + url);
   }
-  return { fetchJson, terraLcdBase: 'https://terra.mock', neutronLcdBase: 'https://neutron.mock', catalogPools: [{ name: 'LUNA-FUEL', dex: 'Astroport', architecture: { pair_address: TERRA_PAIR }, underlyings: [F.FUEL_TERRA_IBC, 'uluna'] }], calls };
+  return { fetchJson, calls, terraLcdBase: 'https://terra.mock', neutronLcdBase: opts.neutronLcdBase !== undefined ? opts.neutronLcdBase : 'https://neutron.mock', catalogPools: [{ name: 'LUNA-FUEL', dex: 'Astroport', architecture: { pair_address: TERRA_PAIR }, underlyings: [F.FUEL_TERRA_IBC, 'uluna'] }], calls };
 }
 module.exports = { makeWorld, STK, W, TERRA_PAIR, ESCROW, NATIVE, TREAS, POWER, TERRA_SUPPLY, neutronLiquid, terraLiquid };
 if (require.main !== module) return;
@@ -102,6 +109,24 @@ if (require.main !== module) return;
   console.log('\n=== index ===');
   const i1 = M.upsertIndex(null, doc); const i2 = M.upsertIndex(i1, { ...doc, capturedAt: '2026-08-25T01:00:00.000Z' });
   check('E1 index rows append per date, refuse failed read', i2.row_count === 2 && near(i2.rows[0].boost_staked, POWER) && (() => { try { M.upsertIndex(undefined, doc); return false; } catch (e) { return /never-shrink/.test(e.message); } })());
+
+  console.log('— F (2026-09-14): Neutron REST base selection — the publicnode 404 of 2026-08-27 —');
+  // F1: env base dead (404 on node_info), registry list has one live base further down → it is selected, recorded, status ok
+  { const w = makeWorld({ neutronLcdBase: 'https://neutron.mock', deadBases: ['https://neutron.mock'], liveBases: ['https://rest-vertexa.neutron-1.neutron.org'] });
+    const { doc } = await M.captureFuelSupply(w);
+    const pr = doc.sources.neutron_lcd_probe;
+    check('F1 dead env base skipped, first live registry base selected and recorded', doc.sources.neutron_lcd === 'https://rest-vertexa.neutron-1.neutron.org' && pr.live === true && pr.selected === doc.sources.neutron_lcd, pr);
+    check('F1 probe order: env base first, then the registry list in order; every skipped base carries its reason', pr.tried[0].base === 'https://neutron.mock' && pr.tried[0].ok === false && /404/.test(pr.tried[0].reason) && pr.tried[pr.tried.length - 1].ok === true && pr.tried.length === 1 + M.FUEL_CONTRACTS.NEUTRON_LCD_FALLBACKS.indexOf('https://rest-vertexa.neutron-1.neutron.org') + 1, pr.tried.map(x => x.base.replace('https://', '') + ':' + (x.ok ? 'ok' : x.reason)));
+    check('F1 status ok — the FUEL map is complete again once any base answers', doc.status === 'ok' && doc.neutron.boost_staked != null, [doc.status, doc.neutron.boost_staked]); }
+  // F2: a base that answers for ANOTHER chain is skipped even though it returned 200
+  { const w = makeWorld({ neutronLcdBase: 'https://neutron.mock', wrongChain: ['https://neutron.mock'], liveBases: ['https://rest-lb.neutron.org'] });
+    const { doc } = await M.captureFuelSupply(w); const pr = doc.sources.neutron_lcd_probe;
+    check('F2 wrong-chain base (200 but network osmosis-1) skipped with the network named', pr.tried[0].ok === false && /osmosis-1/.test(pr.tried[0].reason) && doc.sources.neutron_lcd === 'https://rest-lb.neutron.org', pr.tried.slice(0, 2)); }
+  // F3: nothing alive → every Neutron column null, ONE named reason, status partial (never a phantom)
+  { const w = makeWorld({ neutronLcdBase: 'https://neutron.mock', deadBases: ['https://neutron.mock', ...M.FUEL_CONTRACTS.NEUTRON_LCD_FALLBACKS] });
+    const { doc } = await M.captureFuelSupply(w); const pr = doc.sources.neutron_lcd_probe;
+    check('F3 no live base: probe.live false, every candidate tried once', pr.live === false && pr.tried.length === 1 + M.FUEL_CONTRACTS.NEUTRON_LCD_FALLBACKS.length, pr.tried.length);
+    check('F3 no live base: neutron columns null, status not ok, reason names the probe', doc.status !== 'ok' && doc.neutron.boost_staked == null && doc.neutron.native_supply == null && (doc.query_errors || doc.errors || []).some(e => /neutron lcd: no live REST base/.test(e)), [doc.status, doc.neutron.boost_staked, (doc.query_errors || doc.errors || []).filter(e => /neutron lcd/.test(e))]); }
 
   console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
   process.exit(FAIL ? 1 : 0);
