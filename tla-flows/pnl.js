@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.1.0';   // 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.1.1';   // 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 class PnlFatal extends Error {}
 
@@ -176,8 +176,10 @@ function bigAdd(aStr, bStr) { return (BigInt(aStr) + BigInt(bStr)).toString(); }
 // Daily median across all observations; used only as a FALLBACK tier, labeled
 // in meta. WHALE-class tokens stay unpriced by standing doctrine.
 const IMPLIED_EXCLUDE = new Set(['WHALE', 'bWHALE', 'ampWHALE']);
-function buildImpliedPrices(monthEvents, tokenMap, prices, meta) {   // fold: pre-read event arrays, not paths
-    const obs = new Map(); // 'SYM|date' -> [prices]
+// 1.1.1: split into FOLD (per month, accumulates observations) + FINISH (medians). buildImpliedPrices() keeps its old
+// signature for gates that already hold the months — it is the same fold + finish, so old and new are identical.
+function buildImpliedPricesFold(obs, monthEvents, tokenMap, prices, meta) {
+    obs = obs instanceof Map ? obs : new Map(); // 'SYM|date' -> [prices]
     for (const events of monthEvents) {
         for (const e of events) {
             const date = (e.timestamp || '').slice(0, 10);
@@ -198,13 +200,19 @@ function buildImpliedPrices(monthEvents, tokenMap, prices, meta) {   // fold: pr
             }
         }
     }
+    return obs;
+}
+function finishImpliedPrices(obs, meta) {
     const implied = new Map(); // 'SYM|date' -> {usd, n}
-    for (const [k, arr] of obs) {
+    for (const [k, arr] of (obs instanceof Map ? obs : new Map())) {
         arr.sort((x, y) => x - y);
         implied.set(k, { usd: arr[Math.floor(arr.length / 2)], n: arr.length });
     }
-    meta.implied_price_points = implied.size;
+    if (meta) meta.implied_price_points = implied.size;
     return implied;
+}
+function buildImpliedPrices(monthEvents, tokenMap, prices, meta) {
+    return finishImpliedPrices(buildImpliedPricesFold(new Map(), monthEvents, tokenMap, prices, meta), meta);
 }
 
 function epochBucket(w, E) {
@@ -238,10 +246,17 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
     // deterministic month order (events/index.json months_present is the committed listing)
     const monthKeys = []; for (const [y, ms] of Object.entries(index.months_present || {}).sort()) for (const m of [...ms].sort()) monthKeys.push(`${y}/${m}`);
     if (monthKeys.length === 0) fail('no event month files found');
-    const monthEvents = [];
-    for (const ym of monthKeys) { const events = await src.readJson(`tla-flows/events/${ym}.json`); if (!Array.isArray(events)) fail(`tla-flows/events/${ym}.json is not an event array`); monthEvents.push(events); meta.months_read.push(ym); }
-
-    prices.implied = buildImpliedPrices(monthEvents, tokenMap, prices, meta);
+    // 1.1.1 (2026-09-15): NEVER hold every event month at once. 1.1.0 read all 26 months (273 MB of JSON) into an array
+    // — fine on the 7 GB GitHub runner the Action used, fatal on Render's ~256 MB heap: every org-tla-flows run since
+    // Mon 2026-09-14 03:30 UTC died at this step with "JavaScript heap out of memory" (the epoch-203 rollup never
+    // built, the run's heartbeat was lost whenever it died). The build makes two passes; each pass now READS a month,
+    // folds it, and drops it — the months are re-read for the second pass (network is cheap, memory is not). Output
+    // is byte-identical to 1.1.0 (gate: old-vs-new build minus builtAt).
+    const readMonth = async (ym) => { const events = await src.readJson(`tla-flows/events/${ym}.json`); if (!Array.isArray(events)) fail(`tla-flows/events/${ym}.json is not an event array`); return events; };
+    const eachMonth = async function* () { for (const ym of monthKeys) yield await readMonth(ym); };
+    // pass 1 — implied prices (fold per month)
+    { let obs = new Map(); for await (const events of eachMonth()) obs = buildImpliedPricesFold(obs, [events], tokenMap, prices, meta); prices.implied = finishImpliedPrices(obs, meta); }
+    meta.months_read = [...monthKeys];
 
     const resolveTok = (denom) => {
         const t = tokenMap.get(denom);
@@ -271,7 +286,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         return 0;
     };
 
-    for (const events of monthEvents) {
+    for await (const events of eachMonth()) {   // pass 2 — wallet ledger, one month resident at a time
         for (const e of events) {
             meta.events_read++;
             const type = e.type;

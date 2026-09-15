@@ -9,7 +9,10 @@
 //      ledger/index.json + rollup.json (the three that carry builtAt) and 0 wallet files; with one wallet drifted
 //      on main, exactly that wallet is rewritten too
 //   R4 fatal throws (PnlFatal), never exits
-// Usage: TLA_CORE_DIR=<checkout> OLD_SCRIPT=<path to build-pnl.js> node mock-run-pnl.js
+// Usage: TLA_CORE_DIR=<checkout> OLD_SCRIPT=<path to build-pnl.js> node --max-old-space-size=200 mock-run-pnl.js
+// 1.1.1 (2026-09-15): RUN WITH THE HEAP CAP — Render's instance has ~256 MB. 1.1.0 held every event month (273 MB) and
+// died there on every run from Mon 2026-09-14 03:30 (the epoch-203 rollup never built); 1.1.1 folds a month at a time
+// (peak ~90 MB on the same months) and its 769 output files are byte-identical to 1.1.0 minus builtAt/builder.
 const fs = require('fs'), path = require('path'), os = require('os'), crypto = require('crypto'), { spawnSync } = require('child_process');
 const SRC = process.env.TLA_CORE_DIR, OLD = process.env.OLD_SCRIPT; if (!SRC) { console.error('TLA_CORE_DIR required'); process.exit(1); }
 const P = require('./pnl.js'); let pass = 0, fail = 0; const check = (n, ok, x) => { if (ok) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n + (x != null ? ' — ' + JSON.stringify(x).slice(0, 300) : '')); } };
