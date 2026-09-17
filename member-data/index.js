@@ -34,7 +34,7 @@ const C = require('../config/contracts.js');
 const TLA_GAUGE_CONTROLLER = C.GAUGE_CONTROLLER.addr;
 const TLA_VOTING_ESCROW    = C.VOTING_ESCROW.addr;
 
-const VERSION = 'member-data-1.1.3';  // 1.1.3 (2026-09-13): dao-dashboard NFT strips read nft-collections/adao/ (aDAO migration) · 1.1.2 (2026-09-10): tla-snapshot — Credia receipt single (cw20 with no minter) resolved via token_info, named from the org catalog, staked/depth from the org credia snapshot (row was dropped: 67/68) · 1.1.1 (2026-09-10): tla-snapshot — dead votion read (retired personal repo, 404) removed; sources.votion key dropped · 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
+const VERSION = 'member-data-1.2.0';  // 1.2.0 (2026-09-17): tla-alerts FOLD — lib/tla-alerts.js replays the TLA alert rules (docs/curated/alert-thresholds.json) over the daily products and writes member-data/tla-alerts/current.json (fired rows 30d + per-rule fire rates at 0.5×/1×/2×); runs after the daily archive like the rollups, or TLA_ALERTS=1 · 1.1.3 (2026-09-13): dao-dashboard NFT strips read nft-collections/adao/ (aDAO migration) · 1.1.2 (2026-09-10): tla-snapshot — Credia receipt single (cw20 with no minter) resolved via token_info, named from the org catalog, staked/depth from the org credia snapshot (row was dropped: 67/68) · 1.1.1 (2026-09-10): tla-snapshot — dead votion read (retired personal repo, 404) removed; sources.votion key dropped · 1.1.0 (2026-07-14): SPEC-vp-definition-fix — VP = boost+fixed everywhere; canonical total = total_vamp.vp
 
 const BATCH_CONCURRENCY = 5;  // safe for publicnode LCD (matches proven crons)
 
@@ -291,6 +291,32 @@ async function orchestrate() {
   // 23:xx UTC — so they only have new input once a day. Run them after the
   // archive write (or when forced); each isolated from the other.
   const wroteDailyArchive = new Date().getUTCHours() === 23;
+
+  // tla-alerts FOLD (2026-09-17, SPEC-alert-center Phase 2): the TLA rules of the Alert Center. Thresholds live in
+  // docs/curated/alert-thresholds.json (the owner's one knob); this duty replays them over the daily products it owns
+  // (tla-snapshot daily) plus eris-apr and astroport daily, and writes member-data/tla-alerts/current.json — fired rows
+  // for the kept window AND how often each rule fires at 0.5×/1×/2× of its thresholds, so the site can show the effect
+  // of a change before it is made. Once a day after the archive (or TLA_ALERTS=1). Isolated; TLA_ALERTS=0 disables.
+  if (process.env.TLA_ALERTS !== '0' && (wroteDailyArchive || process.env.TLA_ALERTS === '1' || process.env.FORCE_ROLLUPS === '1')) {
+    try {
+      console.log('\n=== tla-alerts (folded module) ===');
+      const TA = require('./lib/tla-alerts.js'); const dd = require('./dao-dashboard.js');
+      const RAW = `https://raw.githubusercontent.com/${dd.GITHUB_REPO}/${dd.GITHUB_BRANCH}/`;
+      const fetchJson = async (u) => { const r = await fetch(u + '?t=' + Date.now(), { headers: { 'User-Agent': 'org-member-data' } }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
+      const cfg = await fetchJson(RAW + 'docs/curated/alert-thresholds.json');
+      const S = cfg.sensitivity || {}; const histDays = S.history_days || 90, lead = ((cfg.tla || {}).pool_volume_spike || {}).params ? (cfg.tla.pool_volume_spike.params.median_days || 28) : 28;
+      const days = (n) => { const out = []; for (let i = n; i >= 0; i--) out.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10)); return out; };
+      // read → adapt → drop: one day at a time, never the whole product tree in memory (Render heap)
+      const load = async (prefix, list, adapt) => { const out = []; for (const d of list) { try { out.push(adapt(await fetchJson(RAW + prefix + d + '.json'), d)); } catch (e) { /* a missing day is a gap, not a fill */ } } return out; };
+      const series = { snapshots: await load('member-data/tla-snapshot/daily/', days(histDays + 1), TA.snapshotOf), apr: await load('dex-data/eris-apr/daily/', days(histDays + 1), TA.aprOf), volume: await load('dex-data/astroport/snapshots/daily/', days(histDays + lead + 1), TA.volumeOf) };
+      const res = TA.evaluate(cfg, series, { now: Date.now() });
+      const configSha = require('crypto').createHash('sha256').update(JSON.stringify(cfg)).digest('hex').slice(0, 12);
+      const doc = { schemaVersion: 1, cron: 'member-data', module: 'tla-alerts', version: TA.VERSION, generated_at: new Date().toISOString(), config: { path: 'docs/curated/alert-thresholds.json', sha: configSha, updatedAt: cfg.updatedAt || null, tla: cfg.tla, nft: cfg.nft, sensitivity: cfg.sensitivity }, history: res.history, multipliers: res.multipliers, stats: res.stats, rows: res.rows };
+      await dd.pushToGithub('member-data/tla-alerts/current.json', JSON.stringify(doc, null, 1), `member-data: tla-alerts ${doc.generated_at.slice(0, 10)} (${res.rows.length} rows · config ${configSha})`);
+      console.log(`  tla-alerts: ${res.rows.length} rows in ${S.keep_rows_days || 30}d · rates/month @1×: ${Object.entries(res.stats).map(([k, v]) => k + '=' + v.per_month_at['1']).join(' ')}`);
+      console.log('=== tla-alerts done ===');
+    } catch (e) { console.error('tla-alerts failed (isolated):', e.message); }
+  }
   if (process.env.ROLLUPS === '0') return;
   if (!wroteDailyArchive && process.env.FORCE_ROLLUPS !== '1') {
     console.log('(rollups skipped — daily archive is written at 23:xx UTC; no new input)');
