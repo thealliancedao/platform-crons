@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.4.1';   // v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.4.3';   // v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -97,6 +97,8 @@ const AX = require('./lib/aux-classifiers.js');
 // failure disables aux for THIS run only (warned + heartbeat-noted) — core
 // flows capture is never blocked by the extension layer.
 let AUX = null;
+let DENOM_RESOLVE = null;   // 3.4.3: token-catalog denom → symbol (shared lib); null when the catalog read failed (records then carry denom_symbol:null + reason)
+const DS = require('../lib/denom-symbol.js');
 // 2026-09-12 aDAO migration: the NFT aux stream (aDAO transfers) is an aDAO product, so it can live in the aDAO
 // collection folder of nft-collections while everything else this cron writes stays in tla-core.
 //   NFT_AUX_REPO = repo the NFT aux stream is read from / written to (default: GITHUB_REPO — unchanged behaviour)
@@ -251,7 +253,7 @@ async function walkBlocks(from, to, budgetNote) {
           aux.votion.push(...AX.classifyVotionTx(txr, AUX.vaults));
           const pr = AX.classifyPairLiquidityTx(txr, AUX.pairs);
           aux.dex.push(...pr.records); aux.rawSamples.push(...pr.swapSamples);
-          aux.nft.push(...AX.classifyNftTx(txr, AUX.nfts, AUX.markets));
+          for (const rec of AX.classifyNftTx(txr, AUX.nfts, AUX.markets)) { if (rec.denom) DS.stampRecord(rec, rec.denom, DENOM_RESOLVE || ((d) => ({ symbol: DS.bare(d) === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' }))); aux.nft.push(rec); }   // 3.4.3
         }
       }
     }
@@ -556,6 +558,7 @@ async function run() {
 
   // 1b. aux watch-sets (registry-driven; failure disables aux this run only)
   AUX = await loadAuxRegistry();
+  try { const cat = await tryGetJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/token-catalog/snapshots/current.json?t=${Date.now()}`, 'token-catalog (denom symbols)'); if (cat) { DENOM_RESOLVE = DS.buildResolver(cat); console.log(`  token-catalog: ${DENOM_RESOLVE.size} denoms resolvable`); } } catch (e) { console.warn('  ⚠ token-catalog read failed — aux records carry denom_symbol:null:', e.message); }
   if (!AUX) console.warn('  ⚠ aux registry unavailable — extension streams skipped THIS run (core capture unaffected)');
 
   // 2. window (cursor = last block processed; schema-2, with schema-1 migration)
