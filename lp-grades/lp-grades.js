@@ -73,7 +73,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const VERSION = 'lp-grades-2.0.0';   // 2.0.0: five-lens v2 grade per pool (v2.js, SPEC-lp-grades-v2 §2) alongside v1
+const VERSION = 'lp-grades-2.1.0';   // 2.1.0 (2026-09-17): curated alerts — a pool inherits `alerts` from its underlyings' token-catalog `alert` stamp (kind asset, upstream) and from forum entries naming it; grades untouched · 2.0.0: five-lens v2 grade per pool (v2.js, SPEC-lp-grades-v2 §2) alongside v1
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
@@ -81,6 +81,33 @@ const LOCAL_DATA_DIR = process.env.LOCAL_DATA_DIR || '';   // gate mode when set
 const GATE_OUT_DIR = process.env.GATE_OUT_DIR || './gate-out';
 
 const CONFIG_PATH = 'docs/curated/grading_config.json';
+
+// 2.1.0 — stamp `alerts` on pool rows. Asset alerts come from the token-catalog token stamp (the upstream read);
+// forum alerts come from the registry's `affects.pool_names` (matched on the row's name, case-insensitive). A row
+// with nothing gets no field. Pure: exported for the gate.
+const ALERT_ASSET_ACTIVE = new Set(['migrating', 'winding_down', 'watch']);
+const ALERT_FORUM_ACTIVE = new Set(['discussion', 'voting', 'watch']);
+function applyAlerts(rows, tokenCatalog, alertsDoc) {
+  const stats = { asset_pools: 0, asset_tokens: [], forum_pools: 0, forum_unmatched: [], registry_read: !!alertsDoc };
+  const tokByDenom = {}; for (const t of (tokenCatalog && tokenCatalog.tokens) || []) if (t.denom && t.alert && ALERT_ASSET_ACTIVE.has(t.alert.status)) tokByDenom[t.denom] = t.alert;
+  const tcPools = {}; for (const p of (tokenCatalog && tokenCatalog.pools) || []) tcPools[p.gauge_pool_id] = p;
+  const bare = (d) => String(d || '').replace(/^(cw20|native):/, '');
+  const forum = ((alertsDoc && alertsDoc.alerts) || []).filter(a => a && a.kind === 'forum' && ALERT_FORUM_ACTIVE.has(a.status));
+  const forumHit = new Set();
+  const symSet = new Set();
+  for (const r of rows) {
+    delete r.alerts;
+    const list = [];
+    const tc = tcPools[r.gauge_pool_id];
+    const underl = (tc && Array.isArray(tc.underlyings) && tc.underlyings.length) ? tc.underlyings : [bare(r.gauge_pool_id)];
+    for (const d of underl) { const a = tokByDenom[bare(d)]; if (a) { list.push({ kind: 'asset', id: a.id, status: a.status, symbol: a.symbol, headline: a.headline, action: a.action, deadline: a.deadline, source_url: a.source_url, via: 'token-catalog underlying ' + bare(d).slice(0, 16) }); symSet.add(a.symbol); } }
+    for (const f of forum) { const names = ((f.affects && f.affects.pool_names) || []).map(n => String(n).toLowerCase()); if (names.includes(String(r.name).toLowerCase())) { list.push({ kind: 'forum', id: f.id, status: f.status, project: f.project || null, headline: f.headline, action: f.action || null, source_url: f.source_url || null, deadline: f.deadline || null }); forumHit.add(f.id + '|' + String(r.name).toLowerCase()); } }
+    if (list.length) { r.alerts = list; if (list.some(a => a.kind === 'asset')) stats.asset_pools++; if (list.some(a => a.kind === 'forum')) stats.forum_pools++; }
+  }
+  stats.asset_tokens = [...symSet];
+  for (const f of forum) for (const n of ((f.affects && f.affects.pool_names) || [])) if (!forumHit.has(f.id + '|' + String(n).toLowerCase())) stats.forum_unmatched.push(`${f.id}:${n}`);
+  return stats;
+}
 
 // -----------------------------------------------------------------------------
 // GitHub plumbing — Contents API for reads (repo-state reads must be current;
@@ -652,6 +679,14 @@ async function main() {
     console.log(`  v2: ${v2.meta.graded} graded · distribution ${JSON.stringify(v2.meta.distribution)} · Votion rate ${votionRate == null ? 'n/a' : '$' + votionRate.toFixed(2)}/1M VP · archive epochs ${archive.length}`);
   } catch (e) { console.warn('  ⚠ v2 grade failed (v1 unaffected):', e.message); }
 
+  // 2.1.0 — curated alerts. The registry (docs/curated/alerts.json) is read ONCE, upstream, by token-catalog, which
+  // stamps `alert` on the token; here a pool inherits it through its underlyings (nothing to keep in sync). Forum
+  // entries (kind forum) name pools; they attach as informational rows. Grades are not touched: the rubric stays honest
+  // about yield, the alert tells the Advisor and the pages "do not send new money here / read this".
+  let alertsDoc = null; try { alertsDoc = await readRepoJson('docs/curated/alerts.json', { required: false }); } catch (e) { console.warn('  ⚠ alerts.json read failed:', e.message); }
+  const alertStats = applyAlerts(rows, tokenCatalog, alertsDoc);
+  console.log(`  alerts: ${alertStats.asset_pools} pools carry an asset alert (${alertStats.asset_tokens.join(', ') || 'none'}) · ${alertStats.forum_pools} pools named by forum entries · ${alertStats.forum_unmatched.length ? 'unmatched forum pool names: ' + alertStats.forum_unmatched.join(', ') : 'all forum pool names matched'}`);
+
   const out = {
     schemaVersion: 1,
     cron: 'lp-grades',
@@ -674,7 +709,9 @@ async function main() {
       pd_bribes: !!pdBribes, net_prices_at: netPrices && netPrices.capturedAt || null,
     },
     medians: { liquidity_per_1m_vp_by_bucket: medianRatioByBucket, vp_by_bucket: medVpByBucket },
+    alerts: alertStats,   // 2.1.0
     counts: {
+      alerted: rows.filter(r => r.alerts && r.alerts.some(a => a.kind === 'asset')).length,   // 2.1.0
       pools: rows.length,
       graded: rows.filter(r => r.state === 'graded').length,
       new: rows.filter(r => r.state === 'new').length,
@@ -712,4 +749,5 @@ async function main() {
   console.log(`${VERSION} done in ${((Date.now() - out.capturedAtUnix) / 1000).toFixed(1)}s`);
 }
 
-main().catch(e => { console.error(`${VERSION} FATAL:`, e.message); process.exit(1); });
+if (require.main === module) main().catch(e => { console.error(`${VERSION} FATAL:`, e.message); process.exit(1); });
+module.exports = { applyAlerts, VERSION };   // 2.1.0 — the gate exercises applyAlerts on the committed product
