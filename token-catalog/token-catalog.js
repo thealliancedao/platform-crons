@@ -522,6 +522,44 @@ async function applyOverrideLayer(tokens) {
   return stats;
 }
 
+// -----------------------------------------------------------------------------
+// STAGE 2c — CURATED ALERT STAMP (Rev 1.8.0, 2026-09-17)
+// Reads docs/curated/alerts.json (the ONE upstream list) and stamps `alert` on
+// every token whose denom appears in an ACTIVE kind:asset entry — so every
+// downstream product that reads the catalog (lp-grades via pool underlyings,
+// dex-data, pages) inherits the wind-down from the identity layer instead of
+// each keeping its own list. `discovered` / `effective` untouched; a retired
+// entry stamps nothing. Read failure is loud, non-fatal, and recorded.
+const ALERT_ACTIVE = new Set(['migrating', 'winding_down', 'watch']);
+function stampAssetAlerts(tokens, doc) {
+  const stats = { entries: 0, active: 0, stamped: 0, unmatched: [] };
+  for (const t of tokens) if (t.alert) delete t.alert;
+  const entries = (doc && Array.isArray(doc.alerts)) ? doc.alerts.filter(a => a && a.kind === 'asset' && a.denom) : [];
+  stats.entries = entries.length;
+  for (const a of entries) {
+    if (!ALERT_ACTIVE.has(a.status)) continue;
+    stats.active++;
+    const t = tokens.find(x => x.denom === a.denom);
+    if (!t) { stats.unmatched.push(a.id); continue; }
+    t.alert = { id: a.id, status: a.status, symbol: a.symbol || null, headline: a.headline || null, action: a.action || null,
+      deadline: a.deadline || null, dates: a.dates || null, replacement: a.replacement || null, source_url: a.source_url || null,
+      source: 'docs/curated/alerts.json' };
+    if (!Array.isArray(t.identity_flags)) t.identity_flags = [];
+    t.identity_flags.push('alert_' + a.status);
+    stats.stamped++;
+  }
+  return stats;
+}
+async function applyAlertLayer(tokens) {
+  let doc = null, readOk = false;
+  try {
+    doc = await fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/docs/curated/alerts.json?t=${Date.now()}`, 'curated-alerts');
+    readOk = true;
+  } catch (e) { console.log(`   alerts.json read failed: ${e.message}`); }
+  const stats = stampAssetAlerts(tokens, doc);
+  return { readOk, ...stats };
+}
+
 // STAGE 2.1 — VERIFICATION + IDENTITY SCORE
 //
 // Verifies each token's DISCOVERED coingecko_id against CoinGecko's own terra-2
@@ -1056,6 +1094,10 @@ async function run() {
   const ovStats = await applyOverrideLayer(tokens);
   console.log(`   overrides: ${ovStats.applied} applied (${ovStats.newlyNamed} previously unnamed now identified)${ovStats.readOk ? '' : ' — CURATED FILE READ FAILED, snapshot ships without merge'}`);
 
+  console.log('🚨 Stage 2c: stamping curated alerts (alerts.json)...');
+  const alStats = await applyAlertLayer(tokens);
+  console.log(`   alerts: ${alStats.active} active asset entries → ${alStats.stamped} tokens stamped${alStats.unmatched.length ? ' · unmatched: ' + alStats.unmatched.join(',') : ''}${alStats.readOk ? '' : ' — CURATED FILE READ FAILED, snapshot ships without alerts'}`);
+
   console.log('🔐 Stage 2.1: verifying coingecko ids + scoring identity...');
   const weights = { price: 0.75, identity: 0.25 };  // default; editable via curated/scoring_weights.json (read by tools)
   const cgIndex = await fetchCgIndex();
@@ -1090,6 +1132,7 @@ async function run() {
       source: 'token-catalog cron (platform-crons/token-catalog)',
       note: 'four-source snapshot-coherent pricing (TLA, CoinGecko, Astroport, SkeletonSwap pair-implied) + LST redemption cross-check + composite grade. SkeletonSwap prices are anchor-derived from constant-product pools (stableswap skipped). Overrides merge on read.',
     },
+    alerts: { entries_active: alStats.active, tokens_stamped: alStats.stamped, unmatched: alStats.unmatched, read_ok: alStats.readOk, source: 'docs/curated/alerts.json' },   // Rev 1.8.0
     counts: {
       pools_total: pools.length,
       pools_active: active.pools.length,
@@ -1244,4 +1287,4 @@ async function run() {
 
 // 2026-09-14: guarded so the mock gate can require() the live functions (no third copy).
 if (require.main === module) run().catch(e => { console.error('FATAL', e); process.exit(1); });
-module.exports = { run, appendToPriceHistory, publishPriceHistoryHeartbeat, _test: { setPublishFile: (fn) => { publishFile = fn; } } };
+module.exports = { run, appendToPriceHistory, publishPriceHistoryHeartbeat, stampAssetAlerts, _test: { setPublishFile: (fn) => { publishFile = fn; } } };
