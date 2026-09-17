@@ -1,5 +1,9 @@
 // =============================================================================
-// NFT Inventory Cron — Rev C.5
+// NFT Inventory Cron — Rev C.6
+// Rev C.6 (2026-09-17) — Chain-only BBL auctions ARE listings (the #745 lesson): structurally live
+//   (is_settled false · no bidder · end_time 0) auctions absent from warlock are INCLUDED, labeled
+//   source:'chain_only' / warlock_visible:false; every BBL listing now carries source + warlock_visible;
+//   the floor counts them; summary.marketplaces.<venue>.chain_only_count; warning kept (included:true).
 // Rev C.5 (2026-09-12) — NFT_ROOT / DATA_REPO: every aDAO path resolves from NFT_ROOT (default nfts/adao);
 //   TLA-side reads (token-catalog, network-and-prices) pinned to DATA_REPO (tla-core). No-op until the env flips.
 //
@@ -830,6 +834,16 @@ async function fetchWarlockLiveBblAuctions() {
     }
 }
 
+// Structurally live = the contract will sell it right now: not settled, nobody has bid,
+// no timed end (end_time 0/null). A timed auction or one with a bidder is a different
+// state (running or ended-awaiting-settle) and is not a buy-now listing.
+function isStructurallyLiveAuction(a) {
+    if (!a || a.is_settled === true) return false;
+    if (a.bidder) return false;
+    const et = a.end_time == null ? 0 : Number(a.end_time);
+    return et === 0;
+}
+
 async function fetchMarketplaces() {
     console.log('🏪 Phase 4: fetching marketplace listings (BBL + Atrium + Boost)...');
     const t0 = Date.now();
@@ -843,12 +857,26 @@ async function fetchMarketplaces() {
     const listingWarnings = [];
     let bbl = bblChain;
     if (warlock.ok && warlock.ids.size > 0) {
-        // Exclude chain-only auctions (on-chain but not served by BBL's own API/UI).
+        // Rev C.6 (2026-09-17, the #745 lesson): a chain-only auction that is STRUCTURALLY LIVE
+        // (is_settled false, no bidder, end_time 0) IS a listing — the contract sells it to anyone
+        // who executes place_bid at the reserve, whether or not BBL's UI shows it. #745 sat at
+        // 200 bLUNA since Oct 2024, hidden by warlock, and sold from the contract for $16.76 while
+        // this pipeline (excluding it as a phantom) published an $80 floor. Owner's ruling: the
+        // contract is the oracle, not the venue's UI. Such auctions are INCLUDED, labeled
+        // source:'chain_only' / warlock_visible:false, the floor counts them, and the warning
+        // stays so the set is always visible. A chain-only auction that is NOT structurally
+        // live (a bidder or a timed end) stays out — a different case, warned under its own reason.
         bbl = [];
         for (const l of bblChain) {
-            if (warlock.ids.has(String(l.internal_id))) { bbl.push(l); continue; }
-            listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_on_warlock', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller });
-            console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) is on-chain but NOT on warlock — excluded from listings (phantom/cancelled-unclaimed)`);
+            if (warlock.ids.has(String(l.internal_id))) { bbl.push({ ...l, source: 'chain', warlock_visible: true }); continue; }
+            if (isStructurallyLiveAuction(l.raw)) {
+                listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_on_warlock', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, included: true });
+                console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) is on-chain but NOT on warlock — INCLUDED as a chain-only listing (buyable from the contract; not on BBL's UI)`);
+                bbl.push({ ...l, source: 'chain_only', warlock_visible: false });
+                continue;
+            }
+            listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_structurally_live', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, bidder: l.bidder || null, end_time: l.end_time ?? null });
+            console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) is on-chain, not on warlock, and not structurally live (bidder/timed) — excluded`);
         }
         // Inverse gap — live warlock listings the chain sweep didn't return. Verified live
         // 2026-06-11: the contract's `auction_by_contract` cursor skips entries (holes in
@@ -875,17 +903,21 @@ async function fetchMarketplaces() {
                     bidder: null,
                     end_time: info.end_time,
                     source: 'warlock_recovered',
+                    warlock_visible: true,
                     raw: info.raw,
                 });
             }
         }
     } else if (bblChain.length > 0) {
-        listingWarnings.push({ scope: 'bbl', reason: 'warlock_unavailable_chain_set_unfiltered', chain_count: bblChain.length });
-        console.warn(`  ⚠ warlock unavailable — BBL listings (${bblChain.length}) published unfiltered (no liveness cross-check this run)`);
+        // No oracle this run: publish the structurally live chain set, visibility unknown (null, not false).
+        bbl = bblChain.filter(l => isStructurallyLiveAuction(l.raw)).map(l => ({ ...l, source: 'chain', warlock_visible: null }));
+        listingWarnings.push({ scope: 'bbl', reason: 'warlock_unavailable_chain_set_unfiltered', chain_count: bblChain.length, published: bbl.length });
+        console.warn(`  ⚠ warlock unavailable — BBL listings (${bbl.length} of ${bblChain.length} chain rows structurally live) published with warlock_visible:null (no liveness cross-check this run)`);
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`  ✓ BBL ${bbl.length} (chain ${bblChain.length}, warlock ${warlock.ids.size}), Atrium ${atrium.length}, Boost ${boost.length} listings in ${elapsed}s`);
+    const chainOnly = bbl.filter(l => l.source === 'chain_only').length;
+    console.log(`  ✓ BBL ${bbl.length} (chain ${bblChain.length}, warlock ${warlock.ids.size}, chain-only ${chainOnly}), Atrium ${atrium.length}, Boost ${boost.length} listings in ${elapsed}s`);
     return { bbl, atrium, boost, listingWarnings };
 }
 
@@ -1451,6 +1483,9 @@ function aggregate(records, daodaoStakers, enterpriseStakers, marketplaces, back
         marketplaceStats[mkName] = {
             count: listings.length,
             count_resolved: decoratedListings.length,
+            // Rev C.6: how many of these are chain-only (buyable from the contract, absent from the venue's UI).
+            // The floor (by_token.min) INCLUDES them — the count makes that visible.
+            chain_only_count: decoratedListings.filter(l => l.source === 'chain_only').length,
             by_token: byToken,
         };
     }
@@ -2467,7 +2502,7 @@ async function captureSnapshot() {
             staker_resolution_errors: stakerErrors.length,
             staker_resolution_warnings: stakerWarnings.length,
             listing_resolver_warnings: (marketplaces.listingWarnings || []).length,
-            rev: 'C.4',
+            rev: 'C.6',
             enterprise_unattributed: summary.enterprise_unattributed_count,
             daodao_pending_reconciled: pending.block.reconciled,
         },
@@ -2685,6 +2720,7 @@ module.exports = {
     fetchAllNftInfo,
     fetchEnterpriseStakers,
     fetchMarketplaces,
+    isStructurallyLiveAuction, mergeMarketplaceListings, decorateListing, buildFloorHistoryRow, tierOf,   // C.6 gate
     fetchDaodaoStakers,
     fetchBackingData,
     fetchPriceData,

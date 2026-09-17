@@ -39,7 +39,7 @@ const NFT_PATH = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const SITE_RAW = 'https://raw.githubusercontent.com/thealliancedao/aDAO-links-site/main';
 const RARITY_URL = process.env.RARITY_URL ||
   'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/adao/rarity/adao-rarity-intended.json';
-const VERSION = 'nft-compact-bundle-1.1.0';   // 1.1.0 (2026-09-12): NFT_ROOT env
+const VERSION = 'nft-compact-bundle-1.2.0';   // 1.2.0 (2026-09-17): listing_chain_only bit · 1.1.0 (2026-09-12): NFT_ROOT env
 
 // One bit per classification flag; the page ANDs against these names, so adding
 // a bit is additive and renaming one is a breaking change — don't.
@@ -49,6 +49,10 @@ const FLAG_BITS = {
   daodao_pending_claim: 256, daodao_custody_unattributed: 512,
   user_held: 1024, enterprise_dao_broken: 2048, dao_wallet_8ywv_held: 4096,
 };
+// Derived (not a record flag): the listing is chain-only — buyable from the BBL contract, absent
+// from BBL's UI (Rev C.6, the #745 lesson). Lets the explorer badge it on the bundle boot, before
+// nfts.json hydration brings the full listing object. Shipped under flagBits like the others.
+const LISTING_CHAIN_ONLY_BIT = 8192;
 
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
@@ -132,6 +136,7 @@ function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
     const attrs = {}; for (const a of (meta && meta.attributes || [])) attrs[a.trait_type] = a.value;
     let flags = 0;
     for (const [k, bit] of Object.entries(FLAG_BITS)) if (r[k]) { flags |= bit; counts[k] = (counts[k] || 0) + 1; }
+    if (r.listing && r.listing.source === 'chain_only') { flags |= LISTING_CHAIN_ONLY_BIT; counts.listing_chain_only = (counts.listing_chain_only || 0) + 1; }
     const rI = ri(id), rB = rb(id);
     const listPx = r.listing && r.listing.price_usd != null ? Math.round(r.listing.price_usd * 100) / 100 : null;
     rows.push([
@@ -163,7 +168,7 @@ function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
     schemaVersion: 1, builtAt: new Date().toISOString(), builtBy: VERSION,
     note: 'first-paint bundle — derived view of nfts.json + metadata + rarity; rebuilt whole each warm/full; owners & listing detail hydrate from the full products',
     fields: ['id', 'planet', 'inhabitant', 'object', 'weather', 'light', 'rarity', 'intended_rank', 'intended_pct', 'bbl_rank', 'flags', 'listing_usd'],
-    flagBits: FLAG_BITS,
+    flagBits: { ...FLAG_BITS, listing_chain_only: LISTING_CHAIN_ONLY_BIT },
     dict, rows,
     source: { nfts_captured_at: nftsDoc.capturedAt || null, records: records.length },
   };
@@ -185,5 +190,5 @@ async function main() {
   console.log('  done');
 }
 
-module.exports = { main, buildBundle, FLAG_BITS, PATHS: { GITHUB_REPO, NFT_ROOT, NFT_PATH, RAW } };
+module.exports = { main, buildBundle, FLAG_BITS, LISTING_CHAIN_ONLY_BIT, PATHS: { GITHUB_REPO, NFT_ROOT, NFT_PATH, RAW } };
 if (require.main === module) main().catch(e => { console.error('compact-bundle failed:', e.message); process.exit(1); });

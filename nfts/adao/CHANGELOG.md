@@ -1,5 +1,22 @@
 # nfts/adao — changelog
 
+## C.6 — 2026-09-17 — chain-only BBL auctions ARE listings (the #745 lesson) · compact-bundle 1.2.0
+
+- `fetchMarketplaces`: a chain auction absent from warlock that is STRUCTURALLY LIVE (`isStructurallyLiveAuction`:
+  is_settled false · no bidder · end_time 0/null) is INCLUDED, `source:'chain_only'` / `warlock_visible:false`; visible
+  ones `source:'chain'` (or `warlock_recovered`) / `warlock_visible:true`; warlock down → the structurally live chain set
+  with `warlock_visible:null` (unknown, not false). The `chain_only_not_on_warlock` warning stays (`included:true`); a
+  chain-only auction with a bidder/timed end is excluded under `chain_only_not_structurally_live`.
+- `aggregate`: `marketplaces.<venue>.chain_only_count`; the floor (`by_token.min`) and floor-history tier floors count
+  chain-only asks like any other. Heartbeat `rev` C.4 → C.6 (was stale).
+- compact-bundle 1.2.0: derived bit `listing_chain_only` (8192) under `flagBits`; FLAG_BITS untouched.
+- Exports for the gate: `isStructurallyLiveAuction`, `mergeMarketplaceListings`, `decorateListing`,
+  `buildFloorHistoryRow`, `tierOf`.
+- Gate `mock-run-chain-only.js` (NFTC_DIR + SITE_DIR + TLA_CORE_DIR, `--max-old-space-size=200`): 22/22, rss 135 MB —
+  live functions, real fixture, fetch stubbed, ONE auction staged in the #745 shape + one with a bidder + one settled.
+  Regression: mock-run-compact-bundle PASS, mock-run-market-history PASS, gate-nft-root 47/47 (differential vs main).
+  mock-run-custody W fails on live main too with today's fixture (stranded 9 vs 5) — pre-existing.
+
 ## NFT_ROOT / DATA_REPO — 2026-09-12 — aDAO migration step 1 (no-op until the env flips)
 
 - ALL FIVE modules resolve their aDAO paths from `NFT_ROOT` (default `nfts/adao`) instead of literal
