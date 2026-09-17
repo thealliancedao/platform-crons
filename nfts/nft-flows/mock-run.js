@@ -16,7 +16,10 @@ const gh = []; const ghs = http.createServer((req, res) => { let b = ''; req.on(
   if (req.method === 'GET') { if (!files[p]) { res.statusCode = 404; return res.end('{}'); } if ((req.headers.accept || '').includes('raw')) return res.end(files[p]); return res.end(JSON.stringify({ sha: 'sha-' + p, size: files[p].length })); }
   const body = JSON.parse(b); files[p] = Buffer.from(body.content, 'base64'); res.end('{}'); }); });
 const LUNA_HITS = []; const LUNA_DAILY = { '2026-09-13': 0.05 };   // 1.1.3: mutable — a day "arrives" mid-gate   // 1.1.2: the exact path the cron asks for — the 404 of 2026-09-13 was a right suffix on the wrong repo
-const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req.url); if (u.pathname.endsWith('luna-usd-daily.json')) { LUNA_HITS.push(u.pathname); return res.end(JSON.stringify({ daily: LUNA_DAILY })); } if (u.pathname === '/status') return res.end(JSON.stringify({ result: { sync_info: { latest_block_height: String(HEAD) } } })); const h = Number(u.searchParams.get('height')); if (u.pathname === '/block') return res.end(JSON.stringify({ result: { block: { header: { time: '2026-09-13T01:00:00Z' }, data: { txs: (blocks[h] || {}).txs || [] } } } })); if (u.pathname === '/block_results') return res.end(JSON.stringify({ result: { txs_results: results[h] || [] } })); res.end('{}'); });
+// 1.2.0: the fake tla-core serves a token-catalog (LUNA is native; bLUNA + USDC by their real denoms) and a bluna-usd-daily series
+const CATALOG = { tokens: [{ denom: 'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml', effective: { symbol: 'bLUNA', decimals: 6 } }, { denom: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB', effective: { symbol: 'USDC', decimals: 6 } }, { denom: 'terra1bluna', discovered: { symbol: 'TESTLST', decimals: 6 } }] };
+const BLUNA_DAILY = { '2026-09-12': 0.08 };
+const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req.url); if (u.pathname.endsWith('token-catalog/snapshots/current.json')) return res.end(JSON.stringify(CATALOG)); if (u.pathname.endsWith('bluna-usd-daily.json')) return res.end(JSON.stringify({ daily: BLUNA_DAILY })); if (u.pathname.endsWith('luna-usd-daily.json')) { LUNA_HITS.push(u.pathname); return res.end(JSON.stringify({ daily: LUNA_DAILY })); } if (u.pathname === '/status') return res.end(JSON.stringify({ result: { sync_info: { latest_block_height: String(HEAD) } } })); const h = Number(u.searchParams.get('height')); if (u.pathname === '/block') return res.end(JSON.stringify({ result: { block: { header: { time: '2026-09-13T01:00:00Z' }, data: { txs: (blocks[h] || {}).txs || [] } } } })); if (u.pathname === '/block_results') return res.end(JSON.stringify({ result: { txs_results: results[h] || [] } })); res.end('{}'); });
 (async () => {
   await new Promise(r => ghs.listen(0, r)); await new Promise(r => rpc.listen(0, r));
   const env = Object.assign({}, process.env, { GITHUB_TOKEN: 'x', COLLECTION: 'pixel-lions', TLA_CORE_RAW: 'http://127.0.0.1:' + rpc.address().port + '/', NFTC_RAW: 'http://127.0.0.1:' + rpc.address().port + '/nftc/', GITHUB_API: 'http://127.0.0.1:' + ghs.address().port, RPC_PRIMARY: 'http://127.0.0.1:' + rpc.address().port, RPC_FALLBACK: 'http://127.0.0.1:' + rpc.address().port, PACE_MS: '1', HEAD_LAG: '0' });
@@ -40,7 +43,7 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
   const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
   ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
-  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.1.4' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.1.4 ok');
+  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.2.0' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.2.0 ok');
   // 1.1.4 — BBL buy-now = place_bid + settle + settle_hook in ONE tx (the exact event sequence of aDAO #745 on
   // 2026-09-12, tx C50E1FF…): the classifier read only the venue's FIRST event (place_bid), never saw the settle, and
   // filed every buy-now since 2023 as "venue release without a known verb". 317 sales missing across aDAO/PL.
@@ -78,9 +81,24 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
     ok(s12 && s12.usd === null && s12.usd_reason === 'luna_usd_daily_missing:2026-09-12' && !('usd_repriced_at' in s12), '1.1.3 09-12 sale untouched — its day is still missing (blank beats phantom)', s12);
     ok(gh.filter(x => x === 'PUT pixel-lions/ledger/2026/09.json').length === 1 && !gh.some(x => x.startsWith('PUT pixel-lions/raw/')), '1.1.3 exactly one month-file write, nothing else');
     ok(J('pixel-lions/nft-flows/heartbeat.json').repriced === 1, '1.1.3 heartbeat carries repriced: 1');
+    // 1.2.0 — symbols from the catalog on every priced record, USD per symbol, generic reprice
+    ok(led5.filter(r => r.price).every(r => 'denom_symbol' in r), '1.2.0 every priced record carries denom_symbol (stamped on the ones that predate the field)');
+    ok(s11.denom_symbol === 'LUNA' && s11.denom_decimals === 6 && s11.usd_basis === 'luna-usd-daily:2026-09-11', '1.2.0 the LUNA sale says LUNA · usd_basis names the series and day');
+    const dep = led5.find(r => r.kind === 'venue_deposit' && r.price && /terra1bluna$/.test(r.price.denom));
+    console.log('    (deposit record: ' + JSON.stringify(dep && { denom: dep.price.denom, sym: dep.denom_symbol, reason: dep.denom_symbol_reason, usd: dep.usd, usd_reason: dep.usd_reason }) + ')');
+    ok(dep && dep.denom_symbol === 'TESTLST' && dep.usd == null && /^no_usd_series_for_denom:/.test(dep.usd_reason), '1.2.0 a catalog-known token with no USD series: symbol stamped, usd null with the reason (never a guess)');
+    { const led6 = J('pixel-lions/ledger/2026/09.json');
+      led6.push({ kind: 'sale', collection: 'pixel-lions', token_id: '902', height: 992, msg_index: 0, txhash: 'SALEBL', ts: '2026-09-12T10:00:00Z', price: { amount: '200000000', denom: 'cw20:terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml' }, usd: null, usd_reason: 'no_usd_series_for_denom:cw20:terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml', source: 'forward:org-nft-flows', repair: 'buy-now-settle-1.1.4' });
+      led6.push({ kind: 'sale', collection: 'pixel-lions', token_id: '903', height: 993, msg_index: 0, txhash: 'SALEUS', ts: '2026-09-12T11:00:00Z', price: { amount: '15000000', denom: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB' }, usd: 15, source: 'forward:org-nft-flows' });
+      put('pixel-lions/ledger/2026/09.json', led6); gh.length = 0;
+      const r5 = await run(); const led7 = J('pixel-lions/ledger/2026/09.json'); const bl = led7.find(r => r.txhash === 'SALEBL'), us = led7.find(r => r.txhash === 'SALEUS');
+      ok(r5.status === 0 && bl && bl.denom_symbol === 'bLUNA' && Math.abs(bl.usd - 200 * 0.08) < 1e-9 && bl.usd_basis === 'bluna-usd-daily:2026-09-12' && bl.usd_repriced_at && !bl.usd_reason && bl.repair === 'buy-now-settle-1.1.4', '1.2.0 a bLUNA buy-now sale written when bLUNA had no series (the 1.1.4 repair rows) is USD-priced by the reprice pass from bluna-usd-daily, labeled, everything else untouched', bl);
+      ok(us && us.denom_symbol === 'USDC' && us.usd === 15 && !us.usd_repriced_at, '1.2.0 a stable-priced record gets its symbol stamped and its USD is left exactly as written');
+      ok(J('pixel-lions/nft-flows/heartbeat.json').symbol_stamped >= 1, '1.2.0 heartbeat reports symbol_stamped');
+      ok(led7.length === led6.length, '1.2.0 never-shrink through the stamp + reprice'); }
     gh.length = 0; const r5 = await run(); ok(r5.status === 0 && !gh.some(x => x.startsWith('PUT pixel-lions/ledger/2026/')), '1.1.3 fifth run: nothing left to re-price, month file NOT rewritten', gh.filter(x => x.startsWith('PUT')));
     ok(J('pixel-lions/nft-flows/heartbeat.json').repriced === 0, '1.1.3 heartbeat repriced: 0 on a no-op pass'); }
-  ok(LUNA_HITS.length >= 1 && LUNA_HITS.every(p => p === '/nftc/adao/snapshots/luna-usd-daily.json'), '1.1.2: luna-usd-daily read from nft-collections/adao/snapshots (never tla-core/nfts/adao) — ' + JSON.stringify([...new Set(LUNA_HITS)]));
+  ok(LUNA_HITS.length >= 1 && LUNA_HITS.every(p => /^\/nftc\/adao\/snapshots\/[a-z]+-usd-daily\.json$/.test(p)), '1.1.2/1.2.0: every usd-daily series read from nft-collections/adao/snapshots (never tla-core/nfts/adao) — ' + JSON.stringify([...new Set(LUNA_HITS)]));
   ok(!J('pixel-lions/nft-flows/heartbeat.json').errors.some(e => /luna-usd-daily/.test(e)), '1.1.2: no luna-usd-daily error in the heartbeat');
   ghs.close(); rpc.close(); console.log(`\n${pass}/${pass + fail} passed`); process.exit(fail ? 1 : 0);
 })();

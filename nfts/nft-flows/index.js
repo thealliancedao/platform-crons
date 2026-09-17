@@ -1,5 +1,10 @@
 'use strict';
-// org-nft-flows 1.1.4 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.2.0 — FORWARD CAPTURE for ONE collection
+// 1.2.0 (2026-09-17): every priced record carries denom_symbol / denom_decimals from THE shared resolver (lib/denom-symbol.js:
+//   token-catalog effective layer — no hand map, collection- and venue-agnostic). USD is per SYMBOL: a daily series per priced
+//   symbol (LUNA, bLUNA today; any <symbol>-usd-daily.json is picked up), stables 1:1 by catalog symbol, `usd_basis` labels the
+//   rule. The reprice pass now also stamps symbols on records that predate the field and fills USD on records written when their
+//   denom had no series (the 290 bLUNA buy-now sales of 1.1.4) — labeled usd_repriced_at, never a second formula.
 // 1.1.4 (2026-09-14): lib/classify.js reads EVERY venue event in a msg — BBL buy-now (place_bid + settle in one tx) is
 //   now a SALE; the first-event-only read had filed every buy-now since 2023 as a verb-less venue release (317 sales).
 // 1.1.3 (2026-09-14): same-day sales were never USD-priced — luna-usd-daily runs 1–2 days behind the chain and a record
@@ -33,6 +38,7 @@
 //            never-shrink; a failed read never advances the cursor; USD null + reason when no series covers the denom.
 const https = require('https'), zlib = require('zlib'), crypto = require('crypto');
 const { classifyNftTx, buildIndex, recordKey } = require('./lib/classify.js');
+const DS = require('../../lib/denom-symbol.js');   // 1.2.0: THE denom → symbol resolver (token-catalog effective layer), shared by every cron
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/nft-collections';
@@ -111,37 +117,55 @@ const writeGz   = (p, obj, msg, sha) => writeFile(p, zlib.gzipSync(Buffer.from(J
 
 // ---------------------------------------------------------------- USD at the day (same rule as derive.js)
 let LUNA = null;
-const USDC_IBC = /^ibc\/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB$/;
+// 1.2.0 — USD is per SYMBOL, not per denom string: a daily series per priced symbol (LUNA, bLUNA today — any
+// `<symbol>-usd-daily.json` under adao/snapshots/ is picked up), stables 1:1 by catalog symbol. New collections and
+// venues inherit this: a bLUNA sale on Pixel Lions prices exactly like one on aDAO. `usd_basis` labels the rule.
+let RESOLVE = null;                 // denom → { symbol, decimals } from the token-catalog (null until loaded)
+let STAMPED = 0;                    // records that received denom_symbol in the reprice pass (heartbeat)
+const SERIES = {};                  // symbol → { day → usd }
+const SERIES_FILES = { LUNA: 'luna-usd-daily.json', bLUNA: 'bluna-usd-daily.json' };
+const symOf = (denom) => (RESOLVE ? RESOLVE(denom) : { symbol: denom === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' });
 // 1.1.3 — re-price pass. Scope: the current and previous UTC month files (a missing day is always recent: the series
 // lags the chain by 1–2 days). A record qualifies only when usd is null AND usd_reason is luna_usd_daily_missing:<day>
 // AND the series now has <day>. Nothing else on the record changes; the fill is labeled with usd_repriced_at. Returns
 // the number of records re-priced (0 when the series is unavailable — a missing series is never a reason to write).
 async function repriceMissingDays() {
-  if (!LUNA) return 0;
+  if (!Object.keys(SERIES).length && !RESOLVE) return 0;
   const now = new Date(); const months = [];
   for (const back of [0, 1]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
   let total = 0;
   for (const mk of months) {
     const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); if (!ex || !Array.isArray(ex.data)) continue;
-    let changed = 0; const stamp = new Date().toISOString();
+    let changed = 0, stamped = 0; const stamp = new Date().toISOString();
     for (const r of ex.data) {
-      if (r.usd != null || typeof r.usd_reason !== 'string' || !r.usd_reason.startsWith('luna_usd_daily_missing:') || !r.price) continue;
-      const day = r.usd_reason.slice('luna_usd_daily_missing:'.length); const px = LUNA[day]; if (px == null) continue;
+      if (!r.price) continue;
+      // 1.2.0: stamp the symbol on records that predate it (the catalog rule, never a guess) — a label, not a repair
+      if (r.denom_symbol === undefined && RESOLVE && DS.stampRecord(r, r.price.denom, symOf)) stamped++;
+      if (r.usd != null || typeof r.usd_reason !== 'string') continue;
+      // qualifies: a day the series now has (any symbol), or a denom that had no series when written and now has one
+      const dayMissing = /^(luna_usd_daily_missing|usd_daily_missing):/.test(r.usd_reason), noSeries = /^no_usd_series_for_denom:/.test(r.usd_reason);
+      if (!dayMissing && !noSeries) continue;
       const again = usdAt(r.price, r.ts); if (again.usd == null) continue;   // same rule as the first pricing — no second formula
-      r.usd = again.usd; r.luna_usd = again.luna_usd; delete r.usd_reason; r.usd_repriced_at = stamp; changed++;
+      delete r.usd_reason; Object.assign(r, again); r.usd_repriced_at = stamp; changed++;
     }
-    if (!changed) continue;
-    await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} record${changed === 1 ? '' : 's'}, day now in luna-usd-daily)`, ex.sha);
-    console.log(`  repriced ${changed} record(s) in ${p}`); total += changed;
+    if (!changed && !stamped) continue;
+    await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} repriced, ${stamped} symbol-stamped)`, ex.sha);
+    console.log(`  repriced ${changed} record(s) in ${p}${stamped ? ` · symbol stamped on ${stamped}` : ''}`); total += changed; STAMPED += stamped;
   }
   return total;
 }
 function usdAt(price, ts) {
   if (!price || price.amount == null || !price.denom) return { usd: null, usd_reason: 'no_price' };
-  const day = String(ts).slice(0, 10); const amt = Number(price.amount) / 1e6;
-  if (price.denom === 'uluna') { const px = LUNA && LUNA[day]; return px != null ? { usd: amt * px, luna_usd: px } : { usd: null, usd_reason: 'luna_usd_daily_missing:' + day }; }
-  if (USDC_IBC.test(price.denom)) return { usd: amt };
-  return { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom };
+  const day = String(ts).slice(0, 10); const s = symOf(price.denom); const dec = s.decimals != null ? s.decimals : 6; const amt = Number(price.amount) / Math.pow(10, dec);
+  if (!s.symbol) return { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom, denom_symbol: null, denom_symbol_reason: s.reason || 'not_in_token_catalog' };
+  const base = { denom_symbol: s.symbol, denom_decimals: dec };
+  if (DS.isStableSymbol(s.symbol)) return Object.assign(base, { usd: amt, usd_basis: 'stable_1_1' });
+  const series = SERIES[s.symbol]; if (!series) return Object.assign(base, { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom });
+  const px = series[day];
+  if (px == null) return Object.assign(base, { usd: null, usd_reason: 'usd_daily_missing:' + s.symbol + ':' + day });
+  const out = Object.assign(base, { usd: amt * px, usd_basis: s.symbol.toLowerCase() + '-usd-daily:' + day, unit_usd: px });
+  if (s.symbol === 'LUNA') out.luna_usd = px;   // the field readers already know
+  return out;
 }
 
 // ---------------------------------------------------------------- main
@@ -156,7 +180,9 @@ function usdAt(price, ts) {
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
-  try { LUNA = (await httpGet(NFTC_RAW + 'adao/snapshots/luna-usd-daily.json')).daily || null; } catch (e) { errors.push('luna-usd-daily: ' + e.message); }   // 1.1.2: repointed (nft-collections/adao/snapshots)
+  try { RESOLVE = DS.buildResolver(await httpGet(TLA_CORE_RAW + 'token-catalog/snapshots/current.json')); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { errors.push('token-catalog: ' + e.message); }   // 1.2.0: symbols from the catalog, never a map
+  for (const [sym, file] of Object.entries(SERIES_FILES)) { try { const d = (await httpGet(NFTC_RAW + 'adao/snapshots/' + file)).daily || null; if (d) SERIES[sym] = d; } catch (e) { errors.push(file + ': ' + e.message); } }
+  LUNA = SERIES.LUNA || null;   // 1.1.x callers
   const repriced = await repriceMissingDays();   // 1.1.3: fill USD on records whose day has since arrived in the series
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
@@ -170,7 +196,7 @@ function usdAt(price, ts) {
   }
   const head = await getHead() - LAG; const from = cursor + 1; const to = Math.min(head, cursor + MAX_BLOCKS);
   console.log(`org-nft-flows-${SLUG} · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
-  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
+  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
   const matched = []; let processedTo = cursor;
@@ -237,13 +263,13 @@ function usdAt(price, ts) {
 
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
   if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
-  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, per_collection: perColAdded });
+  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.1.4', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
