@@ -1,5 +1,8 @@
 'use strict';
-// org-nft-flows 1.3.0 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.3.1 — FORWARD CAPTURE for ONE collection
+// 1.3.1 (2026-09-18): classify.js 1.1.5 — `launchpad.addresses` (several primary-sale holders; aDAO's three candy machines)
+//   and launchpad → distribution wallet = stock returned, not a $0 mint_purchase; every launchpad holder joins the watch set.
+//   REPAIR mint-phase-1.1.5 on adao/ledger (1,954 paid mints priced from the oracle, 3,653 stock moves relabeled).
 // 1.3.0 (2026-09-18, owner): USD from THE org price oracle (tla-core/price-history/YYYY/MM.json — every catalog symbol,
 //   daily since 2022-05, bLUNA carried as LUNA×hub-ratio through CoinGecko's 2024-04 → 2025-09 hole) — the per-collection
 //   luna/bluna-usd-daily files and the nearest-day rule are gone; one oracle month in memory per ledger month; basis
@@ -34,7 +37,7 @@
 // and writes only inside its own folder (<slug>/raw/forward, <slug>/ledger, <slug>/nft-flows/heartbeat.json).
 // Picks up where the backfill left off; the archive node is never needed again.
 //
-//   reads  : tla-core/docs/curated/nft-collections.json (registry — the ONLY per-collection input)
+//   reads  : nft-collections/<slug>/collection.json capture block + venues.json (the registry — the ONLY per-collection input)
 //            tla-core/nfts/ledger-cursor.json (global block cursor; first run derives it from each ledger's coverage)
 //            nft-collections/adao/snapshots/luna-usd-daily.json (USD at the day — 1.1.2; was tla-core/nfts/adao)
 //   walks  : cursor+1 → head-LAG on RPC_PRIMARY (fallback RPC_FALLBACK), /block + /block_results, concurrency 4,
@@ -216,7 +219,7 @@ function usdAt(price, ts) {
   const idx = buildIndex(R); const cols = [SLUG];
   // watch set = every collection contract + custodians + launchpads + distributors + every venue (offers/deposits are venue-only records)
   const watchOf = {}; const WATCH = new Set();
-  for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
+  for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...((c.launchpad && c.launchpad.addresses) || []), ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }   // 1.3.1: every launchpad holder is watched
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
   try { RESOLVE = DS.buildResolver(await httpGet(TLA_CORE_RAW + 'token-catalog/snapshots/current.json')); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { errors.push('token-catalog: ' + e.message); }   // 1.2.0: symbols from the catalog, never a map
   { const now = new Date(); for (const back of [1, 0]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); const mk = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`; if (!(await loadOracleMonth(mk))) errors.push('price-history/' + mk + ': unavailable'); } }   // 1.3.0: the oracle months forward capture prices from
@@ -306,7 +309,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.3.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.3.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }

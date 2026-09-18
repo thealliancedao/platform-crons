@@ -46,7 +46,7 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
   const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
   ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
-  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.3.0' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.3.0 ok');
+  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.3.1' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.3.1 ok');
   // 1.1.4 — BBL buy-now = place_bid + settle + settle_hook in ONE tx (the exact event sequence of aDAO #745 on
   // 2026-09-12, tx C50E1FF…): the classifier read only the venue's FIRST event (place_bid), never saw the settle, and
   // filed every buy-now since 2023 as "venue release without a known verb". 317 sales missing across aDAO/PL.
