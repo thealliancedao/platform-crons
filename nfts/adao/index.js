@@ -2218,7 +2218,7 @@ async function captureSnapshot() {
     try { priorHeartbeat = await tryFetchJson(HEARTBEAT_RAW_URL, 'prior heartbeat'); } catch { /* first run */ }
     const runMode = decideRunMode(startedAt, priorHeartbeat);
 
-    console.log(`🚀 NFT Inventory Cron Rev C.4 [org-migrated v3.1 — self-escalating + state-history monthly rollup] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${runMode}${RUN_MODE_OVERRIDE ? ' [override]' : ' [auto]'})`);
+    console.log(`🚀 NFT Inventory Cron Rev C.6 [org-migrated v3.1 — self-escalating + state-history monthly rollup] — ${startedAt.toISOString()} (epoch ${epoch}, mode: ${runMode}${RUN_MODE_OVERRIDE ? ' [override]' : ' [auto]'})`);
     console.log();
 
     // ── Phase 1+2: per-NFT info — scope depends on runMode ─────────────────

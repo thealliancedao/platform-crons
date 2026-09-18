@@ -43,7 +43,7 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.4.0';   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
+const VERSION = 'nft-market-history-1.4.1';   // 1.4.1 (2026-09-18): listing-history IS published when segments were stamped (1.4.0 stamped 3,172 in memory and skipped the write); the usd-daily rebuild log separates value corrections from precision rewrites ·   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
@@ -130,10 +130,13 @@ async function publish(filepath, obj, message, maxAttempts = 5) {
 // 1.4.0: the usd-daily copies are REBUILT from the oracle — every day the oracle has overwrites the copy (the copies had
 // CoinGecko market prices for bLUNA that disagree with the oracle's LUNA×ratio by up to 30%). Idempotent; counts changes.
 function syncDailyFromOracle(doc, symbol, priceMonths) {
-  const daily = doc.daily || (doc.daily = {}); let changed = 0, covered = 0;
-  for (const mon of Object.values(priceMonths)) for (const [d, row] of Object.entries((mon && mon.days) || {})) { const px = row && row[symbol] ? row[symbol].usd : null; if (px == null) continue; covered++; if (daily[d] !== px) { daily[d] = px; changed++; } }
-  if (changed) { doc.source = 'org price-history (tla-core) — rebuilt 2026-09-18; forward-filled from the same oracle'; doc.rebuilt_from_oracle_at = new Date().toISOString(); }
-  return { changed, covered };
+  const daily = doc.daily || (doc.daily = {}); let changed = 0, precision = 0, added = 0, covered = 0;
+  for (const mon of Object.values(priceMonths)) for (const [d, row] of Object.entries((mon && mon.days) || {})) { const px = row && row[symbol] ? row[symbol].usd : null; if (px == null) continue; covered++; const prev = daily[d];
+    if (prev === px) continue; daily[d] = px;
+    if (prev == null) added++; else if (Math.abs(prev - px) > Math.abs(px) * 5e-3) changed++; else precision++;   // a value correction vs the same number at fewer decimals
+  }
+  if (changed || precision || added) { doc.source = 'org price-history (tla-core) — rebuilt 2026-09-18; forward-filled from the same oracle'; doc.rebuilt_from_oracle_at = new Date().toISOString(); }
+  return { changed, precision, added, covered };
 }
 function fillDailyFromPriceHistory(doc, symbol, priceMonths, today) {
   const daily = doc.daily || {};
@@ -321,7 +324,7 @@ function maintainListingHistory(lh, v2events) {
   lh.counts = recs.reduce((m, r) => { m[r.outcome] = (m[r.outcome] || 0) + 1; return m; }, {});
   lh.maintained_by = VERSION;
   lh.maintained_at = new Date().toISOString();
-  return { opened, closed, unmatched, total: recs.length };
+  return { opened, closed, unmatched, total: recs.length, stamped: stampedSegs };
 }
 
 // ---- 4. unresolved-exit sentinel -------------------------------------------
@@ -387,7 +390,7 @@ async function main() {
   console.log(`  luna-usd-daily: +${f1.added} days (→ ${f1.lastNow})${f1.missing.length ? ` · ${f1.missing.length} days missing in price-history (left blank)` : ''}`);
   const f2 = fillDailyFromPriceHistory(blunaDaily, 'bLUNA', priceMonths, today);
   const s1 = syncDailyFromOracle(lunaDaily, 'LUNA', priceMonths), s2 = syncDailyFromOracle(blunaDaily, 'bLUNA', priceMonths);   // 1.4.0
-  console.log(`  usd-daily ← oracle: LUNA ${s1.changed} day(s) corrected of ${s1.covered} · bLUNA ${s2.changed} of ${s2.covered}`);
+  console.log(`  usd-daily ← oracle: LUNA ${s1.changed} value correction(s), ${s1.precision} precision rewrite(s), ${s1.added} day(s) added of ${s1.covered} · bLUNA ${s2.changed} / ${s2.precision} / ${s2.added} of ${s2.covered}`);
   console.log(`  bluna-usd-daily: +${f2.added} days (→ ${f2.lastNow})${f2.missing.length ? ` · ${f2.missing.length} days missing (left blank)` : ''}`);
 
   // 2+3) v2 transfer records since the enriched tail (scan tail month − 1 → today, dedupe handles overlap)
@@ -438,7 +441,7 @@ async function main() {
   await publish(`${NFT_PATH}/bluna-usd-daily.json`, blunaDaily, `market-history: bluna-usd-daily +${f2.added} days`);
   if (sres.added) await publish(`${NFT_PATH}/sales-enriched.json`, enr, `market-history: +${sres.added} sales (→ ${sres.total})`);
   else console.log('  sales-enriched unchanged — skipped publish');
-  if (lres.opened || lres.closed) await publish(`${NFT_PATH}/listing-history.json`, lh, `market-history: listings +${lres.opened}/−${lres.closed}`);
+  if (lres.opened || lres.closed || lres.stamped) await publish(`${NFT_PATH}/listing-history.json`, lh, `market-history: listings +${lres.opened}/−${lres.closed}${lres.stamped ? ` · denom_symbol on ${lres.stamped} segment(s)` : ''}`);
   else console.log('  listing-history unchanged — skipped publish');
   await publish(`${NFT_PATH}/market-history-heartbeat.json`, {
     schemaVersion: 1, cron: 'nft-market-history', version: VERSION, status: 'ok',

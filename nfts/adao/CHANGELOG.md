@@ -1,5 +1,12 @@
 # nfts/adao — changelog
 
+## market-history 1.4.1 · nft-inventory banner — 2026-09-18
+
+- 1.4.0's first run stamped `denom_symbol` on 3,172 listing-history segments in memory and then skipped the publish
+  (only opened/closed counted as a change) — 1.4.1 publishes when segments were stamped. The usd-daily rebuild log now
+  separates value corrections (bLUNA) from precision rewrites (LUNA: same number, fewer decimals) and added days.
+- index.js: the startup banner said Rev C.4; it is C.6 (heartbeat was already right).
+
 ## market-history 1.4.0 — 2026-09-18 — the org price oracle is the only source for past USD (owner)
 
 - `dayUsd` reads tla-core/price-history first (source `price-history:<src>`), par stables second, never the copies.
