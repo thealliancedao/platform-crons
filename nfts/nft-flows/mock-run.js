@@ -46,7 +46,7 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
   const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
   ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
-  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.3.1' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.3.1 ok');
+  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.4.0' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.4.0 ok');
   // 1.1.4 — BBL buy-now = place_bid + settle + settle_hook in ONE tx (the exact event sequence of aDAO #745 on
   // 2026-09-12, tx C50E1FF…): the classifier read only the venue's FIRST event (place_bid), never saw the settle, and
   // filed every buy-now since 2023 as "venue release without a known verb". 317 sales missing across aDAO/PL.
@@ -117,6 +117,22 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
       ok(r7.status === 0 && (hb7.months_touched || []).length === 0 && hb7.months_walked >= 2, '1.2.1 a second sweep is a no-op: every month walked, none touched (the ledger is fully labeled)', [hb7.months_walked, hb7.months_touched]); }
     gh.length = 0; const r5 = await run(); ok(r5.status === 0 && !gh.some(x => x.startsWith('PUT pixel-lions/ledger/2026/')), '1.1.3 fifth run: nothing left to re-price, month file NOT rewritten', gh.filter(x => x.startsWith('PUT')));
     ok(J('pixel-lions/nft-flows/heartbeat.json').repriced === 0, '1.1.3 heartbeat repriced: 0 on a no-op pass'); }
+  // 1.4.0 — by-token shards: the read shape for "open an NFT → its journey"
+  console.log('\n== 1.4.0 by-token shards ==');
+  { const bi = J('pixel-lions/ledger/by-token/index.json'); ok(bi && bi.shard_size === 100 && bi.shards['000'] && bi.shards['000'].records >= 2, 'by-token/index.json: shard_size 100, shard 000 listed with its record count');
+    const s0 = J('pixel-lions/ledger/by-token/000.json'); ok(s0.tokens['42'] && s0.tokens['42'].some(r => r.kind === 'stake') && s0.tokens['77'] && s0.tokens['77'].some(r => r.kind === 'stake') && s0.range[0] === 0 && s0.range[1] === 99, 'shard 000 holds #42 and #77 with their stake records (range 0–99)', Object.keys(s0.tokens));
+    const s5 = J('pixel-lions/ledger/by-token/005.json'); ok(s5 && s5.tokens['555'] && s5.tokens['555'].some(r => r.kind === 'sale' && r.price.amount === '200000000'), 'shard 005 holds the #555 buy-now sale', s5 && Object.keys(s5.tokens));
+    ok(Object.values(s0.tokens).flat().every(r => !r.superseded_by), 'no superseded row in any shard');
+    // a superseded row appears in the ledger → its token's shard is NOT rebuilt on a nothing-new run (nothing dirty) and never carries it
+    { const m = J('pixel-lions/ledger/2024/10.json'); m.push({ kind: 'venue_out', collection: 'pixel-lions', token_id: '77', height: 12000700, msg_index: 0, txhash: 'SUPX', ts: '2024-10-31T00:00:00Z', source: 'forward:org-nft-flows', superseded_by: 'SUPX|0|sale|pixel-lions|77|-', repair: 'x' }); put('pixel-lions/ledger/2024/10.json', m); }
+    gh.length = 0; const r8 = await run(); ok(r8.status === 0 && !gh.some(x => x.startsWith('PUT pixel-lions/ledger/by-token/')), 'nothing-new run with nothing dirty: no by-token shard rewritten (changed-files-only)', gh.filter(x => x.startsWith('PUT')));
+    const hb8 = J('pixel-lions/nft-flows/heartbeat.json'); ok(hb8.by_token && hb8.by_token.shards_rebuilt === 0, 'heartbeat by_token: 0 shards rebuilt on a clean run', hb8.by_token);
+    const env2 = Object.assign({}, env, { BY_TOKEN_ALL: '1' }); gh.length = 0;
+    const r9 = await new Promise(res => { let out = ''; const p = spawn('node', ['--max-old-space-size=200', path.join(__dirname, 'index.js')], { env: env2 }); p.stdout.on('data', d => { out += d; }); p.stderr.on('data', d => { out += d; }); p.on('exit', (code) => res({ status: code, stdout: out })); });
+    const hb9 = J('pixel-lions/nft-flows/heartbeat.json'); ok(r9.status === 0 && hb9.by_token && hb9.by_token.mode === 'all' && hb9.by_token.shards_rebuilt >= 2, 'BY_TOKEN_ALL=1 rebuilds every shard', hb9.by_token);
+    const s0b = J('pixel-lions/ledger/by-token/000.json'); ok(!s0b.tokens['77'].some(r => r.txhash === 'SUPX') && s0b.tokens['77'].some(r => r.kind === 'stake'), 'full rebuild: the superseded venue_out of #77 is excluded, its live rows stay', s0b.tokens['77'].map(r => r.kind));
+    ok(!gh.some(x => x === 'PUT pixel-lions/ledger/by-token/000.json') && r9.status === 0, 'full rebuild writes only shards whose content changed (000 unchanged → not written)', gh.filter(x => x.startsWith('PUT pixel-lions/ledger/by-token')));
+  }
   ok(LUNA_HITS.length === 0 && ORACLE_HITS.length >= 1 && ORACLE_HITS.every(p => /\/price-history\/\d{4}\/\d{2}\.json$/.test(p)), '1.3.0: prices come ONLY from the org oracle price-history/YYYY/MM.json (no per-collection usd-daily read at all) — ' + JSON.stringify([...new Set(LUNA_HITS)]));
   ok(!J('pixel-lions/nft-flows/heartbeat.json').errors.some(e => /usd-daily|price-history/.test(e)), '1.1.2/1.3.0: no price-source error in the heartbeat');
   ghs.close(); rpc.close(); console.log(`\n${pass}/${pass + fail} passed`); process.exit(fail ? 1 : 0);
