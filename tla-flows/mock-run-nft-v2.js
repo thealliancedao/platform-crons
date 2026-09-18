@@ -122,7 +122,8 @@ console.log(`G4 create==list: ${createEv} == ${lists} → ${createEv === lists}`
 }
 
 // G5 reconcile to sales-enriched
-const enr = JSON.parse(fs.readFileSync(CORE + '/nfts/adao/snapshots/sales-enriched.json'));
+// 2026-09-17: sales-enriched lives in nft-collections/adao/ since the migration (tla-core/nfts/adao was deleted 09-13)
+const enr = JSON.parse(fs.readFileSync(process.env.NFTC_DIR ? process.env.NFTC_DIR + '/adao/snapshots/sales-enriched.json' : CORE + '/nfts/adao/snapshots/sales-enriched.json'));
 const byKey = new Map(sales.map(s => [`${s.txhash}|${s.token_id}`, s]));
 let inWindow = 0, matched = 0, grossOk = 0, sellerOk = 0, buyerOk = 0, feeOk = 0, royOk = 0, miss = [];
 const maxH = 13736494; // FCD freeze height

@@ -1,5 +1,30 @@
 # tla-flows — changelog
 
+## 3.4.3 — 2026-09-17 — NFT aux records carry denom_symbol from the shared resolver
+
+- `index.js` stamps `denom_symbol` / `denom_decimals` on every sale / bid / list record via lib/denom-symbol.js (token-catalog
+  effective layer); catalog read failure → null with a reason. mock-run-nft-bid adds the resolver checks.
+
+## 3.4.2 — 2026-09-17 — NFT aux bid classifier: scope, settle-in-tx, denom from the payment leg
+
+- `classifyNftTx` bid branch (deferred bid, no NFT exit in the tx): (1) a `place_bid` whose `nft_contract` is not a
+  collection this leg watches is dropped — the BBL marketplace is contract-wide, the leg is not (seven Pixel Lions
+  buy-nows 09-11..09-14 had landed in adao/transfers/2026/09 as aDAO "bids": place_bid+settle on terra17z7…, no
+  currency — the fourth classifier with the first-event blind spot); (2) a place_bid whose auction settles in the same
+  tx is never a bid; (3) the bid's `denom` is read from the same-tx payment leg INTO the marketplace (cw20 send →
+  the cw20 contract, bank transfer → native denom), matched on `bid_amount`, else the single payment leg, and labeled
+  `denom_resolution` (same_tx_payment_amount_match | same_tx_single_payment | payment_amount_mismatch |
+  no_payment_leg) — null is explicit, never guessed. Records now carry `nft_contract`.
+- Gate `mock-run-nft-bid.js` (TLA_CORE_DIR + NFTC_DIR, `--max-old-space-size=200`, rss 193 MB): 13/13 — the two
+  genuine 2023 aDAO deferred bids in the FCD archive (denom uluna, amount-matched), the 09-14 Pixel Lions buy-now from
+  the held raw part (aDAO leg → nothing; PL leg → sale, no bid), the seven committed phantom rows all settle-in-tx on
+  the PL contract; archive sale/list/cancel counts unchanged (1151 / 2793 / 1602).
+- `mock-run-nft-v2.js`: G5 read repointed to NFTC_DIR/adao/snapshots/sales-enriched.json (was the deleted
+  tla-core/nfts/adao path — crashed on live main too); GATE PASS (G1–G6, 1151/1151 enriched matched).
+- NOT done here (write-once): the seven phantom rows already in nft-collections/adao/transfers/2026/09.json stay;
+  index Live Activity still renders them as aDAO bids until they are labeled superseded (or B.2 retires the leg).
+
+
 ## 3.4.0 — 2026-09-13 — weekly P&L rollup duty folded in (moved from the build-pnl.js Action)
 
 - `pnl.js` — Phase-A rollup + per-wallet epoch ledger, MOVED from `tla-core/.github/scripts/tla-flows/build-pnl.js`
