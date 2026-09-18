@@ -1,5 +1,14 @@
 # nfts/adao — changelog
 
+## market-history 1.4.0 — 2026-09-18 — the org price oracle is the only source for past USD (owner)
+
+- `dayUsd` reads tla-core/price-history first (source `price-history:<src>`), par stables second, never the copies.
+  Audit: the luna-usd-daily copy matched the oracle on all 1,572 days; the bluna-usd-daily copy (CoinGecko's bLUNA
+  market chart) differed from the oracle's LUNA×ratio on 261 of 379 days, worst 29.6%, and had a 515-day hole.
+- `syncDailyFromOracle`: both copies are rebuilt from the oracle (first run: whole span; later runs: tails) and labeled;
+  kept only because app.html, release-history.html and nft-explorer-app.js still read them (repoint queued).
+- mock G3 now asserts oracle pricing (8-decimal oracle vs 16-decimal copy tolerance). GATE PASS.
+
 ## market-history 1.3.0 — 2026-09-18 — denom → symbol from the shared resolver; listing-history segments stamped
 
 - `symbolFor(denom)`: lib/denom-symbol.js (token-catalog effective layer) first, the local DENOM_MAP only when the catalog

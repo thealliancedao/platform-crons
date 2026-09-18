@@ -43,7 +43,7 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.3.0';   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
+const VERSION = 'nft-market-history-1.4.0';   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
@@ -127,6 +127,14 @@ async function publish(filepath, obj, message, maxAttempts = 5) {
 // ---- 1. daily USD forward-fill --------------------------------------------
 // doc: { ..., daily: { 'YYYY-MM-DD': usd } }  symbol: 'LUNA' | 'bLUNA'
 // priceMonths: { 'YYYY-MM': priceHistoryMonthDoc }   today: 'YYYY-MM-DD' (excluded — partial day)
+// 1.4.0: the usd-daily copies are REBUILT from the oracle — every day the oracle has overwrites the copy (the copies had
+// CoinGecko market prices for bLUNA that disagree with the oracle's LUNA×ratio by up to 30%). Idempotent; counts changes.
+function syncDailyFromOracle(doc, symbol, priceMonths) {
+  const daily = doc.daily || (doc.daily = {}); let changed = 0, covered = 0;
+  for (const mon of Object.values(priceMonths)) for (const [d, row] of Object.entries((mon && mon.days) || {})) { const px = row && row[symbol] ? row[symbol].usd : null; if (px == null) continue; covered++; if (daily[d] !== px) { daily[d] = px; changed++; } }
+  if (changed) { doc.source = 'org price-history (tla-core) — rebuilt 2026-09-18; forward-filled from the same oracle'; doc.rebuilt_from_oracle_at = new Date().toISOString(); }
+  return { changed, covered };
+}
 function fillDailyFromPriceHistory(doc, symbol, priceMonths, today) {
   const daily = doc.daily || {};
   const days = Object.keys(daily).sort();
@@ -168,12 +176,12 @@ function appendEnrichedSales(enr, v2sales, lunaDaily, blunaDaily, priceMonths, d
   for (const s of enr.sales) (salesByToken[String(s.token_id)] = salesByToken[String(s.token_id)] || []).push(s);
 
   const dayUsd = (symbol, day) => {
-    if (PAR_USD[symbol]) return { usd: PAR_USD[symbol].usd, source: PAR_USD[symbol].source };
-    if (symbol === 'LUNA' && lunaDaily.daily[day] != null) return { usd: lunaDaily.daily[day], source: 'luna-usd-daily' };
-    if (symbol === 'bLUNA' && blunaDaily.daily[day] != null) return { usd: blunaDaily.daily[day], source: 'bluna-usd-daily' };
+    // 1.4.0: the oracle first — always the same price for the same day, whoever asks
     const mon = priceMonths[day.slice(0, 7)];
     const px = mon && mon.days && mon.days[day] && mon.days[day][symbol] ? mon.days[day][symbol].usd : null;
-    return px != null ? { usd: px, source: 'price-history' } : { usd: null, source: 'unpriced' };
+    if (px != null) return { usd: px, source: 'price-history' + (mon.days[day][symbol].src ? ':' + mon.days[day][symbol].src : '') };
+    if (PAR_USD[symbol]) return { usd: PAR_USD[symbol].usd, source: PAR_USD[symbol].source };
+    return { usd: null, source: 'unpriced' };
   };
 
   let added = 0, skippedAmbiguous = 0, skippedDup = 0, unpriced = 0;
@@ -365,7 +373,12 @@ async function main() {
   const lastLuna = Object.keys(lunaDaily.daily).sort().pop();
   const lastBluna = Object.keys(blunaDaily.daily).sort().pop();
   const fromDay = lastLuna < lastBluna ? lastLuna : lastBluna;
-  const months = monthsBetween(fromDay, today);
+  // 1.4.0: the FIRST run after the oracle became the source rebuilds the copies over their whole span (all oracle months,
+  // ~50 small files, once); every later run reads only the tails. The copy remembers it was rebuilt.
+  const needsRebuild = !(lunaDaily.rebuilt_from_oracle_at && blunaDaily.rebuilt_from_oracle_at) || process.env.USD_DAILY_REBUILD === '1';
+  const earliest = [Object.keys(lunaDaily.daily || {}).sort()[0], Object.keys(blunaDaily.daily || {}).sort()[0]].filter(Boolean).sort()[0];
+  const months = monthsBetween(needsRebuild && earliest ? earliest : fromDay, today);
+  if (needsRebuild) console.log(`  usd-daily copies: one-time rebuild from the oracle across ${months.length} month(s)`);
   const priceMonths = {};
   await Promise.all(months.map(async m => { priceMonths[m] = await fetchJson(RAW_DATA(`${PRICE_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`)); }));
 
@@ -373,6 +386,8 @@ async function main() {
   const f1 = fillDailyFromPriceHistory(lunaDaily, 'LUNA', priceMonths, today);
   console.log(`  luna-usd-daily: +${f1.added} days (→ ${f1.lastNow})${f1.missing.length ? ` · ${f1.missing.length} days missing in price-history (left blank)` : ''}`);
   const f2 = fillDailyFromPriceHistory(blunaDaily, 'bLUNA', priceMonths, today);
+  const s1 = syncDailyFromOracle(lunaDaily, 'LUNA', priceMonths), s2 = syncDailyFromOracle(blunaDaily, 'bLUNA', priceMonths);   // 1.4.0
+  console.log(`  usd-daily ← oracle: LUNA ${s1.changed} day(s) corrected of ${s1.covered} · bLUNA ${s2.changed} of ${s2.covered}`);
   console.log(`  bluna-usd-daily: +${f2.added} days (→ ${f2.lastNow})${f2.missing.length ? ` · ${f2.missing.length} days missing (left blank)` : ''}`);
 
   // 2+3) v2 transfer records since the enriched tail (scan tail month − 1 → today, dedupe handles overlap)

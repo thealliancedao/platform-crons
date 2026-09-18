@@ -104,12 +104,12 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     check('G3 none ambiguous/unpriced', res.skippedAmbiguous === 0 && res.unpriced === 0, `amb ${res.skippedAmbiguous} unpriced ${res.unpriced}`);
     check('G3 total restored', res.total === totalBefore, `${res.total} vs ${totalBefore}`);
     const news = enr.sales.filter(s => sampleKeys.has(`${s.tx_hash}|${s.token_id}`));
-    check('G3 re-appended rows priced from luna-usd-daily day-of', news.every(s => s.price_source === 'luna-usd-daily' && s.price_usd_at_sale > 0 && s.notional_usd > 0));
+    check('G3 (1.4.0) re-appended rows priced from the ORG ORACLE day-of (price-history), never a copy', news.every(s => /^price-history/.test(s.price_source) && s.price_usd_at_sale > 0 && s.notional_usd > 0), [...new Set(news.map(s => s.price_source))]);
     check('G3 legs arithmetic carried (net+fee+roy == gross where all present)', news.every(s => {
       if (s.seller_net == null || s.royalty_fee == null) return true;
       return Number(s.seller_net) + Number(s.marketplace_fee || 0) + Number(s.royalty_fee) === Number(s.gross_amount);
     }));
-    check('G3 re-appended rows reproduce the committed rows field-for-field (price, notional, legs, token, timestamp)', news.every(s => { const c = committed.get(`${s.tx_hash}|${s.token_id}`); return c && ['price_usd_at_sale', 'notional_usd', 'gross_amount', 'seller_net', 'royalty_fee', 'marketplace_fee', 'token_id', 'timestamp', 'denom', 'buyer', 'seller'].every(k => String(c[k] ?? '') === String(s[k] ?? '')); }),
+    check('G3 re-appended rows reproduce the committed rows field-for-field (price, notional, legs, token, timestamp)', news.every(s => { const c = committed.get(`${s.tx_hash}|${s.token_id}`); return c && ['gross_amount', 'seller_net', 'royalty_fee', 'marketplace_fee', 'token_id', 'timestamp', 'denom', 'buyer', 'seller'].every(k => String(c[k] ?? '') === String(s[k] ?? '')) && Math.abs(Number(c.price_usd_at_sale) - Number(s.price_usd_at_sale)) < 1e-6 && Math.abs(Number(c.notional_usd) - Number(s.notional_usd)) < 1e-3; }),   /* 1.4.0: the oracle carries 8 decimals, the retired copy 16 — same price */
       news.map(s => { const c = committed.get(`${s.tx_hash}|${s.token_id}`); return ['price_usd_at_sale', 'notional_usd', 'gross_amount', 'seller_net', 'royalty_fee', 'marketplace_fee'].filter(k => String(c[k] ?? '') !== String(s[k] ?? '')).map(k => `${k}: ${c[k]} vs ${s[k]}`); }).flat().slice(0, 6));
     const priorInDoc = enr.sales.filter(s => !sampleKeys.has(`${s.tx_hash}|${s.token_id}`));
     check('G3 every untouched row byte-verbatim', priorInDoc.length === totalBefore - 8 && deep([...priorRows].filter(s => !sampleKeys.has(`${s.tx_hash}|${s.token_id}`)).sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.tx_hash).localeCompare(String(b.tx_hash))), [...priorInDoc].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.tx_hash).localeCompare(String(b.tx_hash)))));
