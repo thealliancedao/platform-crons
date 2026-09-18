@@ -39,7 +39,15 @@ const NFT_PATH = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const SITE_RAW = 'https://raw.githubusercontent.com/thealliancedao/aDAO-links-site/main';
 const RARITY_URL = process.env.RARITY_URL ||
   'https://raw.githubusercontent.com/thealliancedao/nft-collections/main/adao/rarity/adao-rarity-intended.json';
-const VERSION = 'nft-compact-bundle-1.2.0';   // 1.2.0 (2026-09-17): listing_chain_only bit · 1.1.0 (2026-09-12): NFT_ROOT env
+// 1.3.0 (2026-09-18, Rev D.1): collection-agnostic — the trait columns, the supply, the metadata and rarity inputs come
+//   from the collection's manifest (index.js sets COLLECTION_TRAITS / COLLECTION_SUPPLY / METADATA_URL / RARITY_URL from
+//   nft-collections/<slug>/collection.json); the aDAO defaults reproduce today's bundle byte for byte (same columns, same order).
+const COLLECTION = String(process.env.COLLECTION || '').trim(); const IS_DEFAULT_COLLECTION = !COLLECTION || COLLECTION === 'adao';
+const TRAITS = (process.env.COLLECTION_TRAITS ? process.env.COLLECTION_TRAITS.split(',').map(t => t.trim()).filter(Boolean) : ['Planet', 'Inhabitant', 'Object', 'Weather', 'Light', 'Rarity']);
+const SUPPLY = Number(process.env.COLLECTION_SUPPLY || 10000);
+const METADATA_URL = process.env.METADATA_URL || `${SITE_RAW}/assets/nft-metadata/all_nfts_metadata.json`;
+const BBL_RARITY_URL = process.env.BBL_RARITY_URL || (IS_DEFAULT_COLLECTION ? `${SITE_RAW}/assets/nft-metadata/adao-rarity-bbl.json` : null);   // a second rank oracle only where one exists
+const VERSION = 'nft-compact-bundle-1.3.0';   // 1.2.0 (2026-09-17): listing_chain_only bit · 1.1.0 (2026-09-12): NFT_ROOT env
 
 // One bit per classification flag; the page ANDs against these names, so adding
 // a bit is additive and renaming one is a breaking change — don't.
@@ -105,7 +113,7 @@ async function publish(filepath, content, message, maxAttempts = 5) {
 // =============================================================================
 function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
   const records = nftsDoc.records;
-  if (!Array.isArray(records) || records.length !== 10000) throw new Error(`nfts.json integrity: expected 10000 records, got ${records && records.length}`);
+  if (!Array.isArray(records) || records.length !== SUPPLY) throw new Error(`nfts.json integrity: expected ${SUPPLY} records, got ${records && records.length}`);
   const metaById = new Map(metadata.map(m => [String(m.id), m]));
   // rarity files: accept either {tokens:{id:{rank,percentile,...}}} or array shapes
   const rankOf = (doc) => {
@@ -118,7 +126,6 @@ function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
   const ri = rankOf(rarityIntended), rb = rankOf(rarityBbl);
 
   // dictionaries per trait — small string tables the page ships once
-  const TRAITS = ['Planet', 'Inhabitant', 'Object', 'Weather', 'Light', 'Rarity'];
   const dict = Object.fromEntries(TRAITS.map(t => [t, []]));
   const idx = Object.fromEntries(TRAITS.map(t => [t, new Map()]));
   const enc = (t, v) => {
@@ -141,8 +148,7 @@ function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
     const listPx = r.listing && r.listing.price_usd != null ? Math.round(r.listing.price_usd * 100) / 100 : null;
     rows.push([
       Number(id),
-      enc('Planet', attrs.Planet), enc('Inhabitant', attrs.Inhabitant), enc('Object', attrs.Object),
-      enc('Weather', attrs.Weather), enc('Light', attrs.Light), enc('Rarity', attrs.Rarity),
+      ...TRAITS.map(t => enc(t, attrs[t])),
       rI.rank ?? rI.intended_rank ?? null, rI.percentile ?? null,
       rB.rank ?? rB.bbl_rank ?? null,
       flags, listPx,
@@ -162,12 +168,12 @@ function buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl) {
     if (expect != null && (counts[k] || 0) !== expect) throw new Error(`bundle/summary mismatch on ${k}: bundle ${counts[k] || 0} vs summary ${expect} — refusing to publish`);
   }
   const withMeta = rows.filter(r => r[1] >= 0).length;
-  if (withMeta < 9990) throw new Error(`metadata join too thin: ${withMeta}/10000 rows carry traits — refusing`);
+  if (withMeta < SUPPLY - 10) throw new Error(`metadata join too thin: ${withMeta}/${SUPPLY} rows carry traits — refusing`);
 
   return {
     schemaVersion: 1, builtAt: new Date().toISOString(), builtBy: VERSION,
     note: 'first-paint bundle — derived view of nfts.json + metadata + rarity; rebuilt whole each warm/full; owners & listing detail hydrate from the full products',
-    fields: ['id', 'planet', 'inhabitant', 'object', 'weather', 'light', 'rarity', 'intended_rank', 'intended_pct', 'bbl_rank', 'flags', 'listing_usd'],
+    fields: ['id', ...TRAITS.map(t => t.toLowerCase()), 'intended_rank', 'intended_pct', 'bbl_rank', 'flags', 'listing_usd'],
     flagBits: { ...FLAG_BITS, listing_chain_only: LISTING_CHAIN_ONLY_BIT },
     dict, rows,
     source: { nfts_captured_at: nftsDoc.capturedAt || null, records: records.length },
@@ -179,9 +185,9 @@ async function main() {
   const [nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl] = await Promise.all([
     fetchJson(RAW(`${NFT_PATH}/nfts.json`)),
     fetchJson(RAW(`${NFT_PATH}/summary.json`)),
-    fetchJson(`${SITE_RAW}/assets/nft-metadata/all_nfts_metadata.json`),
+    fetchJson(METADATA_URL),
     fetchJson(RARITY_URL),
-    fetchJson(`${SITE_RAW}/assets/nft-metadata/adao-rarity-bbl.json`).catch(() => null),
+    BBL_RARITY_URL ? fetchJson(BBL_RARITY_URL).catch(() => null) : Promise.resolve(null),
   ]);
   const bundle = buildBundle(nftsDoc, summaryDoc, metadata, rarityIntended, rarityBbl);
   const content = JSON.stringify(bundle);

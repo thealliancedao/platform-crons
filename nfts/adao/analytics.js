@@ -46,7 +46,7 @@ const RARITY_URL = process.env.RARITY_URL ||
 const MIN_LISTINGS_FOR_FLOOR = 2;
 const MIN_SALES_FOR_AVG = 2;
 
-const VERSION = 'nft-analytics-1.1.0';   // 1.1.0 (2026-09-12): NFT_ROOT env
+const VERSION = 'nft-analytics-1.1.1';   // 1.1.1 (2026-09-18, D.1): collection name from COLLECTION · 1.1.0 (2026-09-12): NFT_ROOT env
 
 // ---- http ----
 function fetchJson(url) {
@@ -338,7 +338,7 @@ async function main() {
 
     const explorer = {
       schemaVersion: 2,
-      collection: enrichedDoc.collection ?? out.meta?.collection ?? 'adao',
+      collection: enrichedDoc.collection ?? out.meta?.collection ?? (process.env.COLLECTION || 'adao'),   // D.1
       builtAt: new Date().toISOString(),
       source: 'org nfts/adao analytics.js — derived from sales-enriched.json',
       volume, leaderboards, monthly, denom_split, sale_number_distribution,

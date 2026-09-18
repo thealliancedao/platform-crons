@@ -1,5 +1,13 @@
 // =============================================================================
-// NFT Inventory Cron — Rev C.6
+// NFT Inventory Cron — Rev D.1
+// Rev D.1 (2026-09-18) — COLLECTION-AGNOSTIC: every collection-specific address, token id set and feature switch is a
+//   COLLECTION CONFIG. Default (COLLECTION unset or 'adao') = the aDAO literals below, verbatim — a no-op for the aDAO
+//   service (gate: its output is byte-identical). COLLECTION=<slug> loads nft-collections/<slug>/collection.json (+
+//   venues.json) at the start of the run and applies it: contract, DAO core, DAODAO staking module, Enterprise legacy
+//   custodian (or none), treasury/council wallets, venues the collection lists on, backing token (or none → Phase 6 off,
+//   backing null everywhere), break mechanism (or none → no broken/tier vocabulary), Phoenix-tier ids (or none).
+//   NFT_ROOT defaults to the slug. One service per collection (org-nft-inventory-<slug>); stop, delete or add a
+//   collection without touching the others. Sub-modules read the same config through the env this file sets.
 // Rev C.6 (2026-09-17) — Chain-only BBL auctions ARE listings (the #745 lesson): structurally live
 //   (is_settled false · no bidder · end_time 0) auctions absent from warlock are INCLUDED, labeled
 //   source:'chain_only' / warlock_visible:false; every BBL listing now carries source + warlock_visible;
@@ -93,24 +101,72 @@ const fs    = require('fs');
 const TERRA_LCD_PRIMARY  = 'https://terra-lcd.publicnode.com';
 const TERRA_LCD_FALLBACK = 'https://terra-rest.publicnode.com';
 
-// aDAO NFT collection
-const ADAO_NFT_CONTRACT = 'terra1phr9fngjv7a8an4dhmhd0u0f98wazxfnzccqtyheq4zqrrp4fpuqw3apw9';
+// ---- Rev D.1: COLLECTION CONFIG -------------------------------------------------------------------------------
+// The aDAO literals, verbatim, as the default config. applyCollection() rebinds every `let` below from a manifest.
+const ADAO_DEFAULT_CONFIG = Object.freeze({
+    slug: 'adao', label: 'The Alliance DAO', supply: 10000,
+    NFT_CONTRACT: 'terra1phr9fngjv7a8an4dhmhd0u0f98wazxfnzccqtyheq4zqrrp4fpuqw3apw9',
+    // Known custody locations — verified live 2026-06-06 via chain queries; see Rev B session log.
+    DAO_MAIN_WALLET:         'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm',
+    DAODAO_STAKING_CONTRACT: 'terra1c57ur376szdv8rtes6sa9nst4k536dynunksu8tx5zu4z5u3am6qmvqx47',
+    DAO_TREASURY_CONTRACT:   'terra1h8psjgcsg9fef7w2yv0j6262sfcaszj8vs4tsy3uwla6zwtaspvqrp4l7v', // previously mislabeled "enterprise" — holds 898 broken NFTs for DAO governance
+    ENTERPRISE_NFT_STAKING:  'terra1e54tcdyulrtslvf79htx4zntqntd4r550cg22sj24r6gfm0anrvq0y8tdv', // REAL Enterprise NFT staking; holds 503 NFTs (100 broken/DAO + 403 user stakes)
+    DAO_WALLET_8YWV:         'terra1yqv0af22675wlcmgflxk4ve07vt8qlm999gk0cuw5l64r5xxgadsyg8ywv', // aDAO Council multisig (small DAO custody of 2 broken NFTs)
+    ENTERPRISE_OPERATOR_WALLET: 'terra1nn7yrgjzj6zvle7ms9vlpg4cj3kaxjls4g6ugw',   // aDAO Enterprise-governance operator (council, legacy) — owner-confirmed 2026-09-10; chain: funded 2024-10
+    // Backing token — aDAO NFT collection accrues ampLUNA from Alliance staking
+    BACKING_CW20: 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct',
+    BREAK_MECHANISM: true,
+    VENUES: ['bbl', 'atrium', 'boost'],
+    // Grade-40 (Phoenix Rising) token ids — IMMUTABLE: the collection is fully minted, so this set can never change.
+    // Source: adao-rarity-intended.json (defipatriot/nft-metadata).
+    PHOENIX_TOKEN_IDS: ['16','183','1128','1131','1433','1546','1622','2068','2227','2605','2633','2639','3445','4736','4983','5048','5088','5247','6013','6067','6151','6479','7755','9057','9426'],
+});
 
-// Known custody locations
-// Verified live 2026-06-06 via chain queries; see Rev B session log.
-const DAO_MAIN_WALLET           = 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm';
-const DAODAO_STAKING_CONTRACT   = 'terra1c57ur376szdv8rtes6sa9nst4k536dynunksu8tx5zu4z5u3am6qmvqx47';
-const DAO_TREASURY_CONTRACT     = 'terra1h8psjgcsg9fef7w2yv0j6262sfcaszj8vs4tsy3uwla6zwtaspvqrp4l7v'; // previously mislabeled "enterprise" — holds 898 broken NFTs for DAO governance
-const ENTERPRISE_NFT_STAKING    = 'terra1e54tcdyulrtslvf79htx4zntqntd4r550cg22sj24r6gfm0anrvq0y8tdv'; // REAL Enterprise NFT staking; holds 503 NFTs (100 broken/DAO + 403 user stakes)
-const DAO_WALLET_8YWV           = 'terra1yqv0af22675wlcmgflxk4ve07vt8qlm999gk0cuw5l64r5xxgadsyg8ywv'; // small DAO-controlled wallet with 2 broken NFTs
-
-// Marketplaces
+const COLLECTION = String(process.env.COLLECTION || '').trim();   // '' | 'adao' → the default config; anything else → its manifest
+const IS_DEFAULT_COLLECTION = !COLLECTION || COLLECTION === 'adao';
+let COL = ADAO_DEFAULT_CONFIG;
+let ADAO_NFT_CONTRACT, DAO_MAIN_WALLET, DAODAO_STAKING_CONTRACT, DAO_TREASURY_CONTRACT, ENTERPRISE_NFT_STAKING, DAO_WALLET_8YWV, AMPLUNA_CW20, ENTERPRISE_OPERATOR_WALLET;
+let PHOENIX_TOKEN_IDS, STABLE_DAO_OWNERS, STAKING_OWNERS, DAODAO_INDEXER_URL;
+function applyCollection(cfg) {
+    COL = cfg;
+    ADAO_NFT_CONTRACT = cfg.NFT_CONTRACT; DAO_MAIN_WALLET = cfg.DAO_MAIN_WALLET; DAODAO_STAKING_CONTRACT = cfg.DAODAO_STAKING_CONTRACT;
+    DAO_TREASURY_CONTRACT = cfg.DAO_TREASURY_CONTRACT || null; ENTERPRISE_NFT_STAKING = cfg.ENTERPRISE_NFT_STAKING || null; DAO_WALLET_8YWV = cfg.DAO_WALLET_8YWV || null;
+    AMPLUNA_CW20 = cfg.BACKING_CW20 || null; ENTERPRISE_OPERATOR_WALLET = cfg.ENTERPRISE_OPERATOR_WALLET || null;
+    PHOENIX_TOKEN_IDS = new Set((cfg.PHOENIX_TOKEN_IDS || []).map(String));
+    STABLE_DAO_OWNERS = [DAO_MAIN_WALLET, DAO_TREASURY_CONTRACT, DAO_WALLET_8YWV].filter(Boolean);
+    STAKING_OWNERS    = [DAODAO_STAKING_CONTRACT, ENTERPRISE_NFT_STAKING].filter(Boolean);
+    DAODAO_INDEXER_URL = `https://indexer.daodao.zone/phoenix-1/contract/${DAODAO_STAKING_CONTRACT}/daoVotingCw721Staked/topStakers`;
+}
+applyCollection(ADAO_DEFAULT_CONFIG);
+// Build a config from a collection's manifest (nft-collections/<slug>/collection.json) + the shared venues.json.
+// Only the manifest speaks: no address here, no name-matching. A custodian's ROLE decides what it is.
+function configFromManifest(cj, venuesDoc) {
+    const cap = (cj && cj.capture) || {}; const gov = (cj && cj.governance) || {};
+    const byRole = (role) => { for (const [a, c] of Object.entries(cap.custodians || {})) if (c && c.role === role) return a; return null; };
+    const backing = cj && cj.backing && cj.backing.token && cj.backing.token.type === 'cw20' && cj.backing.token.address ? cj.backing.token.address : null;
+    const known = new Set(Object.keys((venuesDoc && venuesDoc.venues) || {}));
+    const venues = (cj.marketplaces || []).map(m => m.key).filter(k => k && (!known.size || known.has(k)));
+    const tiers = (cj.tiers && cj.tiers.phoenix && Array.isArray(cj.tiers.phoenix.token_ids)) ? cj.tiers.phoenix.token_ids : [];
+    const custody = (cj && cj.custody) || {};
+    return {
+        slug: cj.slug, label: cj.name, supply: Number(cj.supply) || null,
+        NFT_CONTRACT: cj.nft_contract,
+        DAO_MAIN_WALLET: gov.dao_address || custody.dao_core || null,
+        DAODAO_STAKING_CONTRACT: gov.staking_contract || byRole('daodao_voting'),
+        DAO_TREASURY_CONTRACT: custody.treasury_contract || null,
+        ENTERPRISE_NFT_STAKING: byRole('enterprise_staking'),
+        DAO_WALLET_8YWV: custody.council_wallet || null,
+        ENTERPRISE_OPERATOR_WALLET: custody.enterprise_operator || null,
+        BACKING_CW20: backing,
+        BREAK_MECHANISM: !!(cj.backing && cj.backing.break_mechanism),
+        VENUES: venues,
+        PHOENIX_TOKEN_IDS: tiers.map(String),
+    };
+}
+// Marketplaces — shared venue contracts (the same three across every collection; a collection lists on a subset: COL.VENUES)
 const BBL_MARKETPLACE    = 'terra1ej4cv98e9g2zjefr5auf2nwtq4xl3dm7x0qml58yna2ml2hk595s7gccs9'; // bbl-necropolis-marketplace v2.2.2
 const ATRIUM_MARKETPLACE = 'terra15du229lqcxkn939pmjgklqunftf604q4wz87kt5awj6reghec5jqs0w0kj'; // atrium-marketplace v1.6.0-rc1
 const BOOST_MARKETPLACE  = 'terra1kj7pasyahtugajx9qud02r5jqaf60mtm7g5v9utr94rmdfftx0vqspf4at'; // launch-nft v1.4.0 (launch-nft-permissionless)
-
-// Backing token — aDAO NFT collection accrues ampLUNA from Alliance staking
-const AMPLUNA_CW20 = 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct';
 
 // Query/pagination tuning
 const ALL_TOKENS_PAGE      = 30;     // CW721 default cap
@@ -130,7 +186,7 @@ const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 // NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
 // Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
 const DATA_REPO     = process.env.DATA_REPO     || 'thealliancedao/tla-core';
-const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
+const NFT_ROOT      = String(process.env.NFT_ROOT || (IS_DEFAULT_COLLECTION ? 'nfts/adao' : COLLECTION)).replace(/^\/+|\/+$/g, '');   // D.1: a named collection's folder IS its root
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
 // Output path within the data repo. Rev B.2 (2026-06-07): moved from `data/` → `data/v2/`
@@ -229,14 +285,7 @@ function stateHistoryPath(dateKey) { const [y, m] = dateKey.split('-'); return `
 function stateHistoryRawUrl(dateKey) { return `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${stateHistoryPath(dateKey)}`; }
 // Sales-floor medians: last K sales per tier (analytics brief: broken 5 / base 10 / phoenix 3)
 const SALES_FLOOR_K = { broken: 5, base: 10, phoenix: 3 };
-// Grade-40 (Phoenix Rising) token ids — IMMUTABLE: the collection is fully minted, so this
-// set can never change. Source: adao-rarity-intended.json (defipatriot/nft-metadata).
-const PHOENIX_TOKEN_IDS = new Set(['16','183','1128','1131','1433','1546','1622','2068','2227','2605','2633','2639','3445','4736','4983','5048','5088','5247','6013','6067','6151','6479','7755','9068','9941']);
-// Owners that mark an NFT as "stable" (pure DAO custody, can't move without a prop).
-// Anything NOT owned by one of these is user-held or marketplace-owned → hot.
-// The two staking contracts are stable-ish but get their own (warm) refresh cadence.
-const STABLE_DAO_OWNERS = [DAO_MAIN_WALLET, DAO_TREASURY_CONTRACT, DAO_WALLET_8YWV];
-const STAKING_OWNERS    = [DAODAO_STAKING_CONTRACT, ENTERPRISE_NFT_STAKING];
+// (Rev D.1) PHOENIX_TOKEN_IDS / STABLE_DAO_OWNERS / STAKING_OWNERS are bound by applyCollection() from the collection config above.
 
 // TLA epoch math (for heartbeat consistency with other crons)
 const TLA_EPOCH_START_MS = Date.parse('2022-10-31T00:00:00Z');
@@ -499,6 +548,7 @@ async function fetchAllNftInfo(tokenIds) {
 // The 403 real stakers come from members{} response.
 
 async function fetchEnterpriseStakers() {
+    if (!ENTERPRISE_NFT_STAKING) { console.log('👥 Phase 3: no Enterprise legacy custodian in this collection\'s manifest — skipped'); return []; }   // D.1
     console.log('👥 Phase 3: fetching Enterprise NFT stakers (via members{})...');
     const t0 = Date.now();
     const all = [];
@@ -849,8 +899,8 @@ async function fetchMarketplaces() {
     const t0 = Date.now();
     const [bblChain, atrium, boost, warlock] = await Promise.all([
         fetchBblListings().catch(e => { console.warn(`  ⚠ BBL failed: ${e.message}`); return []; }),
-        fetchAtriumListings().catch(e => { console.warn(`  ⚠ Atrium failed: ${e.message}`); return []; }),
-        fetchBoostListings().catch(e => { console.warn(`  ⚠ Boost failed: ${e.message}`); return []; }),
+        COL.VENUES.includes('atrium') ? fetchAtriumListings().catch(e => { console.warn(`  ⚠ Atrium failed: ${e.message}`); return []; }) : Promise.resolve([]),   // D.1: only the venues this collection lists on
+        COL.VENUES.includes('boost') ? fetchBoostListings().catch(e => { console.warn(`  ⚠ Boost failed: ${e.message}`); return []; }) : Promise.resolve([]),
         fetchWarlockLiveBblAuctions(),
     ]);
 
@@ -929,7 +979,7 @@ async function fetchMarketplaces() {
 // enumerable staker list — only per-address `staked_nfts(address)` queries.
 // The indexer is the canonical source for "who staked what." Non-fatal.
 
-const DAODAO_INDEXER_URL = `https://indexer.daodao.zone/phoenix-1/contract/${DAODAO_STAKING_CONTRACT}/daoVotingCw721Staked/topStakers`;
+// (Rev D.1) DAODAO_INDEXER_URL is bound by applyCollection() — the module of the collection's own DAO.
 
 async function fetchDaodaoStakers() {
     console.log('👥 Phase 5: fetching DAODAO stakers (via daodao.zone indexer)...');
@@ -1138,6 +1188,7 @@ function applyPendingClaimFlags(records, pendingBlock) {
 // balance deltas (tracked via daily snapshots).
 
 async function fetchBackingData(unbrokenCount) {
+    if (!AMPLUNA_CW20) { console.log('💰 Phase 6: no backing token in this collection\'s manifest — skipped (backing null)'); return null; }   // D.1
     console.log('💰 Phase 6: fetching backing data (ampLUNA balance)...');
     try {
         const balData = await queryContract(
@@ -1356,7 +1407,7 @@ function mergeMarketplaceListings(records, marketplaces, priceData) {
 //     member ever staking a broken NFT there would break this equality)
 // A failing guard sets status 'violation' and names it; the set still publishes
 // (never blank the page on a guard — decode it).
-const ENTERPRISE_OPERATOR_WALLET = 'terra1nn7yrgjzj6zvle7ms9vlpg4cj3kaxjls4g6ugw';   // aDAO Enterprise-governance operator (council, legacy) — owner-confirmed 2026-09-10; chain: funded 2024-10-31, staked the 100, voted Enterprise props 81–88
+// (Rev D.1) ENTERPRISE_OPERATOR_WALLET is bound by applyCollection() (aDAO: the Enterprise-governance operator, council, legacy).
 const DAO_CONTROLLED_EXPECTED = 1000;
 function buildDaoControlled(records, enterpriseStakers, nowIso) {
     const by = { treasury: [], enterprise: [], dao_wallet_8ywv: [] };
@@ -2656,7 +2707,26 @@ async function captureSnapshot() {
 // changed, so it runs on warm/full runs (and on hot runs only if forced).
 // Disable with NFT_ANALYTICS=0; force on every run with NFT_ANALYTICS=always.
 // =============================================================================
+// D.1: a named collection's manifest is read once per run and applied before any phase; the aDAO default needs no read.
+async function loadCollectionConfig() {
+    if (IS_DEFAULT_COLLECTION) return COL;
+    const base = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
+    const cj = await fetchJsonWithRetry(`${base}${COLLECTION}/collection.json?cb=${Date.now()}`, `${COLLECTION}/collection.json`);
+    const venues = await tryFetchJson(`${base}venues.json?cb=${Date.now()}`, 'venues.json');
+    if (!cj || !cj.nft_contract) throw new Error(`${COLLECTION}/collection.json missing or has no nft_contract — refusing to run`);
+    const cfg = configFromManifest(cj, venues);
+    if (!cfg.DAODAO_STAKING_CONTRACT || !cfg.DAO_MAIN_WALLET) throw new Error(`${COLLECTION}: manifest names no DAO core / DAODAO staking module — refusing to run`);
+    applyCollection(cfg);
+    // the sub-modules (analytics · market-history · compact-bundle) read the same manifest through the env, unless pinned
+    if (!process.env.RARITY_URL && cj.rarity && cj.rarity.file) process.env.RARITY_URL = `${base}${cj.rarity.file}`;
+    if (!process.env.METADATA_URL && cj.metadata_file && /\.json$/.test(cj.metadata_file)) process.env.METADATA_URL = `${base}${cj.metadata_file}`;
+    if (!process.env.COLLECTION_TRAITS && Array.isArray(cj.traits)) process.env.COLLECTION_TRAITS = cj.traits.map(t => t.name).join(',');
+    if (!process.env.COLLECTION_SUPPLY && cfg.supply) process.env.COLLECTION_SUPPLY = String(cfg.supply);
+    console.log(`🧭 collection ${cfg.slug} (${cfg.label}) · contract ${cfg.NFT_CONTRACT.slice(0, 14)}… · DAODAO ${cfg.DAODAO_STAKING_CONTRACT.slice(0, 14)}… · enterprise ${cfg.ENTERPRISE_NFT_STAKING ? 'yes' : 'no'} · backing ${cfg.BACKING_CW20 ? 'yes' : 'no'} · venues ${cfg.VENUES.join('/')} · supply ${cfg.supply}`);
+    return cfg;
+}
 async function runWithAnalytics() {
+    await loadCollectionConfig();
     const result = await captureSnapshot();
     const mode = String(process.env.NFT_ANALYTICS || '').toLowerCase();
     if (mode === '0') return result;
@@ -2738,7 +2808,9 @@ module.exports = {
     deriveHotSet,
     deriveWarmSet,
     mergeRecords,
-    // Constants (might be useful for tests / sanity checks)
+    // D.1: the collection config layer
+    ADAO_DEFAULT_CONFIG, configFromManifest, applyCollection, loadCollectionConfig, getCollection: () => COL, COLLECTION, IS_DEFAULT_COLLECTION,
+    // Constants (might be useful for tests / sanity checks) — the aDAO defaults (the lets are rebound per collection; read getCollection() for the live ones)
     ADAO_NFT_CONTRACT,
     DAO_MAIN_WALLET,
     DAO_TREASURY_CONTRACT,

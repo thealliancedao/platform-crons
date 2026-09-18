@@ -1,5 +1,25 @@
 # nfts/adao — changelog
 
+## nft-inventory Rev D.1 · compact-bundle 1.3.0 · analytics 1.1.1 — 2026-09-18 — collection-agnostic
+
+- Every collection-specific address / token-id set / feature switch is a COLLECTION CONFIG. Default (COLLECTION unset or
+  `adao`) = the aDAO literals verbatim — a no-op for the aDAO service. `COLLECTION=<slug>` loads
+  nft-collections/<slug>/collection.json (+ venues.json) at the start of the run: contract, DAO core + DAODAO module from
+  `governance`, Enterprise legacy custodian by ROLE from `capture.custodians`, treasury / council / operator wallets from
+  `custody`, backing token from `backing.token.address` (none → Phase 6 skipped, backing null everywhere), break mechanism,
+  Phoenix ids from `tiers.phoenix.token_ids`, venues from `marketplaces`. NFT_ROOT defaults to the slug.
+- compact-bundle 1.3.0: trait columns, supply, metadata + rarity inputs from the manifest (index.js sets COLLECTION_TRAITS /
+  COLLECTION_SUPPLY / METADATA_URL / RARITY_URL); a second rank oracle (BBL rarity) only where one exists. The aDAO bundle
+  is byte-identical to 1.2.0 (same columns, same order — aDAO's manifest trait list IS the old column list).
+- The aDAO manifest now carries its literals (`custody`, `tiers`, `backing.token.address`): gate-collection-config.mjs
+  proves configFromManifest(adao/collection.json) === ADAO_DEFAULT_CONFIG field by field, PL resolves from its own
+  manifest, applyCollection rebinds the classifier, and the bundle differential holds. 15/15. Existing mocks unchanged.
+- Vocabulary caveat: the record flag `unminted` means "held by the DAO core" — right for aDAO (mint-era stock), a misnomer
+  for a fully-minted collection. The flag name is kept (bundle bits are additive-only); the manifest-driven explorer
+  labels it per collection.
+- Queued: move this folder to nfts/nft-inventory (engine name, not a tenant) once both services run — a Render root
+  change on both.
+
 ## market-history 1.5.0 — 2026-09-18 — the usd-daily copies are retired (oracle series instead)
 
 - luna/bluna-usd-daily are no longer read or written. token-catalog 1.9.0 publishes tla-core/price-history/series/<SYMBOL>.json
