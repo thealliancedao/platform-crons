@@ -27,7 +27,16 @@ const check = (n, ok, d) => { console.log(`${ok ? '✓' : '✗'} ${n}${d ? ' —
 const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- G1/G2: daily fills against real committed dailies ----------------
-{
+// 1.5.0: the copies are RETIRED (token-catalog 1.9.0 publishes price-history/series/<SYMBOL>.json). When the fixture no
+// longer has them, G1/G2 are skipped and the LUNA-on-day view G3 needs is built from the oracle months — as the cron does.
+const COPIES_PRESENT = fs.existsSync(path.join(process.env.NFTC_DIR, 'adao/snapshots/luna-usd-daily.json'));
+if (!COPIES_PRESENT) {
+  const luna = { daily: {} }; const today = new Date().toISOString().slice(0, 10);
+  for (const y of fs.readdirSync(path.join(process.env.TLA_CORE_DIR, 'price-history')).filter(x => /^\d{4}$/.test(x))) for (const f of fs.readdirSync(path.join(process.env.TLA_CORE_DIR, 'price-history', y)).filter(x => /^\d{2}\.json$/.test(x))) { const m = P(`price-history/${y}/${f}`); for (const [d, row] of Object.entries(m.days || {})) if (row.LUNA && row.LUNA.usd != null) luna.daily[d] = row.LUNA.usd; }
+  fs.writeFileSync('/tmp/mh-luna.json', JSON.stringify(luna)); fs.writeFileSync('/tmp/mh-bluna.json', JSON.stringify({ daily: {} }));
+  console.log(`  (G1/G2 skipped: usd-daily copies retired — LUNA-on-day view built from ${Object.keys(luna.daily).length} oracle days)`);
+}
+if (COPIES_PRESENT) {
   const luna = N('snapshots/luna-usd-daily.json');
   const priorLuna = JSON.parse(JSON.stringify(luna.daily));
   const lastBefore = Object.keys(priorLuna).sort().pop();

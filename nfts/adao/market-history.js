@@ -43,7 +43,7 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.4.1';   // 1.4.1 (2026-09-18): listing-history IS published when segments were stamped (1.4.0 stamped 3,172 in memory and skipped the write); the usd-daily rebuild log separates value corrections from precision rewrites ·   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
+const VERSION = 'nft-market-history-1.5.0';   // 1.5.0 (2026-09-18): the luna/bluna-usd-daily copies are RETIRED — not read, not written (token-catalog 1.9.0 publishes price-history/series/<SYMBOL>.json for readers that need one long series); luna_equiv and value_today read the oracle month for the day / the latest oracle day ·   // 1.4.1 (2026-09-18): listing-history IS published when segments were stamped (1.4.0 stamped 3,172 in memory and skipped the write); the usd-daily rebuild log separates value corrections from precision rewrites ·   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
@@ -362,36 +362,22 @@ async function main() {
   const today = new Date().toISOString().slice(0, 10);
   console.log(`\n${VERSION} — market-history forward maintenance`);
   try { RESOLVE = DS.buildResolver(await fetchJson(RAW_DATA('token-catalog/snapshots/current.json'))); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { console.warn('  ⚠ token-catalog read failed — DENOM_MAP fallback in force:', e.message); }
-  const [enr, lh, lunaDaily, blunaDaily] = await Promise.all([
+  const [enr, lh] = await Promise.all([
     fetchJson(RAW(`${NFT_PATH}/sales-enriched.json`)),
     fetchJson(RAW(`${NFT_PATH}/listing-history.json`)),
-    fetchJson(RAW(`${NFT_PATH}/luna-usd-daily.json`)),
-    fetchJson(RAW(`${NFT_PATH}/bluna-usd-daily.json`)),
   ]);
-  if (!enr || !lh || !lunaDaily || !blunaDaily) {
+  if (!enr || !lh) {
     console.error('  ✗ a committed input is unreadable — honest skip (no partial maintenance)');
     return;
   }
-  // price-history months: from the older of the two daily tails through today
-  const lastLuna = Object.keys(lunaDaily.daily).sort().pop();
-  const lastBluna = Object.keys(blunaDaily.daily).sort().pop();
-  const fromDay = lastLuna < lastBluna ? lastLuna : lastBluna;
-  // 1.4.0: the FIRST run after the oracle became the source rebuilds the copies over their whole span (all oracle months,
-  // ~50 small files, once); every later run reads only the tails. The copy remembers it was rebuilt.
-  const needsRebuild = !(lunaDaily.rebuilt_from_oracle_at && blunaDaily.rebuilt_from_oracle_at) || process.env.USD_DAILY_REBUILD === '1';
-  const earliest = [Object.keys(lunaDaily.daily || {}).sort()[0], Object.keys(blunaDaily.daily || {}).sort()[0]].filter(Boolean).sort()[0];
-  const months = monthsBetween(needsRebuild && earliest ? earliest : fromDay, today);
-  if (needsRebuild) console.log(`  usd-daily copies: one-time rebuild from the oracle across ${months.length} month(s)`);
+  // 1.5.0: oracle months = the last 3 (forward sales and listing closes only look back that far)
+  const fromDay = new Date(Date.parse(today + 'T00:00:00Z') - 92 * 864e5).toISOString().slice(0, 10);
+  const months = monthsBetween(fromDay, today);
   const priceMonths = {};
   await Promise.all(months.map(async m => { priceMonths[m] = await fetchJson(RAW_DATA(`${PRICE_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`)); }));
-
-  // 1) daily fills
-  const f1 = fillDailyFromPriceHistory(lunaDaily, 'LUNA', priceMonths, today);
-  console.log(`  luna-usd-daily: +${f1.added} days (→ ${f1.lastNow})${f1.missing.length ? ` · ${f1.missing.length} days missing in price-history (left blank)` : ''}`);
-  const f2 = fillDailyFromPriceHistory(blunaDaily, 'bLUNA', priceMonths, today);
-  const s1 = syncDailyFromOracle(lunaDaily, 'LUNA', priceMonths), s2 = syncDailyFromOracle(blunaDaily, 'bLUNA', priceMonths);   // 1.4.0
-  console.log(`  usd-daily ← oracle: LUNA ${s1.changed} value correction(s), ${s1.precision} precision rewrite(s), ${s1.added} day(s) added of ${s1.covered} · bLUNA ${s2.changed} / ${s2.precision} / ${s2.added} of ${s2.covered}`);
-  console.log(`  bluna-usd-daily: +${f2.added} days (→ ${f2.lastNow})${f2.missing.length ? ` · ${f2.missing.length} days missing (left blank)` : ''}`);
+  // a LUNA-on-day view of the oracle where the copies used to be read
+  const lunaDaily = { daily: {} }; for (const mon of Object.values(priceMonths)) for (const [d, row] of Object.entries((mon && mon.days) || {})) if (row.LUNA && row.LUNA.usd != null) lunaDaily.daily[d] = row.LUNA.usd;
+  const blunaDaily = { daily: {} };   // unused since 1.4.0 (dayUsd reads the oracle); kept for the call signature
 
   // 2+3) v2 transfer records since the enriched tail (scan tail month − 1 → today, dedupe handles overlap)
   const lastSale = enr.sales.map(s => s.timestamp).sort().pop() || '2023-12-01T00:00:00Z';
@@ -437,8 +423,7 @@ async function main() {
   } catch (e) { console.warn(`  ⚠ sentinel errored (non-fatal): ${e.message}`); }
 
   // publish (order: dailies first — the enricher's numbers cite them)
-  await publish(`${NFT_PATH}/luna-usd-daily.json`, lunaDaily, `market-history: luna-usd-daily +${f1.added} days`);
-  await publish(`${NFT_PATH}/bluna-usd-daily.json`, blunaDaily, `market-history: bluna-usd-daily +${f2.added} days`);
+  // 1.5.0: luna/bluna-usd-daily are no longer written — delete the two files from nft-collections/adao/snapshots/
   if (sres.added) await publish(`${NFT_PATH}/sales-enriched.json`, enr, `market-history: +${sres.added} sales (→ ${sres.total})`);
   else console.log('  sales-enriched unchanged — skipped publish');
   if (lres.opened || lres.closed || lres.stamped) await publish(`${NFT_PATH}/listing-history.json`, lh, `market-history: listings +${lres.opened}/−${lres.closed}${lres.stamped ? ` · denom_symbol on ${lres.stamped} segment(s)` : ''}`);
@@ -446,7 +431,7 @@ async function main() {
   await publish(`${NFT_PATH}/market-history-heartbeat.json`, {
     schemaVersion: 1, cron: 'nft-market-history', version: VERSION, status: 'ok',
     capturedAt: new Date().toISOString(),
-    stats: { luna_days_added: f1.added, bluna_days_added: f2.added,
+    stats: { usd_daily_copies: 'retired 1.5.0 (oracle series: tla-core/price-history/series)',
       sales_added: sres.added, sales_ambiguous_skipped: sres.skippedAmbiguous,
       listings_opened: lres.opened, listings_closed: lres.closed, unmatched_closes: lres.unmatched,
       unresolved_exits: unresolved.length,

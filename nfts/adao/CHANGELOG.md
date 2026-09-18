@@ -1,5 +1,14 @@
 # nfts/adao — changelog
 
+## market-history 1.5.0 — 2026-09-18 — the usd-daily copies are retired (oracle series instead)
+
+- luna/bluna-usd-daily are no longer read or written. token-catalog 1.9.0 publishes tla-core/price-history/series/<SYMBOL>.json
+  (one sorted day→usd map per catalog symbol, derived from the oracle month files, seeded once, appended daily); app 2.0.5
+  and nft-explorer 4.34 read those. market-history loads the trailing three oracle months for forward sales / closes.
+- Owner action after commit: delete nft-collections/adao/snapshots/luna-usd-daily.json and bluna-usd-daily.json.
+- mock-run-market-history skips G1/G2 when the copies are gone and builds the LUNA-on-day view from the oracle. GATE PASS
+  with and without the copies.
+
 ## market-history 1.4.1 · nft-inventory banner — 2026-09-18
 
 - 1.4.0's first run stamped `denom_symbol` on 3,172 listing-history segments in memory and then skipped the publish
