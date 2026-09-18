@@ -315,10 +315,25 @@ function classifyNftTx(txr, contracts, markets = {}) {
         resolution: cr ? 'attrs' : 'entry_only' });
     }
     // bid without an NFT exit in the same tx (deferred auction bid — money enters, NFT stays)
+    // 3.4.2 (2026-09-17, B.2 of the crons session): three things this branch got wrong —
+    //  (1) the marketplace is contract-wide, this leg is not: a place_bid on a collection this leg does not watch is
+    //      not an event here (seven Pixel Lions buy-nows landed in aDAO's transfers 09-11..14 as "aDAO bids");
+    //  (2) a place_bid whose auction SETTLES in the same tx is a buy-now sale, never a bid — on a watched collection
+    //      the NFT exit above already classified it, on an unwatched one it is (1);
+    //  (3) the currency: place_bid attrs carry only bid_amount — the denom is on the same-tx payment leg INTO the
+    //      marketplace (cw20 send → denom = the cw20 contract; bank transfer → native denom). Matched on amount, else
+    //      the single payment leg; labeled by how it was found, null when it was not (never guessed).
     if (!exits.length) {
+      const settledAuctions = new Set(mwasm.map(axAttrs).filter(a => SALE_VERBS.has(a.action)).map(a => normAttrs(a).auction_id).filter(Boolean));
       for (const a of mwasm.map(axAttrs).filter(a => a.action === 'place_bid')) {
-        out.push({ ...base('bid', a.token_id ?? null),
-          bidder: a.bidder || null, bid_amount: a.bid_amount || null,
+        if (a.nft_contract && !contracts[a.nft_contract]) continue;             // (1) not this leg's collection
+        if (a.auction_id && settledAuctions.has(a.auction_id)) continue;         // (2) settled in-tx = sale, not a bid
+        const amt = a.bid_amount != null ? String(a.bid_amount) : null;
+        const pay = (amt && payments.find(p => String(p.amount) === amt)) || (payments.length === 1 ? payments[0] : null) || null;
+        out.push({ ...base('bid', a.token_id ?? null), nft_contract: a.nft_contract || null,
+          bidder: a.bidder || null, bid_amount: amt,
+          denom: pay ? pay.denom : null,
+          denom_resolution: pay ? (String(pay.amount) === amt ? 'same_tx_payment_amount_match' : 'same_tx_single_payment') : (payments.length ? 'payment_amount_mismatch' : 'no_payment_leg'),
           auction_id: a.auction_id || null, resolution: 'attrs' });
       }
     }
