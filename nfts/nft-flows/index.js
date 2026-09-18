@@ -1,5 +1,9 @@
 'use strict';
-// org-nft-flows 1.2.2 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.3.0 — FORWARD CAPTURE for ONE collection
+// 1.3.0 (2026-09-18, owner): USD from THE org price oracle (tla-core/price-history/YYYY/MM.json — every catalog symbol,
+//   daily since 2022-05, bLUNA carried as LUNA×hub-ratio through CoinGecko's 2024-04 → 2025-09 hole) — the per-collection
+//   luna/bluna-usd-daily files and the nearest-day rule are gone; one oracle month in memory per ledger month; basis
+//   `price-history:<day> (<src>)`. The 128 bLUNA sales the CoinGecko chart could not price are priced by the oracle.
 // 1.2.2 (2026-09-18): sparse USD series (bluna-usd-daily is weekly-ish before mid-2025) price from the NEAREST day within
 //   USD_NEAREST_MAX_DAYS (7), labeled on usd_basis "(nearest, Δ3d)"; a row that still cannot be priced gets its usd_reason
 //   refreshed (day + gap) instead of the stale no_usd_series text. First adao sweep: 5,751 symbols stamped, 214 priced,
@@ -123,24 +127,31 @@ const writeJson = (p, obj, msg, sha) => writeFile(p, JSON.stringify(obj, null, 1
 const writeGz   = (p, obj, msg, sha) => writeFile(p, zlib.gzipSync(Buffer.from(JSON.stringify(obj)), { level: 9 }), msg, sha);
 
 // ---------------------------------------------------------------- USD at the day (same rule as derive.js)
-let LUNA = null;
-// 1.2.0 — USD is per SYMBOL, not per denom string: a daily series per priced symbol (LUNA, bLUNA today — any
-// `<symbol>-usd-daily.json` under adao/snapshots/ is picked up), stables 1:1 by catalog symbol. New collections and
-// venues inherit this: a bLUNA sale on Pixel Lions prices exactly like one on aDAO. `usd_basis` labels the rule.
+// 1.3.0 — USD comes from THE org price oracle: tla-core/price-history/YYYY/MM.json (daily USD for every catalog symbol
+// since 2022-05, paid CoinGecko backfill once, token-catalog appends daily; bLUNA/ampLUNA carried as LUNA×hub-ratio where
+// CoinGecko had no chart). One month file in memory at a time — the same month the ledger sweep is on. No per-collection
+// price series, no CoinGecko calls, no second formula: nft-flows prices exactly what the rest of the platform prices.
 let RESOLVE = null;                 // denom → { symbol, decimals } from the token-catalog (null until loaded)
 let STAMPED = 0;                    // records that received denom_symbol in the reprice pass (heartbeat)
 let MONTHS_WALKED = 0, MONTHS_TOUCHED = [];   // 1.2.1: the sweep's footprint, reported on the heartbeat
-const SERIES = {};                  // symbol → { day → usd }
-const SERIES_FILES = { LUNA: 'luna-usd-daily.json', bLUNA: 'bluna-usd-daily.json' };
-const NEAREST_MAX_DAYS = Number(process.env.USD_NEAREST_MAX_DAYS || 7);   // 1.2.2: how far a sparse series may reach
-const SERIES_LAST = {};             // symbol → last day the series has (nearest-day never reaches past it)
+const ORACLE = {};                  // 'YYYY/MM' → { days: { 'YYYY-MM-DD': { SYM: { usd, src } } } } | null (month absent)
+let ORACLE_LATEST = null;           // the latest day the oracle has (a day after it is "not yet written", not "missing")
+const monthOf = (day) => String(day).slice(0, 7).replace('-', '/');
+async function loadOracleMonth(mk) {
+  if (mk in ORACLE) return ORACLE[mk];
+  try { ORACLE[mk] = await httpGet(TLA_CORE_RAW + 'price-history/' + mk + '.json'); } catch (e) { ORACLE[mk] = null; }
+  const days = ORACLE[mk] && ORACLE[mk].days ? Object.keys(ORACLE[mk].days).sort() : []; const last = days[days.length - 1];
+  if (last && (!ORACLE_LATEST || last > ORACLE_LATEST)) ORACLE_LATEST = last;
+  return ORACLE[mk];
+}
+function dropOracleMonth(mk) { delete ORACLE[mk]; }   // read → price → drop (Render heap)
 const symOf = (denom) => (RESOLVE ? RESOLVE(denom) : { symbol: denom === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' });
 // 1.1.3 — re-price pass. Scope: the current and previous UTC month files (a missing day is always recent: the series
 // lags the chain by 1–2 days). A record qualifies only when usd is null AND usd_reason is luna_usd_daily_missing:<day>
 // AND the series now has <day>. Nothing else on the record changes; the fill is labeled with usd_repriced_at. Returns
 // the number of records re-priced (0 when the series is unavailable — a missing series is never a reason to write).
 async function repriceMissingDays() {
-  if (!Object.keys(SERIES).length && !RESOLVE) return 0;
+  if (!Object.keys(ORACLE).some(k => ORACLE[k]) && !RESOLVE) return 0;
   const now = new Date(); const months = [];
   for (const back of [0, 1]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
   // 1.2.1: the FULL sweep — every month the ledger index lists, once per run (read → stamp/price → write → drop; the heap
@@ -152,24 +163,33 @@ async function repriceMissingDays() {
   let total = 0; MONTHS_WALKED = 0; MONTHS_TOUCHED = [];
   for (const mk of months) {
     const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); if (!ex || !Array.isArray(ex.data)) continue;
-    MONTHS_WALKED++;
+    MONTHS_WALKED++; await loadOracleMonth(mk);
     let changed = 0, stamped = 0; const stamp = new Date().toISOString();
     for (const r of ex.data) {
       if (!r.price) continue;
       // 1.2.0: stamp the symbol on records that predate it (the catalog rule, never a guess) — a label, not a repair
       if (r.denom_symbol === undefined && RESOLVE && DS.stampRecord(r, r.price.denom, symOf)) stamped++;
+      // 1.3.0: rows priced by 1.2.x from the per-collection CoinGecko copies (basis luna-/bluna-usd-daily:*) are re-priced
+      // from the oracle — the one price everyone else uses; when the number moves the old one is kept beside it.
+      if (r.usd != null && typeof r.usd_basis === 'string' && /^(luna|bluna)-usd-daily:/.test(r.usd_basis)) {
+        const again = usdAt(r.price, r.ts); if (again.usd == null) continue;
+        const moved = Math.abs(again.usd - r.usd) > Math.abs(r.usd) * 5e-3;
+        if (moved) { r.usd_prev = r.usd; r.usd_prev_basis = r.usd_basis; }
+        Object.assign(r, again); r.usd_repriced_at = stamp; if (moved) changed++; else stamped++;   // a relabel is not a repair
+        continue;
+      }
       if (r.usd != null || typeof r.usd_reason !== 'string') continue;
       // qualifies: a day the series now has (any symbol), or a denom that had no series when written and now has one
-      const dayMissing = /^(luna_usd_daily_missing|usd_daily_missing):/.test(r.usd_reason), noSeries = /^no_usd_series_for_denom:/.test(r.usd_reason);
-      if (!dayMissing && !noSeries) continue;
+      if (!/^(luna_usd_daily_missing|usd_daily_missing|no_usd_series_for_denom|price_history_(missing|not_yet_written|month_missing)):/.test(r.usd_reason)) continue;   // every earlier spelling qualifies
       const again = usdAt(r.price, r.ts);
       if (again.usd == null) { if (again.usd_reason && again.usd_reason !== r.usd_reason) { r.usd_reason = again.usd_reason; stamped++; } continue; }   // 1.2.2: the reason is kept current (day missing + gap), never left stale
       delete r.usd_reason; Object.assign(r, again); r.usd_repriced_at = stamp; changed++;
     }
-    if (!changed && !stamped) continue;
+    if (!changed && !stamped) { dropOracleMonth(mk); continue; }
     await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} repriced, ${stamped} symbol-stamped)`, ex.sha);
     console.log(`  repriced ${changed} record(s) in ${p}${stamped ? ` · symbol stamped on ${stamped}` : ''}`); total += changed; STAMPED += stamped; MONTHS_TOUCHED.push(mk);
   }
+  for (const mk of Object.keys(ORACLE)) if (!months.slice(-2).includes(mk)) dropOracleMonth(mk);
   return total;
 }
 function usdAt(price, ts) {
@@ -177,20 +197,13 @@ function usdAt(price, ts) {
   const day = String(ts).slice(0, 10); const s = symOf(price.denom); const dec = s.decimals != null ? s.decimals : 6; const amt = Number(price.amount) / Math.pow(10, dec);
   if (!s.symbol) return { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom, denom_symbol: null, denom_symbol_reason: s.reason || 'not_in_token_catalog' };
   const base = { denom_symbol: s.symbol, denom_decimals: dec };
-  if (DS.isStableSymbol(s.symbol)) return Object.assign(base, { usd: amt, usd_basis: 'stable_1_1' });
-  const series = SERIES[s.symbol]; if (!series) return Object.assign(base, { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom });
-  // 1.2.2: a series may be SPARSE (bluna-usd-daily is the CoinGecko max chart — weekly-ish before mid-2025): use the
-  // nearest day within NEAREST_MAX_DAYS, and say so on the basis. Beyond that, null with the gap in the reason.
-  let px = series[day], used = day;
-  // Only for a day the series has already passed over (a sparse gap) — never for a day still to come: a same-day sale
-  // waits for its exact day (1.1.3), because tomorrow's series WILL have it.
-  const lastDay = SERIES_LAST[s.symbol] || (SERIES_LAST[s.symbol] = Object.keys(series).sort().pop());
-  if (px == null && lastDay && Date.parse(day + 'T00:00:00Z') <= Date.parse(lastDay + 'T00:00:00Z') - 2 * 864e5) { const want = Date.parse(day + 'T00:00:00Z'); let best = null; for (const k of Object.keys(series)) { const gap = Math.abs(Date.parse(k + 'T00:00:00Z') - want) / 864e5; if (gap <= NEAREST_MAX_DAYS && (best == null || gap < best.gap)) best = { k, gap }; } if (best) { px = series[best.k]; used = best.k; } }
-  if (px == null) { const past = lastDay && Date.parse(day + 'T00:00:00Z') <= Date.parse(lastDay + 'T00:00:00Z') - 2 * 864e5; return Object.assign(base, { usd: null, usd_reason: s.symbol === 'LUNA' && !past ? 'luna_usd_daily_missing:' + day : 'usd_daily_missing:' + s.symbol + ':' + day + (past ? ':nearest>' + NEAREST_MAX_DAYS + 'd' : '') }); }
-  const gapD = Math.round(Math.abs(Date.parse(used + 'T00:00:00Z') - Date.parse(day + 'T00:00:00Z')) / 864e5);
-  const out = Object.assign(base, { usd: amt * px, usd_basis: s.symbol.toLowerCase() + '-usd-daily:' + used + (gapD ? ` (nearest, Δ${gapD}d)` : ''), unit_usd: px });
-  if (s.symbol === 'LUNA') out.luna_usd = px;   // the field readers already know
-  return out;
+  const mk = monthOf(day); const month = ORACLE[mk];   // preloaded by the caller for the month in hand
+  const cell = month && month.days && month.days[day] && month.days[day][s.symbol];
+  if (cell && cell.usd != null) { const out = Object.assign(base, { usd: amt * Number(cell.usd), usd_basis: 'price-history:' + day + (cell.src ? ' (' + cell.src + ')' : ''), unit_usd: Number(cell.usd) }); if (s.symbol === 'LUNA') out.luna_usd = Number(cell.usd); return out; }
+  if (DS.isStableSymbol(s.symbol)) return Object.assign(base, { usd: amt, usd_basis: 'stable_1_1' });   // the oracle has no row for it that day: a stable is a dollar
+  if (!month) return Object.assign(base, { usd: null, usd_reason: (ORACLE_LATEST && day > ORACLE_LATEST) ? 'price_history_not_yet_written:' + day : 'price_history_month_missing:' + mk });
+  if (ORACLE_LATEST && day > ORACLE_LATEST) return Object.assign(base, { usd: null, usd_reason: 'price_history_not_yet_written:' + day });   // same-day: waits for the oracle's next append (1.1.3)
+  return Object.assign(base, { usd: null, usd_reason: 'price_history_missing:' + s.symbol + ':' + day });   // the oracle has the day but not this symbol
 }
 
 // ---------------------------------------------------------------- main
@@ -206,8 +219,7 @@ function usdAt(price, ts) {
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }
   for (const vk of (R.collections[SLUG].venues || [])) { const v = R.venues[vk]; if (v && v.address) WATCH.add(v.address); }   // only the venues THIS collection lists on
   try { RESOLVE = DS.buildResolver(await httpGet(TLA_CORE_RAW + 'token-catalog/snapshots/current.json')); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { errors.push('token-catalog: ' + e.message); }   // 1.2.0: symbols from the catalog, never a map
-  for (const [sym, file] of Object.entries(SERIES_FILES)) { try { const d = (await httpGet(NFTC_RAW + 'adao/snapshots/' + file)).daily || null; if (d) SERIES[sym] = d; } catch (e) { errors.push(file + ': ' + e.message); } }
-  LUNA = SERIES.LUNA || null;   // 1.1.x callers
+  { const now = new Date(); for (const back of [1, 0]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); const mk = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`; if (!(await loadOracleMonth(mk))) errors.push('price-history/' + mk + ': unavailable'); } }   // 1.3.0: the oracle months forward capture prices from
   const repriced = await repriceMissingDays();   // 1.1.3: fill USD on records whose day has since arrived in the series
 
   // cursor: stored, else derived from each ledger's full coverage (min across collections so none is skipped)
@@ -294,7 +306,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.2', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.3.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
