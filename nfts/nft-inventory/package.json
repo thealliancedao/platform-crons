@@ -1,0 +1,8 @@
+{
+  "name": "nfts-adao",
+  "version": "1.0.0",
+  "description": "aDAO NFT collection — inventory cron + analytics (reference implementation)",
+  "main": "index.js",
+  "scripts": { "start": "node index.js", "analytics": "node analytics.js" },
+  "license": "MIT"
+}
