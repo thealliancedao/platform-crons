@@ -1,5 +1,7 @@
 // =============================================================================
-// NFT Inventory Cron — Rev D.1
+// NFT Inventory Cron — Rev D.1.1
+// Rev D.1.1 (2026-09-18) — NFT_ROOT for COLLECTION=adao is `adao` (the slug), not the pre-migration 'nfts/adao' — the first
+//   run-ally adao run (23:34Z) wrote its products into a stray nft-collections/nfts/adao/ folder; adao/snapshots was untouched.
 // Rev D.1 (2026-09-18) — COLLECTION-AGNOSTIC: every collection-specific address, token id set and feature switch is a
 //   COLLECTION CONFIG. Default (COLLECTION unset or 'adao') = the aDAO literals below, verbatim — a no-op for the aDAO
 //   service (gate: its output is byte-identical). COLLECTION=<slug> loads nft-collections/<slug>/collection.json (+
@@ -186,7 +188,7 @@ const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 // NFT_ROOT    = the aDAO folder inside GITHUB_REPO ('nfts/adao' today; 'adao' in nft-collections).
 // Defaults reproduce the pre-migration layout exactly, so this change is a no-op until the env flips.
 const DATA_REPO     = process.env.DATA_REPO     || 'thealliancedao/tla-core';
-const NFT_ROOT      = String(process.env.NFT_ROOT || (IS_DEFAULT_COLLECTION ? 'nfts/adao' : COLLECTION)).replace(/^\/+|\/+$/g, '');   // D.1: a named collection's folder IS its root
+const NFT_ROOT      = String(process.env.NFT_ROOT || (COLLECTION ? COLLECTION : 'nfts/adao')).replace(/^\/+|\/+$/g, '');   // D.1.1: ANY named collection's folder is its root — including adao (D.1 fell back to the pre-migration 'nfts/adao' for it: the 23:34Z run wrote a stray nft-collections/nfts/adao/); the legacy default survives only when nothing at all is set
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
 // Output path within the data repo. Rev B.2 (2026-06-07): moved from `data/` → `data/v2/`
