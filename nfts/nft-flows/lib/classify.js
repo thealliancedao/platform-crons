@@ -1,5 +1,9 @@
 'use strict';
 // <<NFT FLOWS CLASSIFIER v1>> — 2026-09-12 — SPEC-nft-flows.md
+// 1.1.5 (2026-09-18): `launchpad.addresses` (several primary-sale holders per collection) + launchpad → distribution
+//   wallet / launchpad = TRANSFER (stock returned), never a $0 mint_purchase. aDAO sold through three candy machines
+//   (50 / 75 / 100-115-130 LUNA) fed from the treasury stock; the registry had the treasury as the launchpad, so 3,653
+//   stock moves were $0 mint_purchases and the 1,952 paid mints were plain transfers. REPAIR mint-phase-1.1.5.
 // ONE copy. derive.js and walk.js both require() this file; platform-crons will
 // vendor it byte-identical when forward capture moves over (diff-gate it then).
 //
@@ -33,7 +37,9 @@ function buildIndex(reg) {
   for (const [k, c] of Object.entries(reg.collections || {})) {
     colByAddr[c.collection] = { key: k, ...c };
     for (const [a, cu] of Object.entries(c.custodians || {})) custByAddr[a] = { collection: k, ...cu };
-    if (c.launchpad && c.launchpad.address) launchByAddr[c.launchpad.address] = k;
+    // 1.1.5: a collection may sell through several launchpad holders (aDAO: one candy machine per price phase) —
+    //        `launchpad.addresses` [] beside `launchpad.address`; every one is a primary-sale source
+    for (const a of [c.launchpad && c.launchpad.address, ...((c.launchpad && c.launchpad.addresses) || [])].filter(Boolean)) launchByAddr[a] = k;
     for (const a of (c.distribution_wallets || [])) distByAddr[a] = k;
   }
   return { venueByAddr, colByAddr, custByAddr, launchByAddr, distByAddr };
@@ -174,6 +180,9 @@ function classifyNftTx(tx, reg, idx) {
       }
       if (cuIn) { push({ kind: cuIn.role === 'daodao_voting' ? KIND.STAKE : KIND.STAKE_ENTERPRISE, collection: col.key, token_id: token, from, to, custodian: cuIn.role }); continue; }
       if (cuOut) { push({ kind: cuOut.role === 'daodao_voting' ? KIND.CLAIM : KIND.UNSTAKE_ENTERPRISE, collection: col.key, token_id: token, from, to, custodian: cuOut.role }); continue; }
+      if (idx.launchByAddr[from] === col.key && (idx.distByAddr[to] === col.key || idx.launchByAddr[to] === col.key)) {   // 1.1.5: unsold stock going back to the treasury / another launchpad is not a sale
+        push({ kind: KIND.TRANSFER, collection: col.key, token_id: token, from, to, note: 'launchpad stock returned to a distribution wallet' }); continue;
+      }
       if (idx.launchByAddr[from] === col.key) {   // ---- primary sale: outbound from the launchpad holder; price = payment legs / tokens out in this msg
         const outs = W.filter(x => contractOf(x) === c && (actionsOf(x).includes('transfer_nft')) && first(x.a, 'sender') === from).length || 1;
         let paid = legs.filter(l => l.from === to || l.to === from);   // buyer → holder
