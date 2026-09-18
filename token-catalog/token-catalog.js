@@ -939,6 +939,43 @@ function githubApiRequest(method, apiPath, body = null) {
 // first) -> GitHub returns 409 "is at X but expected Y". We re-fetch the fresh
 // sha and retry. This is the standard pattern for concurrent writers to the
 // contents API; almost all collisions resolve on the first retry.
+// -----------------------------------------------------------------------------
+// price-history/series/<SYMBOL>.json — Rev 1.9.0 (2026-09-18, owner): one compact daily USD series per symbol, DERIVED
+// from the oracle's month files by the oracle's own writer, for readers that need a long history in one read (the
+// explorer's floor band, the app's 14d change, release-history's mint-day price). This replaces the per-collection
+// luna/bluna-usd-daily copies that market-history used to write (retired). Seeded once from every month file; then
+// each day appended after the month append. { symbol, unit, source, daily: { 'YYYY-MM-DD': usd }, src: { day: src } }.
+let seriesFetchJson = null;   // gate injection; null → capture-engine fetchJson
+async function maintainPriceSeries(catalog, dayStr, monthDoc) {
+  const fetchJsonS = seriesFetchJson || fetchJson;
+  const out = { seeded: 0, appended: 0, unchanged: 0, failed: 0 };
+  const row = (monthDoc && monthDoc.days && monthDoc.days[dayStr]) || {};
+  const syms = Object.keys(row); if (!syms.length) return out;
+  const raw = (p) => `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${p}?t=${Date.now()}`;
+  let allMonths = null;   // loaded once, only if some series needs seeding
+  const loadAllMonths = async () => { if (allMonths) return allMonths; allMonths = [];
+    const now = new Date(); for (let y = 2022; y <= now.getUTCFullYear(); y++) for (let m = 1; m <= 12; m++) { const mk = `${y}/${String(m).padStart(2, '0')}`; if (y === now.getUTCFullYear() && m > now.getUTCMonth() + 1) break; try { const d = await fetchJsonS(raw(`price-history/${mk}.json`), 'ph-seed'); if (d && d.days) allMonths.push(d); } catch { /* month absent */ } }
+    return allMonths; };
+  for (const sym of syms) {
+    const path = `price-history/series/${encodeURIComponent(sym)}.json`;
+    let doc = null; try { doc = await fetchJsonS(raw(path), 'ph-series'); } catch { doc = null; }
+    const wasSeed = !doc || !doc.daily;
+    try {
+      if (wasSeed) {   // seed from every month file, once
+        const months = await loadAllMonths(); doc = { symbol: sym, unit: 'usd', source: 'tla-core/price-history month files (derived by token-catalog); the oracle, one symbol per file', seeded_at: new Date().toISOString(), daily: {}, src: {} };
+        for (const md of months) for (const [d, r] of Object.entries(md.days)) if (r[sym] && r[sym].usd != null) { doc.daily[d] = Number(r[sym].usd); if (r[sym].src) doc.src[d] = r[sym].src; }
+        out.seeded++;
+      } else if (doc.daily[dayStr] === Number(row[sym].usd)) { out.unchanged++; continue; }
+      doc.daily[dayStr] = Number(row[sym].usd); if (row[sym].src) (doc.src = doc.src || {})[dayStr] = row[sym].src; doc.updated_at = new Date().toISOString(); doc.count = Object.keys(doc.daily).length;
+      const sorted = {}; for (const k of Object.keys(doc.daily).sort()) sorted[k] = doc.daily[k]; doc.daily = sorted;
+      await publishFile(path, JSON.stringify(doc), `price-history series ${sym} ${dayStr}`);
+      if (!wasSeed) out.appended++;
+    } catch (e) { out.failed++; console.warn(`  ⚠ series ${sym}: ${e.message}`); }
+  }
+  console.log(`  ✓ price-history/series: ${out.seeded} seeded, ${out.appended} appended, ${out.unchanged} unchanged, ${out.failed} failed (${syms.length} symbols)`);
+  return out;
+}
+
 async function publishFile(filePath, content, message, maxAttempts = 5) {
   const apiPath = `/repos/${GITHUB_REPO}/contents/${filePath}`;
   const b64 = Buffer.from(content).toString('base64');
@@ -1029,7 +1066,8 @@ async function appendToPriceHistory(catalog, dayStr) {
     await publishFile(filePath, JSON.stringify(monthDoc, null, 2),
       `price-history: append ${dayStr} (${Object.keys(row).length} tokens)`);
     console.log(`  ✓ price-history/${year}/${month}.json — appended ${dayStr} (${Object.keys(row).length} tokens)`);
-    return { status: 'ok', reason: null, day: dayStr, tokens: Object.keys(row).length, file: filePath };
+    let series = null; try { series = await maintainPriceSeries(catalog, dayStr, monthDoc); } catch (e) { console.warn(`  ⚠ price-history series skipped: ${e.message}`); }   // 1.9.0
+    return { status: 'ok', reason: null, day: dayStr, tokens: Object.keys(row).length, file: filePath, series };
   } catch (e) {
     // NEVER let this break the core cron.
     console.warn(`  ⚠ price-history append skipped: ${e.message}`);
@@ -1287,4 +1325,4 @@ async function run() {
 
 // 2026-09-14: guarded so the mock gate can require() the live functions (no third copy).
 if (require.main === module) run().catch(e => { console.error('FATAL', e); process.exit(1); });
-module.exports = { run, appendToPriceHistory, publishPriceHistoryHeartbeat, stampAssetAlerts, _test: { setPublishFile: (fn) => { publishFile = fn; } } };
+module.exports = { run, appendToPriceHistory, publishPriceHistoryHeartbeat, stampAssetAlerts, maintainPriceSeries, _test: { setPublishFile: (fn) => { publishFile = fn; }, setSeriesFetchJson: (fn) => { seriesFetchJson = fn; } } };
