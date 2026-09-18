@@ -1,5 +1,8 @@
 'use strict';
-// org-nft-flows 1.2.0 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.2.1 — FORWARD CAPTURE for ONE collection
+// 1.2.1 (2026-09-18): the reprice pass walks EVERY month the ledger index lists (REPRICE_ALL=0 → current + previous only),
+//   one month in memory at a time; heartbeat reports months_walked / months_touched. The 2023–2025 bLUNA buy-now repairs
+//   (1.1.4) get their USD from bluna-usd-daily on the first run.
 // 1.2.0 (2026-09-17): every priced record carries denom_symbol / denom_decimals from THE shared resolver (lib/denom-symbol.js:
 //   token-catalog effective layer — no hand map, collection- and venue-agnostic). USD is per SYMBOL: a daily series per priced
 //   symbol (LUNA, bLUNA today; any <symbol>-usd-daily.json is picked up), stables 1:1 by catalog symbol, `usd_basis` labels the
@@ -122,6 +125,7 @@ let LUNA = null;
 // venues inherit this: a bLUNA sale on Pixel Lions prices exactly like one on aDAO. `usd_basis` labels the rule.
 let RESOLVE = null;                 // denom → { symbol, decimals } from the token-catalog (null until loaded)
 let STAMPED = 0;                    // records that received denom_symbol in the reprice pass (heartbeat)
+let MONTHS_WALKED = 0, MONTHS_TOUCHED = [];   // 1.2.1: the sweep's footprint, reported on the heartbeat
 const SERIES = {};                  // symbol → { day → usd }
 const SERIES_FILES = { LUNA: 'luna-usd-daily.json', bLUNA: 'bluna-usd-daily.json' };
 const symOf = (denom) => (RESOLVE ? RESOLVE(denom) : { symbol: denom === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' });
@@ -133,9 +137,16 @@ async function repriceMissingDays() {
   if (!Object.keys(SERIES).length && !RESOLVE) return 0;
   const now = new Date(); const months = [];
   for (const back of [0, 1]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
-  let total = 0;
+  // 1.2.1: the FULL sweep — every month the ledger index lists, once per run (read → stamp/price → write → drop; the heap
+  // never holds two months). Needed once for the 2023–2025 bLUNA buy-now repairs; after that it is a no-op read per month
+  // (nothing to stamp, nothing to price), which is the honest way to prove the ledger is fully labeled.
+  const REPRICE_ALL = process.env.REPRICE_ALL !== '0';
+  if (REPRICE_ALL) { const ixf = await readFile(`${LEDGER}/index.json`); for (const mk of ((ixf && ixf.data && ixf.data.months) || [])) if (!months.includes(mk)) months.push(mk); }
+  months.sort();
+  let total = 0; MONTHS_WALKED = 0; MONTHS_TOUCHED = [];
   for (const mk of months) {
     const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); if (!ex || !Array.isArray(ex.data)) continue;
+    MONTHS_WALKED++;
     let changed = 0, stamped = 0; const stamp = new Date().toISOString();
     for (const r of ex.data) {
       if (!r.price) continue;
@@ -150,7 +161,7 @@ async function repriceMissingDays() {
     }
     if (!changed && !stamped) continue;
     await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} repriced, ${stamped} symbol-stamped)`, ex.sha);
-    console.log(`  repriced ${changed} record(s) in ${p}${stamped ? ` · symbol stamped on ${stamped}` : ''}`); total += changed; STAMPED += stamped;
+    console.log(`  repriced ${changed} record(s) in ${p}${stamped ? ` · symbol stamped on ${stamped}` : ''}`); total += changed; STAMPED += stamped; MONTHS_TOUCHED.push(mk);
   }
   return total;
 }
@@ -196,7 +207,7 @@ function usdAt(price, ts) {
   }
   const head = await getHead() - LAG; const from = cursor + 1; const to = Math.min(head, cursor + MAX_BLOCKS);
   console.log(`org-nft-flows-${SLUG} · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
-  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
+  if (to < from) { await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0); }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
   const matched = []; let processedTo = cursor;
@@ -263,13 +274,13 @@ function usdAt(price, ts) {
 
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
   if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
-  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, per_collection: perColAdded });
+  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
