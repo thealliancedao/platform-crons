@@ -43,13 +43,16 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
 const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.2.0';   // 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
+const VERSION = 'nft-market-history-1.3.0';   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
 // extended at runtime from historical enriched rows (denom → denom_symbol as
 // observed); these constants only guarantee the known venues resolve.
-const DENOM_MAP = {
+const DS = require('../../lib/denom-symbol.js');   // 1.3.0
+let RESOLVE = null;                                  // token-catalog resolver, set in main(); null → DENOM_MAP fallback
+function symbolFor(denom) { if (!denom) return null; if (RESOLVE) { const r = RESOLVE(denom); if (r.symbol) return r.symbol; } const dm = DENOM_MAP[DS.bare(denom)]; return dm ? dm.symbol : null; }
+const DENOM_MAP = {   // 1.3.0: FALLBACK ONLY (catalog unreachable) — never the first answer
   'uluna': { symbol: 'LUNA', decimals: 6 },
   'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml': { symbol: 'bLUNA', decimals: 6 },
   'terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst': { symbol: 'SOLID', decimals: 6 },
@@ -180,7 +183,7 @@ function appendEnrichedSales(enr, v2sales, lunaDaily, blunaDaily, priceMonths, d
     const key = `${r.txhash}|${r.token_id}`;
     if (have.has(key)) { skippedDup++; continue; }
     const dm = denomMap[r.denom] || null;
-    const symbol = dm ? dm.symbol : (r.denom || 'unknown');
+    const symbol = symbolFor(r.denom) || (dm ? dm.symbol : (r.denom || 'unknown'));   // 1.3.0: catalog first
     const decimals = dm ? dm.decimals : 6;
     const day = (r.timestamp || '').slice(0, 10);
     const px = dayUsd(symbol, day);
@@ -246,6 +249,9 @@ function appendEnrichedSales(enr, v2sales, lunaDaily, blunaDaily, priceMonths, d
 // ---- 3. listing-history maintenance ---------------------------------------
 // lh: committed listing-history doc. v2events: transfer records with action list/cancel/sale.
 function maintainListingHistory(lh, v2events) {
+  // 1.3.0: segments written before the field get denom_symbol on the next maintenance pass (a label, never a price)
+  let stampedSegs = 0; for (const r of (lh && lh.records) || []) for (const sg of r.segments || []) if (sg && sg.denom && sg.denom_symbol === undefined) { sg.denom_symbol = symbolFor(sg.denom); stampedSegs++; }
+  if (stampedSegs) console.log(`  listing-history: denom_symbol stamped on ${stampedSegs} segment(s)`);
   const recs = lh.records;
   const priorClosed = recs.filter(r => r.outcome !== 'active').length;
   const marketOf = (r) => r.contract_label && /atrium/i.test(r.contract_label) ? 'Atrium'
@@ -276,7 +282,7 @@ function maintainListingHistory(lh, v2events) {
       const rec = { token_id: String(e.token_id), marketplace: mkt,
         listing_ref: ref, seller: e.seller || null,
         segments: [{ price: e.reserve_price != null ? String(e.reserve_price) : null,
-          denom: e.denom || null, from_ts: e.timestamp, from_height: Number(e.height),
+          denom: e.denom || null, denom_symbol: symbolFor(e.denom), from_ts: e.timestamp, from_height: Number(e.height),   // 1.3.0
           to_ts: null, end_reason: 'still_listed' }],
         listing_type: e.listing_type || null, outcome: 'active', create_tx: e.txhash,
         captured_by: VERSION };
@@ -344,6 +350,7 @@ function monthsBetween(fromDay, toDay) {
 async function main() {
   const today = new Date().toISOString().slice(0, 10);
   console.log(`\n${VERSION} — market-history forward maintenance`);
+  try { RESOLVE = DS.buildResolver(await fetchJson(RAW_DATA('token-catalog/snapshots/current.json'))); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { console.warn('  ⚠ token-catalog read failed — DENOM_MAP fallback in force:', e.message); }
   const [enr, lh, lunaDaily, blunaDaily] = await Promise.all([
     fetchJson(RAW(`${NFT_PATH}/sales-enriched.json`)),
     fetchJson(RAW(`${NFT_PATH}/listing-history.json`)),
@@ -431,5 +438,5 @@ async function main() {
   console.log('  done');
 }
 
-module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, TRANSFERS_PATH, PRICE_PATH, RAW, RAW_DATA } };
+module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP, symbolFor, _setResolver: (r) => { RESOLVE = r; }, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, TRANSFERS_PATH, PRICE_PATH, RAW, RAW_DATA } };
 if (require.main === module) main().catch(e => { console.error('market-history failed:', e.message); process.exit(1); });

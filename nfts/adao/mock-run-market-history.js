@@ -17,6 +17,8 @@ if (!CORE) { console.error('TLA_CORE_DIR required'); process.exit(1); }
 const NFTC = process.env.NFTC_DIR; if (!NFTC) { console.error('NFTC_DIR required (nft-collections checkout)'); process.exit(1); }
 const NFT_ROOT = process.env.NFT_ROOT || 'adao';
 const MH = require('./market-history.js');
+// 1.3.0: the shared resolver on the real catalog, as main() would set it
+{ const DS = require('../../lib/denom-symbol.js'); const MH = require('./market-history.js'); const cat = JSON.parse(require('fs').readFileSync(require('path').join(process.env.TLA_CORE_DIR, 'token-catalog/snapshots/current.json'))); MH._setResolver(DS.buildResolver(cat)); }
 const P = (p) => JSON.parse(fs.readFileSync(path.join(CORE, p)));
 const N = (p) => JSON.parse(fs.readFileSync(path.join(NFTC, NFT_ROOT, p)));   // aDAO products
 
@@ -194,5 +196,10 @@ const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   check('G5 upgrade fn exported and callable', typeof flows.upgradeDelistingsToSales === 'function');
 }
 
+{ const MH = require('./market-history.js'); const lh = JSON.parse(require('fs').readFileSync(require('path').join(process.env.NFTC_DIR, 'adao/snapshots/listing-history.json')));
+  MH.maintainListingHistory(lh, []); const segs = lh.records.flatMap(r => r.segments || []).filter(sg => sg.denom);
+  const known = segs.filter(sg => sg.denom_symbol), unknown = segs.filter(sg => sg.denom_symbol === null);
+  console.log(`  1.3.0 segments: ${segs.length} with a denom · ${known.length} resolved (${[...new Set(known.map(sg => sg.denom_symbol))].join(', ')}) · ${unknown.length} unknown (null, not guessed${unknown.length ? ': ' + [...new Set(unknown.map(sg => sg.denom))].slice(0, 3).join(', ') : ''})`);
+  check('1.3.0 every segment with a denom carries denom_symbol; ≥95% resolve through the catalog; a symbol is never an address', segs.every(sg => 'denom_symbol' in sg) && known.length / segs.length > 0.95 && !known.some(sg => /^(cw20|native):|terra1/.test(sg.denom_symbol))); }
 console.log(fails === 0 ? '\nGATE PASS' : `\nGATE FAIL (${fails})`);
 process.exit(fails === 0 ? 0 : 1);
