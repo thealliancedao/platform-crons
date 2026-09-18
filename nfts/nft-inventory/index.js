@@ -1,5 +1,7 @@
 // =============================================================================
-// NFT Inventory Cron — Rev D.1.1
+// NFT Inventory Cron — Rev D.1.2
+// Rev D.1.2 (2026-09-18) — the resolved NFT_ROOT is exported to the env for the in-process sub-modules; the 23:44Z run wrote
+//   adao/snapshots correctly but analytics / market-history / compact-bundle still looked under nfts/adao (exit 1).
 // Rev D.1.1 (2026-09-18) — NFT_ROOT for COLLECTION=adao is `adao` (the slug), not the pre-migration 'nfts/adao' — the first
 //   run-ally adao run (23:34Z) wrote its products into a stray nft-collections/nfts/adao/ folder; adao/snapshots was untouched.
 // Rev D.1 (2026-09-18) — COLLECTION-AGNOSTIC: every collection-specific address, token id set and feature switch is a
@@ -190,6 +192,7 @@ const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const DATA_REPO     = process.env.DATA_REPO     || 'thealliancedao/tla-core';
 const NFT_ROOT      = String(process.env.NFT_ROOT || (COLLECTION ? COLLECTION : 'nfts/adao')).replace(/^\/+|\/+$/g, '');   // D.1.1: ANY named collection's folder is its root — including adao (D.1 fell back to the pre-migration 'nfts/adao' for it: the 23:34Z run wrote a stray nft-collections/nfts/adao/); the legacy default survives only when nothing at all is set
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
+if (!process.env.NFT_ROOT) process.env.NFT_ROOT = NFT_ROOT;   // D.1.2: the sub-modules (analytics · market-history · compact-bundle) resolve their own root from the env at require time — hand them the one this run resolved (run-ally clears NFT_ROOT on purpose)
 
 // Output path within the data repo. Rev B.2 (2026-06-07): moved from `data/` → `data/v2/`
 // to make a clean break from the pre-Rev-B data which had classification bugs (treasury
