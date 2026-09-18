@@ -1,5 +1,9 @@
 'use strict';
-// org-nft-flows 1.2.1 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.2.2 — FORWARD CAPTURE for ONE collection
+// 1.2.2 (2026-09-18): sparse USD series (bluna-usd-daily is weekly-ish before mid-2025) price from the NEAREST day within
+//   USD_NEAREST_MAX_DAYS (7), labeled on usd_basis "(nearest, Δ3d)"; a row that still cannot be priced gets its usd_reason
+//   refreshed (day + gap) instead of the stale no_usd_series text. First adao sweep: 5,751 symbols stamped, 214 priced,
+//   the 2023-12 → 2025-08 bLUNA rows waited on this.
 // 1.2.1 (2026-09-18): the reprice pass walks EVERY month the ledger index lists (REPRICE_ALL=0 → current + previous only),
 //   one month in memory at a time; heartbeat reports months_walked / months_touched. The 2023–2025 bLUNA buy-now repairs
 //   (1.1.4) get their USD from bluna-usd-daily on the first run.
@@ -128,6 +132,8 @@ let STAMPED = 0;                    // records that received denom_symbol in the
 let MONTHS_WALKED = 0, MONTHS_TOUCHED = [];   // 1.2.1: the sweep's footprint, reported on the heartbeat
 const SERIES = {};                  // symbol → { day → usd }
 const SERIES_FILES = { LUNA: 'luna-usd-daily.json', bLUNA: 'bluna-usd-daily.json' };
+const NEAREST_MAX_DAYS = Number(process.env.USD_NEAREST_MAX_DAYS || 7);   // 1.2.2: how far a sparse series may reach
+const SERIES_LAST = {};             // symbol → last day the series has (nearest-day never reaches past it)
 const symOf = (denom) => (RESOLVE ? RESOLVE(denom) : { symbol: denom === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' });
 // 1.1.3 — re-price pass. Scope: the current and previous UTC month files (a missing day is always recent: the series
 // lags the chain by 1–2 days). A record qualifies only when usd is null AND usd_reason is luna_usd_daily_missing:<day>
@@ -156,7 +162,8 @@ async function repriceMissingDays() {
       // qualifies: a day the series now has (any symbol), or a denom that had no series when written and now has one
       const dayMissing = /^(luna_usd_daily_missing|usd_daily_missing):/.test(r.usd_reason), noSeries = /^no_usd_series_for_denom:/.test(r.usd_reason);
       if (!dayMissing && !noSeries) continue;
-      const again = usdAt(r.price, r.ts); if (again.usd == null) continue;   // same rule as the first pricing — no second formula
+      const again = usdAt(r.price, r.ts);
+      if (again.usd == null) { if (again.usd_reason && again.usd_reason !== r.usd_reason) { r.usd_reason = again.usd_reason; stamped++; } continue; }   // 1.2.2: the reason is kept current (day missing + gap), never left stale
       delete r.usd_reason; Object.assign(r, again); r.usd_repriced_at = stamp; changed++;
     }
     if (!changed && !stamped) continue;
@@ -172,9 +179,16 @@ function usdAt(price, ts) {
   const base = { denom_symbol: s.symbol, denom_decimals: dec };
   if (DS.isStableSymbol(s.symbol)) return Object.assign(base, { usd: amt, usd_basis: 'stable_1_1' });
   const series = SERIES[s.symbol]; if (!series) return Object.assign(base, { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom });
-  const px = series[day];
-  if (px == null) return Object.assign(base, { usd: null, usd_reason: 'usd_daily_missing:' + s.symbol + ':' + day });
-  const out = Object.assign(base, { usd: amt * px, usd_basis: s.symbol.toLowerCase() + '-usd-daily:' + day, unit_usd: px });
+  // 1.2.2: a series may be SPARSE (bluna-usd-daily is the CoinGecko max chart — weekly-ish before mid-2025): use the
+  // nearest day within NEAREST_MAX_DAYS, and say so on the basis. Beyond that, null with the gap in the reason.
+  let px = series[day], used = day;
+  // Only for a day the series has already passed over (a sparse gap) — never for a day still to come: a same-day sale
+  // waits for its exact day (1.1.3), because tomorrow's series WILL have it.
+  const lastDay = SERIES_LAST[s.symbol] || (SERIES_LAST[s.symbol] = Object.keys(series).sort().pop());
+  if (px == null && lastDay && Date.parse(day + 'T00:00:00Z') <= Date.parse(lastDay + 'T00:00:00Z') - 2 * 864e5) { const want = Date.parse(day + 'T00:00:00Z'); let best = null; for (const k of Object.keys(series)) { const gap = Math.abs(Date.parse(k + 'T00:00:00Z') - want) / 864e5; if (gap <= NEAREST_MAX_DAYS && (best == null || gap < best.gap)) best = { k, gap }; } if (best) { px = series[best.k]; used = best.k; } }
+  if (px == null) { const past = lastDay && Date.parse(day + 'T00:00:00Z') <= Date.parse(lastDay + 'T00:00:00Z') - 2 * 864e5; return Object.assign(base, { usd: null, usd_reason: s.symbol === 'LUNA' && !past ? 'luna_usd_daily_missing:' + day : 'usd_daily_missing:' + s.symbol + ':' + day + (past ? ':nearest>' + NEAREST_MAX_DAYS + 'd' : '') }); }
+  const gapD = Math.round(Math.abs(Date.parse(used + 'T00:00:00Z') - Date.parse(day + 'T00:00:00Z')) / 864e5);
+  const out = Object.assign(base, { usd: amt * px, usd_basis: s.symbol.toLowerCase() + '-usd-daily:' + used + (gapD ? ` (nearest, Δ${gapD}d)` : ''), unit_usd: px });
   if (s.symbol === 'LUNA') out.luna_usd = px;   // the field readers already know
   return out;
 }
@@ -280,7 +294,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.2.2', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
