@@ -1,5 +1,8 @@
 'use strict';
-// org-nft-flows 1.4.0 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.4.1 — FORWARD CAPTURE for ONE collection
+// 1.4.1 (2026-09-19, D.2): the "USD at the day" rule lives in lib/oracle-usd.js (moved, not copied — the nft-collections
+//   derive Action requires the same file from a run-time checkout of this repo; behaviour byte-identical, mock 55/55);
+//   by-token rebuild prints a progress line every 20 shards (a full aDAO rebuild is 101 shards of silence otherwise).
 // 1.4.0 (2026-09-18): BY-TOKEN SHARDS — <slug>/ledger/by-token/<shard>.json (index.json beside them): every LIVE ledger
 //   record of a token (superseded rows excluded), 100 tokens per shard, records verbatim and sorted. The read shape for
 //   "open an NFT → its whole on-chain journey" (explorer sheet, app NFT sheet, portfolio cost basis) — one small file per
@@ -164,7 +167,9 @@ async function rebuildByToken(ix) {
   }
   const shards = wanted ? [...wanted] : Object.keys(buckets); shards.sort();
   const before = JSON.stringify((ixb && ixb.data && ixb.data.shards) || {}); const meta = JSON.parse(before); let written = 0; const stamp = new Date().toISOString();   // a copy: the write test below compares against what was on main
+  let done = 0;
   for (const sh of shards) {
+    if (++done % 20 === 0 || done === shards.length) console.log(`  by-token: ${done}/${shards.length} shards${written ? ` (${written} written so far)` : ''}`);   // 1.4.1: a progress line every 20 shards
     const tokens = buckets[sh] || {}; for (const id of Object.keys(tokens)) tokens[id].sort((a, b) => a.height - b.height || a.msg_index - b.msg_index || String(a.kind).localeCompare(String(b.kind)));
     const lo = sh === 'x' ? null : Number(sh) * SHARD_SIZE; const n = Object.values(tokens).reduce((s, l) => s + l.length, 0);
     const body = { product: `${SLUG}/ledger/by-token`, collection: SLUG, shard: sh, shard_size: SHARD_SIZE, range: lo == null ? null : [lo, lo + SHARD_SIZE - 1], tokens_with_records: Object.keys(tokens).length, records: n, note: 'every live ledger record of these tokens (superseded rows excluded), sorted; rebuilt by org-nft-flows when a token in this shard gains or re-prices a record', tokens };
@@ -178,24 +183,19 @@ async function rebuildByToken(ix) {
   if (!ixb || before !== JSON.stringify(meta) || all) await writeJson(`${BYT}/index.json`, index, `nft-flows by-token ${SLUG} index`, ixb && ixb.sha);
   return { shards_rebuilt: shards.length, shards_written: written, records, mode: all ? 'all' : 'dirty' };
 }
-const ORACLE = {};                  // 'YYYY/MM' → { days: { 'YYYY-MM-DD': { SYM: { usd, src } } } } | null (month absent)
-let ORACLE_LATEST = null;           // the latest day the oracle has (a day after it is "not yet written", not "missing")
-const monthOf = (day) => String(day).slice(0, 7).replace('-', '/');
-async function loadOracleMonth(mk) {
-  if (mk in ORACLE) return ORACLE[mk];
-  try { ORACLE[mk] = await httpGet(TLA_CORE_RAW + 'price-history/' + mk + '.json'); } catch (e) { ORACLE[mk] = null; }
-  const days = ORACLE[mk] && ORACLE[mk].days ? Object.keys(ORACLE[mk].days).sort() : []; const last = days[days.length - 1];
-  if (last && (!ORACLE_LATEST || last > ORACLE_LATEST)) ORACLE_LATEST = last;
-  return ORACLE[mk];
-}
-function dropOracleMonth(mk) { delete ORACLE[mk]; }   // read → price → drop (Render heap)
-const symOf = (denom) => (RESOLVE ? RESOLVE(denom) : { symbol: denom === 'uluna' ? 'LUNA' : null, decimals: 6, reason: 'catalog_unavailable' });
+// 1.4.1 — THE ONE rule, from lib/oracle-usd.js: months fetched from the org oracle, symbols from the catalog resolver.
+const OU = require('./lib/oracle-usd.js');
+const ORACLE = OU.makeOracle({ fetchMonth: (mk) => httpGet(TLA_CORE_RAW + 'price-history/' + mk + '.json'), resolve: () => RESOLVE });
+const monthOf = OU.monthOf;
+const loadOracleMonth = (mk) => ORACLE.loadMonth(mk);
+const dropOracleMonth = (mk) => ORACLE.dropMonth(mk);   // read → price → drop (Render heap)
+const symOf = (denom) => ORACLE.symOf(denom);
 // 1.1.3 — re-price pass. Scope: the current and previous UTC month files (a missing day is always recent: the series
 // lags the chain by 1–2 days). A record qualifies only when usd is null AND usd_reason is luna_usd_daily_missing:<day>
 // AND the series now has <day>. Nothing else on the record changes; the fill is labeled with usd_repriced_at. Returns
 // the number of records re-priced (0 when the series is unavailable — a missing series is never a reason to write).
 async function repriceMissingDays() {
-  if (!Object.keys(ORACLE).some(k => ORACLE[k]) && !RESOLVE) return 0;
+  if (!ORACLE.anyLoaded() && !RESOLVE) return 0;
   const now = new Date(); const months = [];
   for (const back of [0, 1]) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
   // 1.2.1: the FULL sweep — every month the ledger index lists, once per run (read → stamp/price → write → drop; the heap
@@ -233,22 +233,10 @@ async function repriceMissingDays() {
     await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} repriced, ${stamped} symbol-stamped)`, ex.sha);
     console.log(`  repriced ${changed} record(s) in ${p}${stamped ? ` · symbol stamped on ${stamped}` : ''}`); total += changed; STAMPED += stamped; MONTHS_TOUCHED.push(mk);
   }
-  for (const mk of Object.keys(ORACLE)) if (!months.slice(-2).includes(mk)) dropOracleMonth(mk);
+  for (const mk of ORACLE.loaded()) if (!months.slice(-2).includes(mk)) dropOracleMonth(mk);
   return total;
 }
-function usdAt(price, ts) {
-  if (!price || price.amount == null || !price.denom) return { usd: null, usd_reason: 'no_price' };
-  const day = String(ts).slice(0, 10); const s = symOf(price.denom); const dec = s.decimals != null ? s.decimals : 6; const amt = Number(price.amount) / Math.pow(10, dec);
-  if (!s.symbol) return { usd: null, usd_reason: 'no_usd_series_for_denom:' + price.denom, denom_symbol: null, denom_symbol_reason: s.reason || 'not_in_token_catalog' };
-  const base = { denom_symbol: s.symbol, denom_decimals: dec };
-  const mk = monthOf(day); const month = ORACLE[mk];   // preloaded by the caller for the month in hand
-  const cell = month && month.days && month.days[day] && month.days[day][s.symbol];
-  if (cell && cell.usd != null) { const out = Object.assign(base, { usd: amt * Number(cell.usd), usd_basis: 'price-history:' + day + (cell.src ? ' (' + cell.src + ')' : ''), unit_usd: Number(cell.usd) }); if (s.symbol === 'LUNA') out.luna_usd = Number(cell.usd); return out; }
-  if (DS.isStableSymbol(s.symbol)) return Object.assign(base, { usd: amt, usd_basis: 'stable_1_1' });   // the oracle has no row for it that day: a stable is a dollar
-  if (!month) return Object.assign(base, { usd: null, usd_reason: (ORACLE_LATEST && day > ORACLE_LATEST) ? 'price_history_not_yet_written:' + day : 'price_history_month_missing:' + mk });
-  if (ORACLE_LATEST && day > ORACLE_LATEST) return Object.assign(base, { usd: null, usd_reason: 'price_history_not_yet_written:' + day });   // same-day: waits for the oracle's next append (1.1.3)
-  return Object.assign(base, { usd: null, usd_reason: 'price_history_missing:' + s.symbol + ':' + day });   // the oracle has the day but not this symbol
-}
+const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd.js (the month must be loaded — the caller is on it)
 
 // ---------------------------------------------------------------- main
 (async () => {
@@ -355,7 +343,7 @@ function usdAt(price, ts) {
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.4.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.4.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }

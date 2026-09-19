@@ -46,7 +46,10 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
   const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
   ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
-  ok(J('pixel-lions/nft-flows/heartbeat.json').version === '1.4.0' && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', 'heartbeat 1.4.0 ok');
+  const DECLARED = (fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8').match(/^\/\/ org-nft-flows (\d+\.\d+\.\d+)/m) || [])[1];   // 1.4.1: the heartbeat's version is a relation to the header, never a literal frozen in the gate
+  ok(DECLARED && J('pixel-lions/nft-flows/heartbeat.json').version === DECLARED && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', `heartbeat ${DECLARED} ok (version = the header's)`);
+  ok(/by-token: \d+\/\d+ shards/.test(r3.stdout), '1.4.1 by-token rebuild prints its progress line (every 20 shards and at the end)', r3.stdout.split('\n').filter(l => /by-token/.test(l)));
+  ok(require('./lib/oracle-usd.js').VERSION === '1.0.0' && typeof require('./lib/oracle-usd.js').makeOracle === 'function', '1.4.1 lib/oracle-usd.js is the pricing rule (required, not copied)');
   // 1.1.4 — BBL buy-now = place_bid + settle + settle_hook in ONE tx (the exact event sequence of aDAO #745 on
   // 2026-09-12, tx C50E1FF…): the classifier read only the venue's FIRST event (place_bid), never saw the settle, and
   // filed every buy-now since 2023 as "venue release without a known verb". 317 sales missing across aDAO/PL.

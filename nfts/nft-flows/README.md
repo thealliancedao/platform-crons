@@ -22,6 +22,9 @@ current. Env `COLLECTION=<slug>` selects the folder; the service reads and write
 - Mock: `node mock-run.js` — fake RPC + fake GitHub; asserts raw file, ledger merge, index coverage, cursor last.
 
 ## Changelog
+### 1.4.1 — 2026-09-19
+- `lib/oracle-usd.js` = the pricing rule (makeOracle({ fetchMonth, resolve }) → usdAt / loadMonth / dropMonth); index.js delegates to it, derive.js (nft-collections) requires it from `_crons` at run time — one rule, no copy.
+- by-token: `by-token: N/M shards (k written so far)` every 20 shards and at the end.
 ### 1.1.3 — 2026-09-14
 Re-price pass at the start of every run over the current + previous month files: a record left `usd:null /
 usd_reason:luna_usd_daily_missing:<day>` (the series lags the chain 1–2 days, so same-day LUNA sales were never priced)
