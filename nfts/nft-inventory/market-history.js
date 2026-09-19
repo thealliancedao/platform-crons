@@ -1,13 +1,21 @@
 // =============================================================================
-// nfts/adao/market-history.js — forward maintenance of the market-history products
+// nfts/nft-inventory/market-history.js — maintenance of the market-history products, FROM THE LEDGER
 // =============================================================================
+// 1.6.0 (2026-09-19, owner): THE SOURCE IS THE LEDGER. sales-enriched / listing-history are maintained from
+//   <root>/ledger/YYYY/MM.json (org-nft-flows: every list / delist / sale on chain, priced by the org oracle, superseded
+//   rows skipped) instead of the tla-flows NFT aux `transfers/` leg — this is market-history's leg of B.2 (retire the
+//   transfers reader), and the seed for a NEW collection (B.6): with no committed docs, both are built from the whole
+//   ledger, one month (and its oracle month) in memory at a time. aDAO: forward window unchanged (enriched tail − 32 d),
+//   committed rows byte-verbatim; gate = the ledger reproduces every committed row field-for-field on the overlap.
+//   The unresolved-exit sentinel is the ledger's own `venue_out` rows (a venue release the classifier could not name).
+//   SCAN_ALL=1 walks every ledger month once (a one-time deepen for a collection whose docs predate the ledger).
 // THE PORTED DUTY. sales-enriched.json, listing-history.json, luna-usd-daily.json
 // and bluna-usd-daily.json were written by the retired data-repo Action; the
 // migration left them with no maintainer (frozen 2026-06). This module carries
 // them forward from org products only:
 //
-//   INPUT  nfts/adao/transfers/YYYY/MM.json  — classifyNftTx v2 records from the
-//          tla-flows walker (sale / list / cancel; chain-truth payment legs)
+//   INPUT  <root>/ledger/YYYY/MM.json           — org-nft-flows ledger records (1.6.0; was the tla-flows transfers leg)
+//          list / delist / sale with chain-truth payment legs, superseded rows skipped
 //   INPUT  price-history/YYYY/MM.json        — per-day USD per token (org capture)
 //   OUTPUT (merged INTO the same org paths — same file, deeper history, never a
 //          side file):
@@ -41,9 +49,10 @@ const DATA_REPO     = process.env.DATA_REPO || 'thealliancedao/tla-core';
 const NFT_ROOT      = String(process.env.NFT_ROOT || 'nfts/adao').replace(/^\/+|\/+$/g, '');
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const NFT_PATH   = process.env.NFT_PATH || `${NFT_ROOT}/snapshots`;
-const TRANSFERS_PATH = `${NFT_ROOT}/transfers`;
+const LEDGER_PATH = `${NFT_ROOT}/ledger`;   // 1.6.0: the source (was `${NFT_ROOT}/transfers`, the tla-flows aux leg)
+const SCAN_ALL = /^1|true$/i.test(String(process.env.SCAN_ALL || ''));
 const PRICE_PATH = 'price-history';
-const VERSION = 'nft-market-history-1.5.0';   // 1.5.0 (2026-09-18): the luna/bluna-usd-daily copies are RETIRED — not read, not written (token-catalog 1.9.0 publishes price-history/series/<SYMBOL>.json for readers that need one long series); luna_equiv and value_today read the oracle month for the day / the latest oracle day ·   // 1.4.1 (2026-09-18): listing-history IS published when segments were stamped (1.4.0 stamped 3,172 in memory and skipped the write); the usd-daily rebuild log separates value corrections from precision rewrites ·   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
+const VERSION = 'nft-market-history-1.6.0';   // 1.6.0 (2026-09-19): source = the ledger; seeds a new collection; sentinel = venue_out ·   // 1.5.0 (2026-09-18): the luna/bluna-usd-daily copies are RETIRED — not read, not written (token-catalog 1.9.0 publishes price-history/series/<SYMBOL>.json for readers that need one long series); luna_equiv and value_today read the oracle month for the day / the latest oracle day ·   // 1.4.1 (2026-09-18): listing-history IS published when segments were stamped (1.4.0 stamped 3,172 in memory and skipped the write); the usd-daily rebuild log separates value corrections from precision rewrites ·   // 1.4.0 (2026-09-18, owner): the ORG PRICE ORACLE (tla-core/price-history) is the only source for past USD — dayUsd reads it first; luna/bluna-usd-daily are rebuilt from it every run (they were CoinGecko market charts: bLUNA differed from the oracle by up to 30% on 261 days) and kept only for the three pages that still read them ·   // 1.3.0 (2026-09-18): denom → symbol from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer); listing-history segments carry denom_symbol; the local DENOM_MAP is a last resort only when the catalog read fails · 1.2.0 (2026-09-12): NFT_ROOT + DATA_REPO (TLA-side reads pinned to tla-core)
 const SENTINEL_WINDOW_DAYS = Number(process.env.SENTINEL_WINDOW_DAYS || 60);
 
 // Marketplace payment denoms (chain denom → symbol/decimals). Learned set is
@@ -184,6 +193,7 @@ function appendEnrichedSales(enr, v2sales, lunaDaily, blunaDaily, priceMonths, d
     const px = mon && mon.days && mon.days[day] && mon.days[day][symbol] ? mon.days[day][symbol].usd : null;
     if (px != null) return { usd: px, source: 'price-history' + (mon.days[day][symbol].src ? ':' + mon.days[day][symbol].src : '') };
     if (PAR_USD[symbol]) return { usd: PAR_USD[symbol].usd, source: PAR_USD[symbol].source };
+    if (DS.isStableSymbol(symbol)) return { usd: 1, source: 'stable-par' };   // 1.6.0: by catalog symbol (USDC.n, USDC.inj, USDT …), the same rule the ledger prices with
     return { usd: null, source: 'unpriced' };
   };
 
@@ -216,8 +226,7 @@ function appendEnrichedSales(enr, v2sales, lunaDaily, blunaDaily, priceMonths, d
       marketplace_fee: r.marketplace_fee != null ? String(r.marketplace_fee) : '0',
       royalty_fee: r.royalty_fee != null ? String(r.royalty_fee) : null,
       royalty_recipient: r.royalty_recipient || null,
-      marketplace: r.contract_label && /atrium/i.test(r.contract_label) ? 'Atrium'
-                 : r.contract_label && /boost|launch/i.test(r.contract_label) ? 'Boost' : 'BBL',
+      marketplace: marketOfEvent(r),
       sale_number: prior.length + 1,
       amount, luna_equiv: lunaEquiv,
       price_usd_at_sale: px.usd, price_source: px.source,
@@ -265,8 +274,7 @@ function maintainListingHistory(lh, v2events) {
   if (stampedSegs) console.log(`  listing-history: denom_symbol stamped on ${stampedSegs} segment(s)`);
   const recs = lh.records;
   const priorClosed = recs.filter(r => r.outcome !== 'active').length;
-  const marketOf = (r) => r.contract_label && /atrium/i.test(r.contract_label) ? 'Atrium'
-                        : r.contract_label && /boost|launch/i.test(r.contract_label) ? 'Boost' : 'BBL';
+  const marketOf = marketOfEvent;
   const openByRef = new Map(), openByTok = new Map();
   // dedupe against EVERYTHING ever recorded, not just open records: the scan
   // window overlaps between runs, so a list event whose record has since been
@@ -280,9 +288,11 @@ function maintainListingHistory(lh, v2events) {
     openByTok.set(`${r.marketplace}:${r.token_id}`, r);
   }
   let opened = 0, closed = 0, unmatched = 0;
-  // order: height, then lifecycle rank (a list precedes its close at equal height), then key
-  const rank = { list: 0, cancel: 1, sale: 1 };
-  const sorted = [...v2events].sort((a, b) => (a.height - b.height)
+  // order: height, then msg_index, then lifecycle rank — a CLOSE precedes an OPEN at the same height (1.6.0: Atrium's price
+  // update is delist + list in ONE tx; opening first let the close land on the new record and left the old one active
+  // forever — #6192), then key
+  const rank = { cancel: 0, sale: 0, exit: 0, list: 1 };
+  const sorted = [...v2events].sort((a, b) => (a.height - b.height) || ((a.msg_index || 0) - (b.msg_index || 0))
     || ((rank[a.action] ?? 2) - (rank[b.action] ?? 2)) || String(a.k).localeCompare(String(b.k)));
   for (const e of sorted) {
     const mkt = marketOf(e);
@@ -290,6 +300,11 @@ function maintainListingHistory(lh, v2events) {
       const ref = e.auction_id != null ? String(e.auction_id) : null;
       if (ref != null && seenRef.has(`${mkt}:${ref}`)) continue;        // ever recorded (open OR closed) — idempotent
       if (ref == null && seenCreateTx.has(`${e.txhash}|${e.token_id}`)) continue;
+      // 1.6.0: a new listing of a token still open on the same venue closes the open record first (BBL relist without a
+      // captured cancel — #1657 sat "active" under its first auction id after selling under the second): end_reason
+      // 'relisted', outcome delisted — the old escrow ended; the new record is the listing that is live.
+      const prev = openByTok.get(`${mkt}:${e.token_id}`);
+      if (prev) { const sg = prev.segments[prev.segments.length - 1]; if (sg && sg.to_ts == null) { sg.to_ts = e.timestamp; sg.to_height = Number(e.height); sg.end_reason = 'relisted'; } prev.outcome = 'delisted'; prev.closed_by = VERSION; if (prev.listing_ref != null) openByRef.delete(`${mkt}:${prev.listing_ref}`); closed++; }
       const rec = { token_id: String(e.token_id), marketplace: mkt,
         listing_ref: ref, seller: e.seller || null,
         segments: [{ price: e.reserve_price != null ? String(e.reserve_price) : null,
@@ -301,16 +316,16 @@ function maintainListingHistory(lh, v2events) {
       if (ref != null) { openByRef.set(`${mkt}:${ref}`, rec); seenRef.add(`${mkt}:${ref}`); }
       seenCreateTx.add(`${e.txhash}|${e.token_id}`);
       openByTok.set(`${mkt}:${e.token_id}`, rec);
-    } else if (e.action === 'cancel' || e.action === 'sale') {
+    } else if (e.action === 'cancel' || e.action === 'sale' || e.action === 'exit') {
       const ref = e.auction_id != null ? String(e.auction_id) : null;
       const rec = (ref != null && openByRef.get(`${mkt}:${ref}`)) || openByTok.get(`${mkt}:${e.token_id}`) || null;
-      if (!rec) { unmatched++; continue; }                              // warned by caller — never invent a record
+      if (!rec) { if (e.action !== 'exit') unmatched++; continue; }    // warned by caller — never invent a record (an exit with nothing open is nothing)
       const seg = rec.segments[rec.segments.length - 1];
       if (seg && seg.to_ts == null) {
         seg.to_ts = e.timestamp; seg.to_height = Number(e.height);
-        seg.end_reason = e.action === 'sale' ? 'sale' : 'delist';
+        seg.end_reason = e.action === 'sale' ? 'sale' : e.action === 'exit' ? 'venue_exit' : 'delist';
       }
-      rec.outcome = e.action === 'sale' ? 'sold' : 'delisted';
+      rec.outcome = e.action === 'sale' ? 'sold' : e.action === 'exit' ? 'unknown' : 'delisted';
       rec.closed_by = VERSION;
       if (ref != null) openByRef.delete(`${mkt}:${ref}`);
       openByTok.delete(`${mkt}:${e.token_id}`);
@@ -327,26 +342,54 @@ function maintainListingHistory(lh, v2events) {
   return { opened, closed, unmatched, total: recs.length, stamped: stampedSegs };
 }
 
-// ---- 4. unresolved-exit sentinel -------------------------------------------
-// THE "NEVER AGAIN" INVARIANT. Every NFT that leaves a marketplace contract did
-// so as a SALE or a DELIST — there is no third thing. So every v1 exit record
-// (transfer_nft/send_nft FROM a registry marketplace) must have a v2 sale or
-// cancel record for the same tx. Any exit without one is a coverage hole and
-// gets screamed about — a heartbeat warning, not a lucky catch two days later
-// (which is exactly how the 2026-08-21 Atrium sale of #6192 was found).
-function findUnresolvedExits(monthDocs, marketAddrs, sinceIso) {
-  const resolvedTx = new Set();
-  const exits = [];
-  for (const doc of Object.values(monthDocs)) {
-    for (const r of (doc || [])) {
-      if (Number(r.schemaVersion) >= 2 && (r.action === 'sale' || r.action === 'cancel')) resolvedTx.add(r.txhash);
-      if (Number(r.schemaVersion) === 1 && (r.action === 'transfer_nft' || r.action === 'send_nft')
-          && marketAddrs.has(r.from) && r.timestamp > sinceIso) {
-        exits.push({ txhash: r.txhash, token_id: r.token_id, from: r.from, timestamp: r.timestamp });
+// ---- 3b. the ledger → maintenance events (1.6.0) ---------------------------------
+// A ledger record (org-nft-flows classify.js) becomes the event shape appendEnrichedSales / maintainListingHistory have
+// always consumed. Nothing is inferred: seller = from, buyer = to, the split legs name the fee (the venue's fee wallet
+// from venues.json), the royalty (any other non-seller leg) and the seller's net. Superseded rows are never events.
+const bareDenom = (d) => DS.bare(d);
+const VENUE_MARKET = { bbl: 'BBL', atrium: 'Atrium', boost: 'Boost' };
+function ledgerToEvents(rows, venues) {
+  const feeWallets = {}; for (const [k, v] of Object.entries((venues && venues.venues) || {})) if (v && v.fee_wallet) feeWallets[k] = v.fee_wallet;
+  const labelOf = (k) => VENUE_MARKET[k] || ((venues && venues.venues && venues.venues[k] && venues.venues[k].label) || k || 'BBL');
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || r.superseded_by || r.token_id == null) continue;
+    const base = { txhash: r.txhash, height: Number(r.height), timestamp: String(r.ts || '').slice(0, 19) + 'Z', token_id: String(r.token_id),
+      auction_id: r.auction_id != null ? r.auction_id : (r.listing_id != null ? r.listing_id : null), contract_label: labelOf(r.venue), venue: r.venue,
+      msg_index: Number(r.msg_index) || 0, k: `${r.txhash}|${r.msg_index}|${r.kind}`, schemaVersion: 2 };
+    if (r.kind === 'sale') {
+      const seller = r.from || null, fee = feeWallets[r.venue] || null; let mfee = null, roy = null, royTo = null, net = null;
+      if (r.split && Array.isArray(r.split.legs)) {   // BBL: the settle's transfer legs, attributed by recipient
+        for (const l of r.split.legs) { if (fee && l.to === fee) mfee = l.amount; else if (seller && l.to === seller) net = l.amount; else if (roy == null) { roy = l.amount; royTo = l.to; } }
+      } else if (r.split && (r.split.fee != null || r.split.royalty != null || r.split.seller != null)) {   // Boost / Atrium: the contract's own split attributes
+        mfee = r.split.fee != null ? String(r.split.fee) : null; roy = r.split.royalty != null ? String(r.split.royalty) : null; net = r.split.seller != null ? String(r.split.seller) : null;
       }
+      out.push({ ...base, action: 'sale', seller, buyer: r.to || null, denom: r.price ? bareDenom(r.price.denom) : null, gross_amount: r.price ? r.price.amount : null,
+        seller_net: net, marketplace_fee: mfee, royalty_fee: roy, royalty_recipient: royTo, via_offer: !!r.via_offer });
+    } else if (r.kind === 'list') {
+      out.push({ ...base, action: 'list', seller: r.from || null, reserve_price: r.price ? r.price.amount : null, denom: r.price ? r.price.denom : null /* listing segments keep the chain spelling (cw20:…), as the committed records do */, listing_type: r.auction_type || r.listing_type || null });
+    } else if (r.kind === 'delist') {
+      out.push({ ...base, action: 'cancel', seller: r.to || null });
+    } else if (r.kind === 'venue_out') {
+      out.push({ ...base, action: 'exit', note: r.note || null });   // a venue release the classifier could not name: closes the record as unknown, never as a sale or a delist
     }
   }
-  return exits.filter(e => !resolvedTx.has(e.txhash));
+  return out;
+}
+// 1.6.0: marketOf reads the venue key first (the ledger names it); the label regex stays for the v2 shapes the gates feed
+function marketOfEvent(e) { return (e.venue && VENUE_MARKET[e.venue]) || (e.contract_label && /atrium/i.test(e.contract_label) ? 'Atrium' : e.contract_label && /boost|launch/i.test(e.contract_label) ? 'Boost' : (e.venue && !VENUE_MARKET[e.venue] ? e.contract_label : 'BBL')); }
+
+// ---- 4. unresolved-exit sentinel -------------------------------------------
+// THE "NEVER AGAIN" INVARIANT. Every NFT that leaves a marketplace contract did so as a SALE or a DELIST — there is no
+// third thing. 1.6.0: the ledger already says so — a venue release the classifier could not name is a live `venue_out`
+// row ("venue release without a known verb"); a later repair supersedes it with the sale/delist it was (the #745 case),
+// and superseded rows never count. So the sentinel is: live venue_out rows inside the window.
+function findUnresolvedExits(monthRows, sinceIso) {
+  const exits = [];
+  for (const rows of Object.values(monthRows)) for (const r of (rows || [])) {
+    if (r.kind === 'venue_out' && !r.superseded_by && String(r.ts) > sinceIso) exits.push({ txhash: r.txhash, token_id: String(r.token_id), from: r.from, timestamp: String(r.ts).slice(0, 19) + 'Z', note: r.note || null, venue: r.venue || null });
+  }
+  return exits;
 }
 
 // =============================================================================
@@ -360,86 +403,83 @@ function monthsBetween(fromDay, toDay) {
 
 async function main() {
   const today = new Date().toISOString().slice(0, 10);
-  console.log(`\n${VERSION} — market-history forward maintenance`);
-  try { RESOLVE = DS.buildResolver(await fetchJson(RAW_DATA('token-catalog/snapshots/current.json'))); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { console.warn('  ⚠ token-catalog read failed — DENOM_MAP fallback in force:', e.message); }
-  const [enr, lh] = await Promise.all([
-    fetchJson(RAW(`${NFT_PATH}/sales-enriched.json`)),
-    fetchJson(RAW(`${NFT_PATH}/listing-history.json`)),
-  ]);
-  if (!enr || !lh) {
-    console.error('  ✗ a committed input is unreadable — honest skip (no partial maintenance)');
-    return;
+  console.log(`\n${VERSION} — market-history maintenance from the ledger (${LEDGER_PATH})`);
+  try { RESOLVE = DS.buildResolver(await fetchJson(RAW_DATA('token-catalog/snapshots/current.json'))); console.log(`  token-catalog: ${RESOLVE.size} denoms resolvable`); } catch (e) { console.warn('  ⚠ token-catalog read failed — DENOM_MAP fallback in force: ' + e.message); }
+  const [ix, venues, manifest] = await Promise.all([fetchJson(RAW(`${LEDGER_PATH}/index.json`)), fetchJson(RAW('venues.json')), fetchJson(RAW(`${NFT_ROOT}/collection.json`))]);
+  if (!ix || !Array.isArray(ix.months)) { console.warn(`  ✗ ${LEDGER_PATH}/index.json unreadable or no months — honest skip (no ledger, no market history)`); return; }
+  let [enr, lh] = await Promise.all([fetchJson(RAW(`${NFT_PATH}/sales-enriched.json`)), fetchJson(RAW(`${NFT_PATH}/listing-history.json`))]);
+  // 1.6.0: a collection with no market-history yet is SEEDED from its whole ledger (B.6). Both docs or neither: a half seed is a phantom.
+  const seed = !enr && !lh;
+  if (!seed && (!enr || !lh)) { console.error('  ✗ one committed doc is unreadable and the other is not — honest skip (no partial maintenance)'); return; }
+  const slug = (ix.collection || NFT_ROOT.split('/').pop());
+  if (seed) {
+    console.log(`  no sales-enriched / listing-history for ${slug} — seeding both from the ledger (${ix.months.length} months, ${ix.total} records)`);
+    enr = { schemaVersion: 1, collection: slug, builtAt: new Date().toISOString(), built_from: `${LEDGER_PATH} (org-nft-flows ledger, ${VERSION})`, spot_luna_usd: null, count: 0, sales: [] };
+    lh = { schemaVersion: 1, builtAt: new Date().toISOString(), source: `${LEDGER_PATH} (org-nft-flows ledger: list opens, delist/sale closes; ${VERSION})`, nft_contract: (manifest && manifest.nft_contract) || null,
+      note: 'One record per marketplace listing. BBL price changes are cancel+recreate on-chain, so each auction_id is one price segment. Outcomes: sold (matched sale), delisted (token left the marketplace, no sale), active (still escrowed + live), unknown.',
+      counts: {}, live_listings_missing_create: [], count: 0, records: [] };
   }
-  // 1.5.0: oracle months = the last 3 (forward sales and listing closes only look back that far)
-  const fromDay = new Date(Date.parse(today + 'T00:00:00Z') - 92 * 864e5).toISOString().slice(0, 10);
-  const months = monthsBetween(fromDay, today);
-  const priceMonths = {};
-  await Promise.all(months.map(async m => { priceMonths[m] = await fetchJson(RAW_DATA(`${PRICE_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`)); }));
-  // a LUNA-on-day view of the oracle where the copies used to be read
-  const lunaDaily = { daily: {} }; for (const mon of Object.values(priceMonths)) for (const [d, row] of Object.entries((mon && mon.days) || {})) if (row.LUNA && row.LUNA.usd != null) lunaDaily.daily[d] = row.LUNA.usd;
-  const blunaDaily = { daily: {} };   // unused since 1.4.0 (dayUsd reads the oracle); kept for the call signature
-
-  // 2+3) v2 transfer records since the enriched tail (scan tail month − 1 → today, dedupe handles overlap)
-  const lastSale = enr.sales.map(s => s.timestamp).sort().pop() || '2023-12-01T00:00:00Z';
-  const scanFrom = new Date(Date.parse(lastSale) - 32 * 86400000).toISOString().slice(0, 10);
-  const tMonths = monthsBetween(scanFrom, today);
-  const v2 = []; const tDocs = {};
-  await Promise.all(tMonths.map(async m => {
-    const doc = await fetchJson(RAW(`${TRANSFERS_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`));
-    tDocs[m] = doc;
-    for (const r of (doc || [])) if (Number(r.schemaVersion) >= 2 && ['sale', 'list', 'cancel'].includes(r.action)) v2.push(r);
-  }));
+  // months to walk: the forward window (enriched tail − 32 d → today) unless seeding or SCAN_ALL — then every ledger month, in order
+  const lastSale = enr.sales.map(s => s.timestamp).sort().pop() || null;
+  const scanFrom = lastSale ? new Date(Date.parse(lastSale) - 32 * 86400000).toISOString().slice(0, 10) : null;
+  const all = (seed || SCAN_ALL || !scanFrom);
+  const months = ix.months.map(m => m.replace('/', '-')).filter(m => all || m >= scanFrom.slice(0, 7)).sort();
+  console.log(`  scan: ${all ? 'every ledger month' : `from ${scanFrom}`} → ${months.length} month(s)`);
+  // today's spot (latest LUNA day in the current oracle month, else the previous) — value_today_usd for rows added this run
+  const spotLuna = { day: null, usd: null };
+  for (const back of [0, 1]) { const d = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - back, 1)); const mk = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`; const mon = await fetchJson(RAW_DATA(`${PRICE_PATH}/${mk}.json`)); const days = Object.keys((mon && mon.days) || {}).filter(dd => mon.days[dd].LUNA && mon.days[dd].LUNA.usd != null).sort(); if (days.length) { spotLuna.day = days[days.length - 1]; spotLuna.usd = mon.days[spotLuna.day].LUNA.usd; break; } }
   const denomLearned = {};
   for (const s of enr.sales) if (s.denom && s.denom_symbol && !DENOM_MAP[s.denom]) denomLearned[s.denom] = { symbol: s.denom_symbol, decimals: 6 };
-
-  const sres = appendEnrichedSales(enr, v2.filter(r => r.action === 'sale'), lunaDaily, blunaDaily, priceMonths, denomLearned);
-  console.log(`  sales-enriched: +${sres.added} (dup ${sres.skippedDup}, ambiguous SKIPPED ${sres.skippedAmbiguous}, unpriced ${sres.unpriced}) → ${sres.total}`);
-  if (sres.skippedAmbiguous) console.warn(`  ⚠ ${sres.skippedAmbiguous} ambiguous v2 sale(s) NOT enriched — need a human decision (raw attrs are in transfers)`);
-
-  const lres = maintainListingHistory(lh, v2);   // sale records close listings too
+  const sres = { added: 0, skippedDup: 0, skippedAmbiguous: 0, unpriced: 0, total: enr.sales.length };
+  const lres = { opened: 0, closed: 0, unmatched: 0, stamped: 0, total: lh.records.length };
+  const sentinelSince = new Date(Date.now() - SENTINEL_WINDOW_DAYS * 86400000).toISOString();
+  const sentinelMonths = new Set(monthsBetween(sentinelSince.slice(0, 10), today)); const sentinelRows = {};
+  const blunaDaily = { daily: {} };   // unused since 1.4.0 (dayUsd reads the oracle); kept for the call signature
+  // one ledger month + its oracle month in memory at a time (Render heap) — read → fold → drop
+  for (const m of months) {
+    const mk = m.replace('-', '/');
+    const rows = await fetchJson(RAW(`${LEDGER_PATH}/${mk}.json`)); if (!Array.isArray(rows)) continue;
+    const mon = await fetchJson(RAW_DATA(`${PRICE_PATH}/${mk}.json`));
+    const priceMonths = { [m]: mon };
+    const lunaDaily = { daily: {} }; for (const [d, row] of Object.entries((mon && mon.days) || {})) if (row.LUNA && row.LUNA.usd != null) lunaDaily.daily[d] = row.LUNA.usd;
+    if (spotLuna.day) lunaDaily.daily[spotLuna.day] = spotLuna.usd;   // the spot rows added this run are valued at
+    const ev = ledgerToEvents(rows, venues);
+    const r1 = appendEnrichedSales(enr, ev.filter(e => e.action === 'sale'), lunaDaily, blunaDaily, priceMonths, denomLearned);
+    const r2 = maintainListingHistory(lh, ev);
+    for (const k of ['added', 'skippedDup', 'skippedAmbiguous', 'unpriced']) sres[k] += r1[k];
+    for (const k of ['opened', 'closed', 'unmatched', 'stamped']) lres[k] += r2[k];
+    if (r1.added || r2.opened || r2.closed) console.log(`  ${mk}: sales +${r1.added}${r1.unpriced ? ` (${r1.unpriced} unpriced)` : ''} · listings +${r2.opened}/−${r2.closed}${r2.unmatched ? ` · ⚠ ${r2.unmatched} unmatched close(s)` : ''}`);
+    if (sentinelMonths.has(m)) sentinelRows[m] = rows.filter(r => r.kind === 'venue_out');
+  }
+  sres.total = enr.sales.length; lres.total = lh.records.length;
+  if (spotLuna.usd != null) enr.spot_luna_usd = spotLuna.usd;
+  console.log(`  sales-enriched: +${sres.added} (dup ${sres.skippedDup}, unpriced ${sres.unpriced}) → ${sres.total}`);
   console.log(`  listing-history: +${lres.opened} opened, ${lres.closed} closed${lres.unmatched ? `, ⚠ ${lres.unmatched} unmatched close(s)` : ''} → ${lres.total}`);
+  // 4) unresolved-exit sentinel: live venue_out rows in the trailing window (the months above cover it; fetch any missing)
+  for (const m of sentinelMonths) if (!(m in sentinelRows)) { const rows = await fetchJson(RAW(`${LEDGER_PATH}/${m.replace('-', '/')}.json`)); sentinelRows[m] = Array.isArray(rows) ? rows.filter(r => r.kind === 'venue_out') : []; }
+  const unresolved = findUnresolvedExits(sentinelRows, sentinelSince);
+  if (unresolved.length) {
+    console.warn(`  ⚠⚠ SENTINEL: ${unresolved.length} marketplace exit(s) in the last ${SENTINEL_WINDOW_DAYS}d the ledger could not name as a sale or delist (live venue_out rows) — coverage holes:`);
+    for (const e of unresolved.slice(0, 20)) console.warn(`     ${e.timestamp.slice(0, 10)} #${e.token_id} tx ${e.txhash.slice(0, 10)}… from …${String(e.from || '').slice(-6)}${e.note ? ' — ' + e.note : ''}`);
+    if (unresolved.length > 20) console.warn(`     … and ${unresolved.length - 20} more`);
+  } else console.log(`  ✓ sentinel: every marketplace exit in the last ${SENTINEL_WINDOW_DAYS}d is a sale or a delist on the ledger`);
 
-  // 4) unresolved-exit sentinel over the trailing window (registry marketplaces)
-  let unresolved = [];
-  try {
-    const reg = await fetchJson(RAW_DATA('tla-voting/capture-registry.json'));
-    const marketAddrs = new Set((reg && reg.contracts || []).filter(c => (c.streams || []).includes('nft_marketplace')).map(c => c.address));
-    if (marketAddrs.size) {
-      const sinceIso = new Date(Date.now() - SENTINEL_WINDOW_DAYS * 86400000).toISOString();
-      const sMonths = monthsBetween(sinceIso.slice(0, 10), today);
-      const sDocs = {};
-      await Promise.all(sMonths.map(async m => {
-        sDocs[m] = tDocs[m] !== undefined ? tDocs[m] : await fetchJson(RAW(`${TRANSFERS_PATH}/${m.slice(0, 4)}/${m.slice(5, 7)}.json`));
-      }));
-      unresolved = findUnresolvedExits(sDocs, marketAddrs, sinceIso);
-      if (unresolved.length) {
-        console.warn(`  ⚠⚠ SENTINEL: ${unresolved.length} marketplace exit(s) in the last ${SENTINEL_WINDOW_DAYS}d have NO sale/cancel resolution — every exit is one or the other; these are coverage holes:`);
-        for (const e of unresolved.slice(0, 20)) console.warn(`     ${e.timestamp.slice(0, 10)} #${e.token_id} tx ${e.txhash.slice(0, 10)}… from …${e.from.slice(-6)}`);
-        if (unresolved.length > 20) console.warn(`     … and ${unresolved.length - 20} more`);
-      } else {
-        console.log(`  ✓ sentinel: every marketplace exit in the last ${SENTINEL_WINDOW_DAYS}d resolves to a sale or cancel`);
-      }
-    } else console.warn('  ⚠ sentinel skipped: no nft_marketplace entries readable from registry');
-  } catch (e) { console.warn(`  ⚠ sentinel errored (non-fatal): ${e.message}`); }
-
-  // publish (order: dailies first — the enricher's numbers cite them)
-  // 1.5.0: luna/bluna-usd-daily are no longer written — delete the two files from nft-collections/adao/snapshots/
-  if (sres.added) await publish(`${NFT_PATH}/sales-enriched.json`, enr, `market-history: +${sres.added} sales (→ ${sres.total})`);
+  // publish (changed docs only; a seed publishes both)
+  if (seed || sres.added) await publish(`${NFT_PATH}/sales-enriched.json`, enr, `market-history: ${seed ? 'seed' : '+' + sres.added + ' sales'} (→ ${sres.total})`);
   else console.log('  sales-enriched unchanged — skipped publish');
-  if (lres.opened || lres.closed || lres.stamped) await publish(`${NFT_PATH}/listing-history.json`, lh, `market-history: listings +${lres.opened}/−${lres.closed}${lres.stamped ? ` · denom_symbol on ${lres.stamped} segment(s)` : ''}`);
+  if (seed || lres.opened || lres.closed || lres.stamped) await publish(`${NFT_PATH}/listing-history.json`, lh, `market-history: ${seed ? 'seed' : 'listings +' + lres.opened + '/−' + lres.closed}${lres.stamped ? ` · denom_symbol on ${lres.stamped} segment(s)` : ''}`);
   else console.log('  listing-history unchanged — skipped publish');
   await publish(`${NFT_PATH}/market-history-heartbeat.json`, {
     schemaVersion: 1, cron: 'nft-market-history', version: VERSION, status: 'ok',
-    capturedAt: new Date().toISOString(),
-    stats: { usd_daily_copies: 'retired 1.5.0 (oracle series: tla-core/price-history/series)',
-      sales_added: sres.added, sales_ambiguous_skipped: sres.skippedAmbiguous,
-      listings_opened: lres.opened, listings_closed: lres.closed, unmatched_closes: lres.unmatched,
+    capturedAt: new Date().toISOString(), source: LEDGER_PATH, seeded: seed, months_scanned: months.length,
+    stats: { sales_added: sres.added, sales_unpriced: sres.unpriced, sales_total: sres.total,
+      listings_opened: lres.opened, listings_closed: lres.closed, unmatched_closes: lres.unmatched, listings_total: lres.total,
       unresolved_exits: unresolved.length,
-      unresolved_exit_txs: unresolved.slice(0, 20).map(e => ({ tx: e.txhash, token_id: e.token_id, at: e.timestamp })) },
+      unresolved_exit_txs: unresolved.slice(0, 20).map(e => ({ tx: e.txhash, token_id: e.token_id, at: e.timestamp, note: e.note })) },
     sentinel_window_days: SENTINEL_WINDOW_DAYS,
   }, 'market-history heartbeat');
   console.log('  done');
 }
 
-module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, DENOM_MAP, symbolFor, _setResolver: (r) => { RESOLVE = r; }, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, TRANSFERS_PATH, PRICE_PATH, RAW, RAW_DATA } };
+module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, ledgerToEvents, marketOfEvent, DENOM_MAP, symbolFor, _setResolver: (r) => { RESOLVE = r; }, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, LEDGER_PATH, PRICE_PATH, RAW, RAW_DATA } };
 if (require.main === module) main().catch(e => { console.error('market-history failed:', e.message); process.exit(1); });

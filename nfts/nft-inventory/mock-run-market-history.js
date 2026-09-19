@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// mock-run-market-history.js — BINDING gate for market-history.js (the ported duty).
+// mock-run-market-history.js — BINDING gate for market-history.js (the ported duty; 1.6.0: sourced from the ledger).
+// 1.6.0 gates: G6 the venue_out sentinel · G7 the aDAO ledger reproduces the committed products (1,320/1,328 sales keys;
+// block/timestamp/seller/buyer/gross/amount identical; LUNA prices identical to 1e-6; ACTIVE listings == the inventory's
+// listed set to the token) · G8 the Pixel Lions SEED from its whole ledger (2,012 sales, active == inventory).
 //
 // Real fixtures throughout:
 //   • committed luna/bluna-usd-daily + price-history months  (daily fill)
@@ -137,8 +140,10 @@ if (COPIES_PRESENT) {
   const lh = N('snapshots/listing-history.json');
   const priorCount = lh.records.length;
   const priorActive = lh.records.filter(r => r.outcome === 'active' && !r.captured_by).length;   // 2026-09-14 (B.7): same filter as the check below (forward-captured actives carry captured_by now)
+  // 1.6.0: a close sorts before an open at the SAME height (Atrium's price update is delist+list in one tx), so the lifecycle
+  // fixture puts the closes one block after the opens — the shape chain events actually have
   const mk = (action, extra) => ({ schemaVersion: 2, k: `GATE|${action}|${extra.token_id}|${extra.auction_id}`,
-    txhash: 'A'.repeat(64), height: 22600000, timestamp: '2026-08-23T12:00:00Z',
+    txhash: 'A'.repeat(64), height: action === 'list' ? 22600000 : 22600001, timestamp: '2026-08-23T12:00:00Z',
     contract: 'terra1ej4…', contract_label: 'BBL necropolis marketplace v2', action, resolution: 'attrs', ...extra });
   // open → close(sale) lifecycle on a synthetic ref that can't collide
   const ev = [
@@ -159,32 +164,76 @@ if (COPIES_PRESENT) {
   check('G4 idempotent list (same auction_id re-fed opens 0)', MH.maintainListingHistory(lh, [ev[0]]).opened === 0);
 }
 
-// ---------- G6: unresolved-exit sentinel (real months, real fixture) ---------
+// ---------- G6: unresolved-exit sentinel — 1.6.0: the ledger's live venue_out rows ---------
 {
-  const ATR = 'terra15du229lqcxkn939pmjgklqunftf604q4wz87kt5awj6reghec5jqs0w0kj';
-  const BBL6 = 'terra1ej4cv98e9g2zjefr5auf2nwtq4xl3dm7x0qml58yna2ml2hk595s7gccs9';
-  const BO = 'terra1kj7pasyahtugajx9qud02r5jqaf60mtm7g5v9utr94rmdfftx0vqspf4at';
-  const markets = new Set([ATR, BBL6, BO]);
-  const aug = N('transfers/2026/08.json');
-  const SALE_TX = '995038E56D407FAEDEDD49188C5E9E108B5425E896E3F03B8CF5B0DA5720E994';
-  const hasV2ForSale = aug.some(r => Number(r.schemaVersion) >= 2 && r.txhash === SALE_TX && (r.action === 'sale' || r.action === 'cancel'));
-  const un1 = MH.findUnresolvedExits({ '2026-08': aug }, markets, '2026-06-12T00:00:00Z');
-  if (hasV2ForSale) {
-    // post-resolve-Action state: the known sale must NOT flag
-    check('G6 sentinel: resolved sale tx does not flag', !un1.some(e => e.txhash === SALE_TX), `${un1.length} unresolved remain`);
-  } else {
-    // pre-resolve state: the known missed sale MUST flag
-    check('G6 sentinel: the missed Atrium sale flags as unresolved', un1.some(e => e.txhash === SALE_TX), `${un1.length} unresolved`);
-    // merging its v2 sale record clears exactly that flag
-    const v2sale = { schemaVersion: 2, k: `${SALE_TX}|${ATR}|sale|6192|11`, txhash: SALE_TX, height: 22478346,
-      timestamp: '2026-08-21T18:48:42Z', contract: ATR, action: 'sale', token_id: '6192' };
-    const un2 = MH.findUnresolvedExits({ '2026-08': [...aug, v2sale] }, markets, '2026-06-12T00:00:00Z');
-    check('G6 sentinel: resolution clears the flag', !un2.some(e => e.txhash === SALE_TX) && un2.length === un1.length - un1.filter(e => e.txhash === SALE_TX).length);
-  }
-  // exits outside the window never flag
-  const un3 = MH.findUnresolvedExits({ '2026-08': aug }, markets, '2026-08-22T00:00:00Z');
-  check('G6 sentinel: window respected', un3.every(e => e.timestamp > '2026-08-22T00:00:00Z'));
+  const vo = (tok, ts, extra) => ({ txhash: 'B'.repeat(60) + String(tok).padStart(4, '0'), height: 22600000, ts, msg_index: 0, kind: 'venue_out', collection: 'adao', token_id: String(tok), venue: 'bbl', from: 'terra1ej4cv98e9g2zjefr5auf2nwtq4xl3dm7x0qml58yna2ml2hk595s7gccs9', to: 'terra1buyer', note: 'venue release without a known verb (expiry?)', ...extra });
+  const rows = [vo(1, '2026-08-21T18:48:42.1Z'), vo(2, '2026-08-25T00:00:00Z', { superseded_by: 'X|0|sale|adao|2|1' }), vo(3, '2026-06-01T00:00:00Z'), { kind: 'sale', token_id: '4', ts: '2026-08-22T00:00:00Z', txhash: 'C'.repeat(64), height: 22600001, msg_index: 0 }];
+  const un = MH.findUnresolvedExits({ '2026-08': rows }, '2026-06-12T00:00:00Z');
+  check('G6 sentinel: a live venue_out inside the window flags (token, note, venue carried); a superseded one (repaired to a sale) does not; a sale is not an exit', un.length === 1 && un[0].token_id === '1' && /without a known verb/.test(un[0].note) && un[0].venue === 'bbl', JSON.stringify(un));
+  check('G6 sentinel: window respected', MH.findUnresolvedExits({ '2026-08': rows }, '2026-08-22T00:00:00Z').length === 0);
+  // real months: whatever the live aDAO ledger says in the trailing 60 d is reported, never hidden
+  const live = {}; for (const mk of ['2026/07', '2026/08', '2026/09']) { try { live[mk] = N(`ledger/${mk}.json`); } catch { } }
+  const unLive = MH.findUnresolvedExits(live, new Date(Date.now() - 60 * 864e5).toISOString());
+  console.log(`  (live aDAO ledger, last 60 d: ${unLive.length} unresolved venue exit(s)${unLive.length ? ' — ' + unLive.map(e => '#' + e.token_id).join(', ') : ''})`);
 }
+
+// ---------- G7 (1.6.0): the ledger reproduces the committed products — aDAO, all history ----------
+{
+  const venues = JSON.parse(fs.readFileSync(path.join(NFTC, 'venues.json')));
+  const ix = N('ledger/index.json'); const enr = N('snapshots/sales-enriched.json'); const lh = N('snapshots/listing-history.json');
+  const byKey = {}; for (const s of enr.sales) byKey[`${s.tx_hash}|${s.token_id}`] = s;
+  const fresh = { ...enr, sales: [] }, freshLh = { ...lh, records: [] };
+  for (const mk of ix.months) {   // one month + its oracle month at a time, as main() does
+    const rows = N(`ledger/${mk}.json`); const m = mk.replace('/', '-'); const mon = P(`price-history/${mk}.json`);
+    const luna = { daily: {} }; for (const [d, row] of Object.entries(mon.days || {})) if (row.LUNA && row.LUNA.usd != null) luna.daily[d] = row.LUNA.usd;
+    const ev = MH.ledgerToEvents(rows, venues);
+    MH.appendEnrichedSales(fresh, ev.filter(e => e.action === 'sale'), luna, { daily: {} }, { [m]: mon }, {});
+    MH.maintainListingHistory(freshLh, ev);
+  }
+  const overlap = fresh.sales.filter(s => byKey[`${s.tx_hash}|${s.token_id}`]);
+  const MONEY = ['block', 'timestamp', 'seller', 'buyer', 'gross_amount', 'amount'];
+  const moneyOk = overlap.filter(s => { const c = byKey[`${s.tx_hash}|${s.token_id}`]; return MONEY.every(k => JSON.stringify(s[k]) === JSON.stringify(c[k])); });
+  // committed rows priced from the oracle must reproduce to 1e-6; rows the old pipeline priced from the retired copies
+  // (price_source bluna-ratio-curve / *-usd-daily, off by up to 30 %) are counted, kept verbatim (law), and reported —
+  // re-pricing them is a labeled repair for the owner to call, never a maintenance side effect
+  // (the oracle's LUNA IS the old luna-oracle number, so LUNA rows must agree; the bLUNA ratio-curve copy and the SOLID par
+  // rows are the ones the copies got wrong)
+  const oracleRows = overlap.filter(s => { const c = byKey[`${s.tx_hash}|${s.token_id}`]; return c.denom_symbol === 'LUNA' && c.price_usd_at_sale != null; });
+  const copyRows = overlap.filter(s => { const c = byKey[`${s.tx_hash}|${s.token_id}`]; return c.denom_symbol !== 'LUNA' && c.price_usd_at_sale != null && s.price_usd_at_sale != null && Math.abs(s.price_usd_at_sale - c.price_usd_at_sale) / c.price_usd_at_sale > 1e-4; }).length;
+  const priceOk = oracleRows.filter(s => { const c = byKey[`${s.tx_hash}|${s.token_id}`]; return s.price_usd_at_sale != null && Math.abs(s.price_usd_at_sale - c.price_usd_at_sale) / c.price_usd_at_sale < 1e-6; });
+  const unpricedFresh = fresh.sales.filter(s => s.price_usd_at_sale == null);
+  console.log(`  (G7: ${copyRows} committed bLUNA/SOLID rows disagree with the oracle by >1e-4 (the retired copies) — kept verbatim, a labeled repair would re-price them; ${unpricedFresh.length} ledger sales unpriced: ${[...new Set(unpricedFresh.map(s => (s.denom || 'no denom') + '@' + s.marketplace))].join(', ')})`);
+  check(`G7 ledger sales cover ≥ 99% of the committed sales-enriched keys (${overlap.length}/${enr.sales.length})`, overlap.length >= enr.sales.length * 0.99, `${overlap.length}/${enr.sales.length}`);
+  check(`G7 on the overlap, block · timestamp · seller · buyer · gross · amount reproduce the committed rows (${moneyOk.length}/${overlap.length})`, moneyOk.length === overlap.length, `${overlap.length - moneyOk.length} differ`);
+  check(`G7 on the overlap, every LUNA-denominated committed row reproduces its price to 1e-6 (${priceOk.length}/${oracleRows.length}); ${copyRows} bLUNA/SOLID rows priced from the retired copies differ (reported, kept verbatim)`, priceOk.length === oracleRows.length, `${oracleRows.length - priceOk.length} differ`);
+  check('G7 every ledger-built sale names its marketplace (the committed rows had 1,221 nulls) and carries the ledger auction/listing id', fresh.sales.every(s => s.marketplace) && fresh.sales.filter(s => s.listing_id != null).length >= fresh.sales.length * 0.98, fresh.sales.filter(s => !s.marketplace || s.listing_id == null).length);
+  const inv = JSON.parse(fs.readFileSync(path.join(NFTC, NFT_ROOT, 'snapshots/nfts.json'))).records.filter(r => r.listing && r.listing.marketplace).map(r => String(r.id)).sort();
+  const active = freshLh.records.filter(r => r.outcome === 'active').map(r => r.token_id).sort();
+  check(`G7 listing-history built from the ledger: the ACTIVE set == the inventory's listed set, token for token (${active.length})`, JSON.stringify(active) === JSON.stringify(inv), `active ${active.length} vs inventory ${inv.length}`);
+  check('G7 no token holds two active records (relist closes the open one; close-before-open at equal height)', new Set(active).size === active.length);
+  console.log(`  rss ${Math.round(process.memoryUsage().rss / 1048576)} MB after the full-history fold`);
+}
+
+// ---------- G8 (1.6.0): SEED — Pixel Lions from its whole ledger (no committed docs) ----------
+if (fs.existsSync(path.join(NFTC, 'pixel-lions/ledger/index.json'))) {
+  const venues = JSON.parse(fs.readFileSync(path.join(NFTC, 'venues.json')));
+  const PL = (p) => JSON.parse(fs.readFileSync(path.join(NFTC, 'pixel-lions', p)));
+  const ix = PL('ledger/index.json');
+  const enr = { schemaVersion: 1, collection: 'pixel-lions', spot_luna_usd: null, count: 0, sales: [] }, lh = { schemaVersion: 1, counts: {}, count: 0, records: [] };
+  let unpriced = 0, unmatched = 0;
+  for (const mk of ix.months) { const rows = PL(`ledger/${mk}.json`); const m = mk.replace('/', '-'); let mon = null; try { mon = P(`price-history/${mk}.json`); } catch { }
+    const luna = { daily: {} }; for (const [d, row] of Object.entries((mon && mon.days) || {})) if (row.LUNA && row.LUNA.usd != null) luna.daily[d] = row.LUNA.usd;
+    const ev = MH.ledgerToEvents(rows, venues); unpriced += MH.appendEnrichedSales(enr, ev.filter(e => e.action === 'sale'), luna, { daily: {} }, { [m]: mon }, {}).unpriced; unmatched += MH.maintainListingHistory(lh, ev).unmatched; }
+  const ledgerSales = ix.by_kind_live ? ix.by_kind_live.sale : (ix.by_kind && ix.by_kind.sale);
+  check(`G8 PL seed: sales-enriched = every live sale on the ledger (${enr.sales.length} = ${ledgerSales})`, enr.sales.length === ledgerSales, `${enr.sales.length} vs ${ledgerSales}`);
+  const noSeller = enr.sales.filter(s => !s.seller);
+  check(`G8 PL seed: every sale priced from the oracle day (0 unpriced); every row has buyer, marketplace, denom_symbol; a seller is missing only on 2023 offer-contract sales (${noSeller.length}, the ledger has from:null there — a classify gap, reported not filled)`, unpriced === 0 && enr.sales.every(s => s.buyer && s.marketplace && s.denom_symbol) && noSeller.every(s => /Offers contract/.test(s.marketplace)), { unpriced, noSeller: noSeller.length, offMarket: noSeller.filter(s => !/Offers contract/.test(s.marketplace)).length });
+  check('G8 PL seed: sale_number increments per token (a second sale of the same token is #2)', enr.sales.filter(s => s.sale_number > 1).length > 0 && enr.sales.every(s => s.sale_number >= 1));
+  const inv = PL('snapshots/nfts.json').records.filter(r => r.listing && r.listing.marketplace).map(r => String(r.id)).sort();
+  const active = lh.records.filter(r => r.outcome === 'active').map(r => r.token_id).sort();
+  check(`G8 PL seed: listing-history ACTIVE set == PL inventory listed set (${active.length} vs ${inv.length}); unmatched closes ${unmatched}`, JSON.stringify(active) === JSON.stringify(inv), { active: active.length, inv: inv.length, onlyActive: active.filter(t => !inv.includes(t)).slice(0, 5), onlyInv: inv.filter(t => !active.includes(t)).slice(0, 5) });
+  console.log(`  PL seed: ${enr.sales.length} sales · ${lh.records.length} listing records ${JSON.stringify(lh.counts)} · rss ${Math.round(process.memoryUsage().rss / 1048576)} MB`);
+} else console.log('  (G8 skipped: no pixel-lions ledger in the fixture)');
 
 // ---------- G5: flows.js delisting→sale upgrade ------------------------------
 {

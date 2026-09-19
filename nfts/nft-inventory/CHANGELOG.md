@@ -1,5 +1,28 @@
 # nfts/nft-inventory — changelog
 
+## market-history 1.6.0 — 2026-09-19 — sourced from the ledger · seeds a new collection (B.2 leg + B.6)
+
+- sales-enriched / listing-history are maintained from `<root>/ledger/YYYY/MM.json` (org-nft-flows) instead of the tla-flows
+  NFT aux `transfers/` leg — market-history's reader is retired from that leg (B.2). `ledgerToEvents()` turns ledger rows into
+  the event shape the two maintainers always consumed: seller = from, buyer = to, legs attributed by recipient (BBL transfer
+  legs; Boost/Atrium flat fee/royalty/seller split), venue → marketplace by key, listing segments keep the chain denom
+  spelling. Superseded rows are never events. One ledger month + its oracle month in memory at a time.
+- SEED (B.6): a collection with no committed docs gets both built from its whole ledger; `SCAN_ALL=1` walks every month once
+  for a collection whose docs predate the ledger. aDAO forward window unchanged (enriched tail − 32 d).
+- listing-history: a new `list` of a token still open on the same venue closes the open record (end_reason `relisted`,
+  outcome delisted — #1657 sat active under its first auction id after selling under the second); a close sorts BEFORE an
+  open at the same height (Atrium's price update is delist+list in one tx — #6192 stayed active forever); a live `venue_out`
+  closes as `venue_exit` / outcome unknown. The sentinel is the ledger's live venue_out rows in the trailing window.
+- Stables price at par by catalog symbol (USDC.n on Boost was `unpriced`).
+- Gates (mock 1.6.0, real fixtures): the aDAO ledger reproduces 1,320/1,328 committed sales keys with block · timestamp ·
+  seller · buyer · gross · amount identical and LUNA prices identical to 1e-6; the ACTIVE set == the inventory's listed set
+  token for token (49); Pixel Lions seeds 2,012 sales and 4,962 listing records with ACTIVE == inventory (81). Reported, not
+  changed (committed rows are verbatim by law): 190 bLUNA/SOLID committed rows priced from the retired copies (up to 14 %
+  off the oracle), 28 BBL rows whose fee/royalty split the old pipeline assumed at 1.5 %/5.5 % where the chain legs say
+  2 %/5 %, 5 committed "Boost sales" the ledger records as delists back to the lister (#1255 …), 61 pre-ledger listing records.
+  Ledger gaps surfaced for classify: 9 aDAO Boost sales with no payment denom (SOLID), 9 PL 2023 offer-contract sales with
+  no seller, Atrium list rows without a listing id, Boost list rows without a price.
+
 ## nft-inventory Rev D.2 — 2026-09-19 — BBL completeness from cw721 ownership · dao-controlled only with a custody block
 
 - Measured on both collections (aDAO chain 30 / warlock 43, PL 30 / 72): BBL's `auction_by_contract` returns the `limit`
