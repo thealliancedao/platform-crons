@@ -1,3 +1,8 @@
+> **1.4.0 (2026-09-18)** — by-token shards: `<slug>/ledger/by-token/<shard>.json` + index.json (100 tokens per shard, live
+> rows only, rebuilt for the shards a run touches; `BY_TOKEN_ALL=1` or a missing index rebuilds all, one month in memory at a
+> time). 1.3.1: `launchpad.addresses` watched. classify.js **1.1.5**: several launchpad holders per collection; launchpad →
+> distribution wallet = stock returned, never a $0 mint_purchase (REPAIR mint-phase-1.1.5 on adao/ledger).
+
 # org-nft-flows-<slug> — NFT + lock forward capture, ONE Render service per collection (hourly)
 
 Picks up where a collection's backfill left off (nft-collections/<slug>/) and keeps that one collection's ledger
