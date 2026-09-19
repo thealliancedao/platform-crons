@@ -1,5 +1,9 @@
 'use strict';
-// org-nft-flows 1.4.1 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.5.0 — FORWARD CAPTURE for ONE collection
+// 1.5.0 (2026-09-19, B.1): MESSAGE BODIES at walk time — every matched tx's MsgExecuteContract bodies are decoded from the
+//   block's tx bytes (lib/tx-body.js, no protobuf library) and archived as `m` on the raw record, the FCD `messages` shape,
+//   so Boost list prices, Atrium list denoms and DAODAO unstake token ids classify from the body forward (classify 1.1.6 e).
+//   The same decoder serves nft-collections' walk / resolve-msg-bodies from a run-time checkout of this repo (one home).
 // 1.4.1 (2026-09-19, D.2): the "USD at the day" rule lives in lib/oracle-usd.js (moved, not copied — the nft-collections
 //   derive Action requires the same file from a run-time checkout of this repo; behaviour byte-identical, mock 55/55);
 //   by-token rebuild prints a progress line every 20 shards (a full aDAO rebuild is 101 shards of silence otherwise).
@@ -61,6 +65,8 @@
 //            never-shrink; a failed read never advances the cursor; USD null + reason when no series covers the denom.
 const https = require('https'), zlib = require('zlib'), crypto = require('crypto');
 const { classifyNftTx, buildIndex, recordKey } = require('./lib/classify.js');
+const { decodeTxMessages } = require('./lib/tx-body.js');   // 1.5.0
+const bodiesOf = (b64) => { try { const m = decodeTxMessages(b64); return m.length ? m : undefined; } catch (e) { return undefined; } };   // a body that will not decode is left out, never guessed (events still classify)
 const DS = require('../../lib/denom-symbol.js');   // 1.2.0: THE denom → symbol resolver (token-catalog effective layer), shared by every cron
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
@@ -282,7 +288,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
         for (let i = 0; i < blk.txsB64.length; i++) {
           const res = results[i]; if (!res) continue;
           let hit = false; for (const e of res.events || []) { if (e.type !== 'wasm') continue; for (const a of e.attributes || []) if (a.key === '_contract_address' && WATCH.has(a.value)) { hit = true; break; } if (hit) break; }
-          if (hit) matched.push({ h: N, x: txHashOf(blk.txsB64[i]), t: blk.time, c: res.code, e: res.events });
+          if (hit) matched.push({ h: N, x: txHashOf(blk.txsB64[i]), t: blk.time, c: res.code, e: res.events, m: bodiesOf(blk.txsB64[i]) });   // 1.5.0: bodies archived beside the events
         }
       }
       processedTo = N;
@@ -308,7 +314,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   }
 
   // ---- ledger: classify, USD, merge by key into month files, refresh index
-  const recs = matched.flatMap(tx => classifyNftTx({ txhash: tx.x, height: tx.h, timestamp: tx.t, code: tx.c, events: tx.e }, R, idx));
+  const recs = matched.flatMap(tx => classifyNftTx({ txhash: tx.x, height: tx.h, timestamp: tx.t, code: tx.c, events: tx.e, messages: tx.m }, R, idx));
   const perCol = {}; for (const r of recs) { if (r.collection) (perCol[r.collection] ||= []).push(r); else if (r.venue) for (const k of cols) if ((R.collections[k].venues || []).includes(r.venue)) (perCol[k] ||= []).push(Object.assign({}, r, { collection: k })); }
   let added = 0; const perColAdded = {};
   for (const [k, list] of Object.entries(perCol)) {
@@ -343,7 +349,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.4.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.5.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }

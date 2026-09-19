@@ -42,10 +42,19 @@ const rpc = http.createServer((req, res) => { const u = new URL('http://x' + req
   // 1.1.1 regression — the 2026-09-13 tla-locks failure: a SECOND match on the same UTC day makes the cron READ the
   // existing raw/forward/<day>.json.gz through the raw media type; bodies must arrive as bytes (utf8-mangled gzip →
   // 'incorrect header check', every run failed, cursor frozen at 08:45 while the heartbeat stayed fresh).
-  HEAD = 1030; blocks[1025] = { txs: ['dHg0'] }; results[1025] = [{ code: 0, events: [ev(PL, { action: 'send_nft', sender: 'terra1you', recipient: PLV, token_id: 77 }), ev(PLV, { action: 'stake', from: 'terra1you', token_id: 77 })] }];
+  // 1.5.0: a real protobuf tx in the block — a DAODAO unstake whose token ids live only in the body — must arrive on the raw
+  // record as `m` (FCD `messages` shape) and classify with the ids; the fake 'dHg0' bytes beside it decode to nothing and stay body-less.
+  const pb = { vi: (n) => { const o = []; let x = BigInt(n); do { let b = Number(x & 0x7fn); x >>= 7n; if (x) b |= 0x80; o.push(b); } while (x); return Buffer.from(o); }, ld: (f, buf) => Buffer.concat([pb.vi((f << 3) | 2), pb.vi(buf.length), buf]) };
+  const execMsg = pb.ld(1, Buffer.from('terra1you')).length ? Buffer.concat([pb.ld(1, Buffer.from('terra1you')), pb.ld(2, Buffer.from(PLV)), pb.ld(3, Buffer.from(JSON.stringify({ unstake: { token_ids: ['501', '502'] } })))]) : null;
+  const anyMsg = Buffer.concat([pb.ld(1, Buffer.from('/cosmwasm.wasm.v1.MsgExecuteContract')), pb.ld(2, execMsg)]);
+  const txBytes = Buffer.concat([pb.ld(1, pb.ld(1, anyMsg)), pb.ld(2, Buffer.from([]))]).toString('base64');   // Tx{ body{ messages[any] }, auth_info{} }
+  HEAD = 1030; blocks[1025] = { txs: ['dHg0', txBytes] }; results[1025] = [{ code: 0, events: [ev(PL, { action: 'send_nft', sender: 'terra1you', recipient: PLV, token_id: 77 }), ev(PLV, { action: 'stake', from: 'terra1you', token_id: 77 })] }, { code: 0, events: [ev(PLV, { action: 'unstake', from: 'terra1you', claim_duration: '604800' })] }];
   const r3 = await run(); ok(r3.status === 0 && !/incorrect header check|FATAL/.test(r3.stdout), 'third run (same-day 2nd match): reads the existing gz part cleanly, no FATAL', r3.stdout.split('\n').filter(l => /FATAL|header/.test(l)).join(' | '));
-  const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 3 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 3 txs (prior 2 kept + new)', part.map(t => t.h));
+  const part = J('pixel-lions/raw/forward/2026-09-13.json.gz'); ok(part.length === 4 && part.some(t => t.h === 1025) && part.some(t => t.h === 1003), 'gz part merged: 4 txs (prior 2 kept + 2 new)', part.map(t => t.h));
   ok(J('pixel-lions/ledger/2026/09.json').some(r => r.token_id === '77'), 'ledger gained the new stake #77'); ok(J('pixel-lions/ledger/cursor.json').height === 1030, 'cursor → 1030');
+  { const withBody = part.filter(t => t.h === 1025 && t.m), without = part.filter(t => t.h === 1025 && !t.m);
+    ok(withBody.length === 1 && without.length === 1 && withBody[0].m[0]['@type'] === '/cosmwasm.wasm.v1.MsgExecuteContract' && withBody[0].m[0].contract === PLV && withBody[0].m[0].msg.unstake.token_ids.join() === '501,502', '1.5.0: the protobuf tx is archived with `m` (decoded MsgExecuteContract, FCD shape); the undecodable bytes stay body-less', part.filter(t => t.h === 1025).map(t => t.m));
+    const un = J('pixel-lions/ledger/2026/09.json').filter(r => r.kind === 'unstake'); ok(un.length === 2 && un.map(r => r.token_id).join() === '501,502' && un.every(r => !r.note), '1.5.0: the unstake classifies with token ids from the body (no "resolve at claim" note)', un.map(r => [r.token_id, r.note])); }
   const DECLARED = (fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8').match(/^\/\/ org-nft-flows (\d+\.\d+\.\d+)/m) || [])[1];   // 1.4.1: the heartbeat's version is a relation to the header, never a literal frozen in the gate
   ok(DECLARED && J('pixel-lions/nft-flows/heartbeat.json').version === DECLARED && J('pixel-lions/nft-flows/heartbeat.json').status === 'ok', `heartbeat ${DECLARED} ok (version = the header's)`);
   ok(/by-token: \d+\/\d+ shards/.test(r3.stdout), '1.4.1 by-token rebuild prints its progress line (every 20 shards and at the end)', r3.stdout.split('\n').filter(l => /by-token/.test(l)));
