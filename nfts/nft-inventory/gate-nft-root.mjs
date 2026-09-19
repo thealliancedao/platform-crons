@@ -7,7 +7,10 @@ let pass = 0, fail = 0; const ck = (n, c, x) => { if (c) { pass++; console.log('
 const BODIES = ['', '{}', '[]'];
 const probe1 = (dir, mod, env) => { const r = spawnSync('node', [new URL('./probe.js', import.meta.url).pathname, dir, mod], { env: { PATH: process.env.PATH, GITHUB_TOKEN: 'x', ...env }, encoding: 'utf8', timeout: 20000 }); const line = r.stdout.trim().split('\n').pop(); try { return JSON.parse(line); } catch { return { error: r.stderr.slice(-400), reads: [], writes: [] }; } };
 // union over three stub behaviours (404 / {} / []) so callers walk as far as each shape lets them
-const probe = (dir, mod, env) => { const R = new Set(), W = new Set(); for (const b of BODIES) { const p = probe1(dir, mod, { ...env, PROBE_BODY: b }); p.reads.forEach(u => R.add(u)); p.writes.forEach(u => W.add(u)); } return { reads: [...R].sort(), writes: [...W].sort() }; };
+// D.2: a wasm smart query is compared by contract + query variant, not by its base64 body — this gate is about WHICH repo/root/
+// contract a module reaches for; a query's own arguments (page size, cursor) are the sister gates' subject (mock-run-chain-only).
+const norm = (u) => String(u).replace(/(\/cosmwasm\/wasm\/v1\/contract\/[a-z0-9]+\/smart\/)([A-Za-z0-9+/=]+)/, (_, pre, b64) => { try { return pre + Object.keys(JSON.parse(Buffer.from(b64, 'base64').toString('utf8')))[0]; } catch { return pre + b64; } });
+const probe = (dir, mod, env) => { const R = new Set(), W = new Set(); for (const b of BODIES) { const p = probe1(dir, mod, { ...env, PROBE_BODY: b }); p.reads.forEach(u => R.add(norm(u))); p.writes.forEach(u => W.add(norm(u))); } return { reads: [...R].sort(), writes: [...W].sort() }; };
 console.log('— R1 differential (default env): patched == live —');
 for (const m of MODS) { const a = probe(LIVE, m, {}), b = probe(PATCHED, m, {}); ck(`${m} same reads (${a.reads.length})`, JSON.stringify(a.reads) === JSON.stringify(b.reads) && a.reads.length > 0, { live: a.reads, patched: b.reads }); ck(`${m} same writes (${a.writes.length})`, JSON.stringify(a.writes) === JSON.stringify(b.writes), { live: a.writes, patched: b.writes }); }
 console.log('— R2 flipped env: GITHUB_REPO=nft-collections · NFT_ROOT=adao · DATA_REPO=tla-core —');

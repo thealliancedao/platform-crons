@@ -1,5 +1,12 @@
 // =============================================================================
-// NFT Inventory Cron — Rev D.1.2
+// NFT Inventory Cron — Rev D.2
+// Rev D.2 (2026-09-19) — BBL COMPLETENESS FROM CW721 OWNERSHIP. Measured on both collections: `auction_by_contract` returns the
+//   `limit` largest token-id strings and its cursor never advances (aDAO 30/43, PL 30/72 — warlock silently carried the rest,
+//   the inverse #745 was invisible). The sweep now asks a bigger page, tries both cursors and warns once when stuck; every BBL-held
+//   token the sweep missed is fetched from the contract by auction_id (warlock's id → a real chain row, no warning) or by token
+//   (nft_auction → a chain-only listing when structurally live); query field names self-resolve from the contract's own serde
+//   errors and are reported (summary.listing_resolver.bbl_sweep). dao-controlled publishes only for a manifest with a `custody`
+//   block. Gates: mock-run-chain-only (C.6 + D.2 completion), gate-collection-config (run-ally PATH case, venues as a relation).
 // Rev D.1.2 (2026-09-18) — the resolved NFT_ROOT is exported to the env for the in-process sub-modules; the 23:44Z run wrote
 //   adao/snapshots correctly but analytics / market-history / compact-bundle still looked under nfts/adao (exit 1).
 // Rev D.1.1 (2026-09-18) — NFT_ROOT for COLLECTION=adao is `adao` (the slug), not the pre-migration 'nfts/adao' — the first
@@ -120,6 +127,7 @@ const ADAO_DEFAULT_CONFIG = Object.freeze({
     // Backing token — aDAO NFT collection accrues ampLUNA from Alliance staking
     BACKING_CW20: 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct',
     BREAK_MECHANISM: true,
+    HAS_CUSTODY: true,        // D.2: the dao-controlled product exists only for a collection whose manifest carries a `custody` block
     VENUES: ['bbl', 'atrium', 'boost'],
     // Grade-40 (Phoenix Rising) token ids — IMMUTABLE: the collection is fully minted, so this set can never change.
     // Source: adao-rarity-intended.json (defipatriot/nft-metadata).
@@ -163,6 +171,7 @@ function configFromManifest(cj, venuesDoc) {
         ENTERPRISE_OPERATOR_WALLET: custody.enterprise_operator || null,
         BACKING_CW20: backing,
         BREAK_MECHANISM: !!(cj.backing && cj.backing.break_mechanism),
+        HAS_CUSTODY: !!(cj.custody && Object.keys(cj.custody).length),   // D.2: no custody block → no dao-controlled product (PL fired aDAO's ids_total / operator guards on its first run)
         VENUES: venues,
         PHOENIX_TOKEN_IDS: tiers.map(String),
     };
@@ -175,6 +184,7 @@ const BOOST_MARKETPLACE  = 'terra1kj7pasyahtugajx9qud02r5jqaf60mtm7g5v9utr94rmdf
 // Query/pagination tuning
 const ALL_TOKENS_PAGE      = 30;     // CW721 default cap
 const MARKETPLACE_PAGE     = 30;     // BBL/Atrium/Boost default
+const BBL_PAGE_ASK         = 100;    // D.2: asked for on the first BBL page; the contract answers with its own cap and THAT is the page size (30 today)
 const ENTERPRISE_MEMBERS_PAGE = 30;
 const NFT_INFO_CONCURRENCY = 30;     // benchmarked: 100 queries in ~470ms; 10k → ~47s
 const HTTP_TIMEOUT_MS      = 15000;
@@ -317,7 +327,7 @@ async function fetchJson(url, label = url, timeoutMs = HTTP_TIMEOUT_MS) {
         });
         if (!res.ok) {
             const body = await res.text().catch(() => '');
-            throw new Error(`HTTP ${res.status} ${body.slice(0, 100)}`);
+            throw new Error(`HTTP ${res.status} ${body.slice(0, 400)}`);   // D.2: long enough to carry a contract's serde message ("unknown field `x`, expected one of …") — the field probe reads it
         }
         return await res.json();
     } catch (e) {
@@ -609,19 +619,36 @@ async function fetchEnterpriseStakers() {
 //   { auction_id, auction_type, nft_contract, token_id, seller, denom,
 //     reserve_price, amount, bidder, end_time, creator_address, royalty_fee,
 //     is_settled, offers }
+// D.2 (2026-09-19) — what the sweep actually does, measured on both collections (aDAO 30/43, PL 30/72): `auction_by_contract`
+// returns the `limit` auctions with the lexicographically LARGEST token ids (the contract iterates its (nft_contract,
+// token_id) index descending) and the documented `start_after` (an auction_id — queries.md, never observed to advance)
+// returns the same window again. The loop below used to break silently on that "stuck" page and warlock quietly carried
+// the rest; the C.6 chain-only detection could only see page 1 (the inverse #745). Now: ask for a larger page (the
+// contract's cap is the truth), try the two plausible cursors (auction_id, then the last row's token_id) and SAY when
+// neither advances; completeness is not this sweep's job any more — fetchMarketplaces() finishes the set from cw721
+// ownership (every token the BBL contract holds) with per-auction queries (bblAuctionById / bblAuctionByToken).
+const BBL_SWEEP = { asked: BBL_PAGE_ASK, page_size: null, pages: 0, cursor: null, rows: 0, complete: null, completed_by_id: 0, completed_by_token: 0, query_shapes: {} };
 async function fetchBblListings() {
     const out = [];
     const seenIds = new Set();
-    let startAfter = null;
-    let page = 0;
+    let startAfter = null, cursorKind = 'auction_id';
+    let page = 0, limit = BBL_PAGE_ASK, lastPage = null;
+    BBL_SWEEP.page_size = null; BBL_SWEEP.pages = 0; BBL_SWEEP.cursor = null; BBL_SWEEP.rows = 0; BBL_SWEEP.complete = null; BBL_SWEEP.completed_by_id = 0; BBL_SWEEP.completed_by_token = 0;
     while (true) {
         const params = {
             nft_contract: ADAO_NFT_CONTRACT,
-            limit: MARKETPLACE_PAGE,
+            limit,
             ...(startAfter ? { start_after: startAfter } : {}),
         };
-        const data = await queryContract(BBL_MARKETPLACE, { auction_by_contract: params }, `bbl page ${page}`);
+        let data;
+        try { data = await queryContract(BBL_MARKETPLACE, { auction_by_contract: params }, `bbl page ${page}`); }
+        catch (e) {
+            if (page === 0 && limit !== MARKETPLACE_PAGE) { console.warn(`  ⚠ BBL rejected limit ${limit} (${e.message.slice(0, 120)}) — retrying at ${MARKETPLACE_PAGE}`); limit = MARKETPLACE_PAGE; continue; }
+            throw e;
+        }
         const auctions = data?.auctions || [];
+        if (page === 0) BBL_SWEEP.page_size = auctions.length;
+        BBL_SWEEP.pages++;
         if (auctions.length === 0) break;                       // exhausted
         // Pagination-progress vs kept-listings are tracked SEPARATELY: a page can be all
         // settled auctions (0 kept) while still advancing the cursor (new ids). Only zero
@@ -635,11 +662,21 @@ async function fetchBblListings() {
             if (a.is_settled === true) continue;                // settled = sold/closed, never a live listing
             out.push(a);
         }
-        if (newIds === 0) break;                                // stuck pagination (same window returned)
-        // BBL pagination key: most likely auction_id (numeric, string-typed). We pass the last one.
-        const lastId = auctions[auctions.length - 1]?.auction_id;
-        if (!lastId) break;
-        startAfter = lastId;
+        if (newIds === 0) {
+            // the same window came back: the cursor did not advance. Try the other plausible key once, then stop and say so.
+            if (cursorKind === 'auction_id' && lastPage && lastPage[lastPage.length - 1]?.token_id != null) {
+                cursorKind = 'token_id'; startAfter = String(lastPage[lastPage.length - 1].token_id); page++; continue;
+            }
+            BBL_SWEEP.cursor = 'stuck';
+            console.warn(`  ⚠ BBL auction_by_contract cursor does not advance (start_after as auction_id and as token_id both return page 1 again) — the sweep sees ${out.length} of the contract's auctions; the rest are completed per token from cw721 ownership`);
+            break;
+        }
+        if (page > 0) BBL_SWEEP.cursor = cursorKind;             // a page beyond the first that brought new ids: this cursor works
+        lastPage = auctions;
+        if (auctions.length < limit && page > 0) { /* a short page with new ids: keep going — the loop ends only on empty / stuck / cap */ }
+        const last = auctions[auctions.length - 1];
+        startAfter = cursorKind === 'token_id' ? String(last?.token_id ?? '') : (last?.auction_id ?? null);
+        if (!startAfter) break;
         page++;
         // NOTE (bug fix 2026-06-10): do NOT break on a short page (`auctions.length <
         // MARKETPLACE_PAGE`). The contract can return fewer rows than the limit mid-sweep
@@ -648,7 +685,12 @@ async function fetchBblListings() {
         // …s2xt53) missing vs warlock's 35. Loop ends only on empty page / stuck ids / cap.
         if (page > 100) { console.warn('  ⚠ BBL pagination cap hit (100 pages) — stopping'); break; }
     }
-    return out.map(a => ({
+    BBL_SWEEP.rows = out.length;
+    if (BBL_SWEEP.cursor == null) BBL_SWEEP.cursor = BBL_SWEEP.pages > 1 ? cursorKind : 'single_page';
+    return out.map(bblAuctionToListing);
+}
+function bblAuctionToListing(a) {
+    return {
         marketplace: 'BBL',
         internal_id: a.auction_id,
         token_id: a.token_id,
@@ -661,8 +703,68 @@ async function fetchBblListings() {
         bidder: a.bidder,
         end_time: a.end_time,
         raw: a,
-    }));
+    };
 }
+// D.2 — per-auction queries with SELF-RESOLVING field names. The contract lists `auction` and `nft_auction` among its
+// queries (queries.md §13, Chainscope) but their argument names were never captured; a wrong name comes back as a serde
+// error naming the expected fields ("unknown field `x`, expected one of `nft_contract`, `token_id`"), so the probe tries the
+// plausible shapes, reads that list when it appears, memoizes the shape that answers, and reports it on the heartbeat
+// (bbl_sweep.query_shapes). A shape is "wrong" only on a parse error; any other answer (an auction, null, not-found) is
+// the contract's answer. Nothing is guessed silently: a variant that never resolves is reported, and its tokens stay
+// "marketplace-owned, no active listing" (blank beats phantom).
+const BBL_SHAPES = {
+    auction: [
+        (x) => ({ auction_id: String(x.auction_id) }),
+        (x) => ({ auction_id: Number(x.auction_id) }),
+        (x) => ({ id: String(x.auction_id) }),
+    ],
+    nft_auction: [
+        (x) => ({ nft_contract: x.nft_contract, token_id: String(x.token_id) }),
+        (x) => ({ contract: x.nft_contract, token_id: String(x.token_id) }),
+        (x) => ({ nft_contract: x.nft_contract, token_id: Number(x.token_id) }),
+        (x) => ({ nft_contract_address: x.nft_contract, token_id: String(x.token_id) }),
+    ],
+};
+const BBL_SHAPE_MEMO = {};   // variant → the builder that answered (or 'unresolved')
+const isParseError = (e) => /unknown field|missing field|Error parsing|invalid type|expected one of/i.test(String(e && e.message || e));
+function shapeFromError(msg, x) {
+    // "expected one of `a`, `b`" → a builder from the contract's own field list, when it names a contract-ish and a token/id-ish field
+    const m = String(msg).match(/expected one of ((?:`[^`]+`(?:, )?)+)/); if (!m) return null;
+    const names = [...m[1].matchAll(/`([^`]+)`/g)].map(z => z[1]);
+    const fc = names.find(n => /contract/i.test(n)), ft = names.find(n => /token/i.test(n)), fa = names.find(n => /auction|^id$/i.test(n));
+    if (x.token_id != null && fc && ft) return () => ({ [fc]: x.nft_contract, [ft]: String(x.token_id) });
+    if (x.auction_id != null && fa) return () => ({ [fa]: String(x.auction_id) });
+    return null;
+}
+function normalizeAuction(data) {
+    if (!data) return null;
+    if (data.auction_id != null) return data;
+    if (data.auction && data.auction.auction_id != null) return data.auction;
+    if (Array.isArray(data.auctions)) return data.auctions.find(a => a && a.auction_id != null) || null;
+    return null;
+}
+async function bblQuery(variant, x) {
+    const memo = BBL_SHAPE_MEMO[variant];
+    if (memo === 'unresolved') return { ok: false, reason: 'shape_unresolved' };
+    const builders = memo ? [memo] : [...BBL_SHAPES[variant]];
+    let lastErr = null;
+    for (let i = 0; i < builders.length; i++) {
+        const b = builders[i];
+        try {
+            const data = await queryContract(BBL_MARKETPLACE, { [variant]: b(x) }, `bbl ${variant}`);
+            if (!memo) { BBL_SHAPE_MEMO[variant] = b; BBL_SWEEP.query_shapes[variant] = Object.keys(b(x)).join(','); console.log(`  ℹ BBL ${variant} query shape resolved: {${BBL_SWEEP.query_shapes[variant]}}`); }
+            return { ok: true, auction: normalizeAuction(data) };
+        } catch (e) {
+            lastErr = e;
+            if (!isParseError(e)) return { ok: false, reason: e.message.slice(0, 160) };   // the contract answered (not found / no auction / node error): not a shape problem
+            if (!memo) { const learned = shapeFromError(e.message, x); if (learned && !builders.some(o => JSON.stringify(o(x)) === JSON.stringify(learned(x)))) builders.push(learned); }
+        }
+    }
+    if (!memo) { BBL_SHAPE_MEMO[variant] = 'unresolved'; BBL_SWEEP.query_shapes[variant] = 'unresolved'; console.warn(`  ⚠ BBL ${variant}: no query shape answered (${lastErr && lastErr.message.slice(0, 200)}) — tokens needing it stay "no active listing"`); }
+    return { ok: false, reason: 'shape_unresolved' };
+}
+const bblAuctionById = (auction_id) => bblQuery('auction', { auction_id });
+const bblAuctionByToken = (token_id) => bblQuery('nft_auction', { nft_contract: ADAO_NFT_CONTRACT, token_id });
 
 // Atrium: query `listings_by_collection` with collection filter
 //
@@ -899,7 +1001,7 @@ function isStructurallyLiveAuction(a) {
     return et === 0;
 }
 
-async function fetchMarketplaces() {
+async function fetchMarketplaces(bblOwnedTokenIds) {   // D.2: the token ids the BBL contract HOLDS (cw721 owner) — the completeness oracle for BBL
     console.log('🏪 Phase 4: fetching marketplace listings (BBL + Atrium + Boost)...');
     const t0 = Date.now();
     const [bblChain, atrium, boost, warlock] = await Promise.all([
@@ -933,35 +1035,37 @@ async function fetchMarketplaces() {
             listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_structurally_live', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, bidder: l.bidder || null, end_time: l.end_time ?? null });
             console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) is on-chain, not on warlock, and not structurally live (bidder/timed) — excluded`);
         }
-        // Inverse gap — live warlock listings the chain sweep didn't return. Verified live
-        // 2026-06-11: the contract's `auction_by_contract` cursor skips entries (holes in
-        // the MIDDLE of the id range — e.g. returns 17744/17746 but not 17696–17742), so
-        // its pagination semantics can't be trusted for completeness. Warlock's auction
-        // object carries every field our listing shape needs, so we RECOVER the missing
-        // listings from warlock directly (source-tagged), and still log each one so the
-        // chain-sweep gap stays visible for a future contract-side investigation.
+        // Inverse gap — live warlock listings the chain sweep didn't return (the stuck cursor above; before D.2 they were
+        // RECOVERED from warlock's own row, royalty/creator fields blank, and warned every run). D.2: fetched from the
+        // contract by auction_id (bblAuctionById) → a real chain row, source 'chain', no warning. The warlock row is the
+        // fallback only when the by-id query fails, and THAT is the warning now (warlock_only_by_id_failed).
         const chainIds = new Set(bblChain.map(l => String(l.internal_id)));
         for (const [id, info] of warlock.byAuctionId) {
-            if (!chainIds.has(id)) {
-                listingWarnings.push({ scope: 'bbl', reason: 'warlock_only_missing_from_chain_sweep', auction_id: id, token_id: info.token_id, seller: info.seller, recovered: true });
-                console.warn(`  ⚠ warlock serves auction ${id} (token #${info.token_id}) but the chain sweep didn't return it — RECOVERED from warlock`);
-                bbl.push({
-                    marketplace: 'BBL',
-                    internal_id: id,
-                    token_id: info.token_id,
-                    seller: info.seller,
-                    price_raw: info.reserve_price,
-                    denom: info.denom,                       // same format as chain ("cw20:addr" / native) — verified identical
-                    listing_type: info.auction_type,
-                    royalty_fee: null,                       // not exposed by warlock; chain-only field
-                    creator_address: null,
-                    bidder: null,
-                    end_time: info.end_time,
-                    source: 'warlock_recovered',
-                    warlock_visible: true,
-                    raw: info.raw,
-                });
+            if (chainIds.has(id)) continue;
+            const r = await bblAuctionById(id);
+            if (r.ok && r.auction && String(r.auction.auction_id) === String(id)) {
+                if (r.auction.is_settled === true) { listingWarnings.push({ scope: 'bbl', reason: 'warlock_serves_settled_auction', auction_id: id, token_id: info.token_id, seller: info.seller }); console.warn(`  ⚠ warlock serves auction ${id} (token #${info.token_id}) but the contract says it is settled — not a listing`); continue; }
+                bbl.push({ ...bblAuctionToListing(r.auction), source: 'chain', warlock_visible: true, completed_by: 'auction_id' }); BBL_SWEEP.completed_by_id++;
+                continue;
             }
+            listingWarnings.push({ scope: 'bbl', reason: 'warlock_only_by_id_failed', auction_id: id, token_id: info.token_id, seller: info.seller, detail: r.reason || 'no auction returned', recovered: true });
+            console.warn(`  ⚠ warlock serves auction ${id} (token #${info.token_id}); the chain sweep missed it and auction{} did not answer (${r.reason || 'no auction'}) — RECOVERED from warlock`);
+            bbl.push({
+                marketplace: 'BBL',
+                internal_id: id,
+                token_id: info.token_id,
+                seller: info.seller,
+                price_raw: info.reserve_price,
+                denom: info.denom,                       // same format as chain ("cw20:addr" / native) — verified identical
+                listing_type: info.auction_type,
+                royalty_fee: null,                       // not exposed by warlock; chain-only field
+                creator_address: null,
+                bidder: null,
+                end_time: info.end_time,
+                source: 'warlock_recovered',
+                warlock_visible: true,
+                raw: info.raw,
+            });
         }
     } else if (bblChain.length > 0) {
         // No oracle this run: publish the structurally live chain set, visibility unknown (null, not false).
@@ -970,10 +1074,38 @@ async function fetchMarketplaces() {
         console.warn(`  ⚠ warlock unavailable — BBL listings (${bbl.length} of ${bblChain.length} chain rows structurally live) published with warlock_visible:null (no liveness cross-check this run)`);
     }
 
+    // D.2 — completion from cw721 ownership: every token the BBL contract HOLDS that no row above explains is asked for
+    // directly (nft_auction). Structurally live → a chain-only listing (the inverse #745: page 1 and warlock both blind);
+    // a bidder / timed end → warned, excluded; no auction at all → stays "marketplace-owned, no active listing".
+    if (Array.isArray(bblOwnedTokenIds) && bblOwnedTokenIds.length) {
+        const have = new Set(bbl.map(l => String(l.token_id)));
+        const missing = bblOwnedTokenIds.map(String).filter(t => !have.has(t));
+        for (const t of missing) {
+            const r = await bblAuctionByToken(t);
+            if (!r.ok) { listingWarnings.push({ scope: 'bbl', reason: 'bbl_owned_no_auction_answer', token_id: t, detail: r.reason }); continue; }
+            const a = r.auction; if (!a || a.is_settled === true) continue;   // the contract holds it with no live auction — honest blank
+            const l = bblAuctionToListing(a);
+            if (!(warlock.ok && warlock.ids.size > 0)) {   // no liveness oracle this run: visibility unknown (null), same label as the swept rows — never "chain-only" on a guess
+                if (isStructurallyLiveAuction(a)) { bbl.push({ ...l, source: 'chain', warlock_visible: null, completed_by: 'token_id' }); BBL_SWEEP.completed_by_token++; }
+                else listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_structurally_live', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, bidder: l.bidder || null, end_time: l.end_time ?? null, completed_by: 'token_id' });
+                continue;
+            }
+            if (isStructurallyLiveAuction(a)) {
+                listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_on_warlock', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, included: true, completed_by: 'token_id' });
+                console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) found by token: on-chain, not on warlock, not on the sweep's page — INCLUDED as a chain-only listing`);
+                bbl.push({ ...l, source: 'chain_only', warlock_visible: false, completed_by: 'token_id' }); BBL_SWEEP.completed_by_token++;
+            } else {
+                listingWarnings.push({ scope: 'bbl', reason: 'chain_only_not_structurally_live', auction_id: String(l.internal_id), token_id: String(l.token_id), seller: l.seller, bidder: l.bidder || null, end_time: l.end_time ?? null, completed_by: 'token_id' });
+                console.warn(`  ⚠ BBL auction ${l.internal_id} (token #${l.token_id}) found by token: not structurally live (bidder/timed) — excluded`);
+            }
+        }
+        BBL_SWEEP.complete = bbl.filter(l => l.token_id != null).length + listingWarnings.filter(w => w.scope === 'bbl' && /not_structurally_live|serves_settled/.test(w.reason)).length >= bblOwnedTokenIds.length;
+    }
+
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     const chainOnly = bbl.filter(l => l.source === 'chain_only').length;
-    console.log(`  ✓ BBL ${bbl.length} (chain ${bblChain.length}, warlock ${warlock.ids.size}, chain-only ${chainOnly}), Atrium ${atrium.length}, Boost ${boost.length} listings in ${elapsed}s`);
-    return { bbl, atrium, boost, listingWarnings };
+    console.log(`  ✓ BBL ${bbl.length} (sweep ${bblChain.length} on ${BBL_SWEEP.pages} page(s) of ${BBL_SWEEP.page_size}, cursor ${BBL_SWEEP.cursor}; +${BBL_SWEEP.completed_by_id} by auction_id, +${BBL_SWEEP.completed_by_token} by token; warlock ${warlock.ids.size}, chain-only ${chainOnly}), Atrium ${atrium.length}, Boost ${boost.length} listings in ${elapsed}s`);
+    return { bbl, atrium, boost, listingWarnings, bbl_sweep: { ...BBL_SWEEP, owned: Array.isArray(bblOwnedTokenIds) ? bblOwnedTokenIds.length : null } };
 }
 
 // -----------------------------------------------------------------------------
@@ -2326,7 +2458,7 @@ async function captureSnapshot() {
     console.log('🔀 Phases 3-7: parallel data fetches...');
     const [enterpriseStakers, marketplaces, daodaoStakers, priceData] = await Promise.all([
         fetchEnterpriseStakers(),
-        fetchMarketplaces(),
+        fetchMarketplaces(records.filter(r => r.owner === BBL_MARKETPLACE).map(r => String(r.id))),   // D.2: cw721 ownership is the completeness oracle for BBL
         fetchDaodaoStakers(),
         fetchPriceData(),
     ]);
@@ -2506,6 +2638,7 @@ async function captureSnapshot() {
         listing_resolver: {
             warning_count: (marketplaces.listingWarnings || []).length,
             warnings: (marketplaces.listingWarnings || []).slice(0, 100),
+            bbl_sweep: marketplaces.bbl_sweep || null,   // D.2: what the page sweep saw, which cursor (if any) advanced, how many rows were completed per auction / per token
         },
     };
     const heartbeatDoc = {
@@ -2558,7 +2691,7 @@ async function captureSnapshot() {
             staker_resolution_errors: stakerErrors.length,
             staker_resolution_warnings: stakerWarnings.length,
             listing_resolver_warnings: (marketplaces.listingWarnings || []).length,
-            rev: 'C.6',
+            rev: 'D.2',
             enterprise_unattributed: summary.enterprise_unattributed_count,
             daodao_pending_reconciled: pending.block.reconciled,
         },
@@ -2647,7 +2780,10 @@ async function captureSnapshot() {
         heartbeatDoc.nfts_published_this_run = !(unchanged && !forcePublish);
 
         // dao-controlled by ID (owner 2026-09-10) — guards published, never blanked
-        try {
+        // D.2: only for a collection whose manifest has a `custody` block (aDAO: treasury / council / enterprise operator).
+        // Without one there is no such set to publish — the guards would fire on ids_total 0 (PL's first run did).
+        if (!COL.HAS_CUSTODY) console.log('  · dao-controlled: skipped (no `custody` block in the manifest)');
+        else try {
             const dc = buildDaoControlled(records, enterpriseStakers, new Date().toISOString());
             await pushToGithub(`${OUTPUT_PATH}/dao-controlled.json`, JSON.stringify(dc, null, 1), `dao-controlled — ${dc.counts.total} ids (${dc.status}${dc.failed_guards.length ? ': ' + dc.failed_guards.join(',') : ''})`);
             console.log(`  ${dc.status === 'ok' ? '✓' : '⚠'} dao-controlled: ${dc.counts.total} ids (treasury ${dc.counts.treasury} · enterprise ${dc.counts.enterprise} · 8ywv ${dc.counts.dao_wallet_8ywv}) — guards ${dc.status}${dc.failed_guards.length ? ' FAILED: ' + dc.failed_guards.join(', ') : ''}`);

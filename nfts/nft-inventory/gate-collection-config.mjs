@@ -6,6 +6,9 @@
 //   3. applyCollection(PL) rebinds the classifier: PL's staking module → daodao_staked; aDAO's → user_held; tierOf → base.
 //   4. compact-bundle: the aDAO bundle built by 1.3.0 is byte-identical (minus builtAt/builtBy) to the one 1.2.0 builds on the
 //      same fixture; a PL bundle carries PL's six trait columns in manifest order and PL's supply.
+//   5. (D.2) the run-ally PATH case: index.js loaded exactly as run-ally.js spawns it (COLLECTION=<slug>, NFT_ROOT deleted) resolves
+//      NFT_ROOT = the slug for adao AND pixel-lions (the 23:34Z run wrote a stray nft-collections/nfts/adao/ when adao fell back
+//      to the pre-migration root); and HAS_CUSTODY is true for aDAO, false for PL (no dao-controlled product without a custody block).
 // Usage: NFTC_DIR=<nft-collections with the D.1 adao manifest> SITE_DIR=<aDAO-links-site> MAIN_DIR=<platform-crons main checkout> node gate-collection-config.mjs
 import fs from 'fs'; import path from 'path'; import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -27,7 +30,8 @@ const plc = M.configFromManifest(pl, venues);
 ok('contract + DAO core + DAODAO staking module from the manifest', plc.NFT_CONTRACT === pl.nft_contract && plc.DAO_MAIN_WALLET === pl.governance.dao_address && plc.DAODAO_STAKING_CONTRACT === pl.governance.staking_contract, plc);
 ok('Enterprise legacy custodian resolved by ROLE from capture.custodians', plc.ENTERPRISE_NFT_STAKING === Object.entries(pl.capture.custodians).find(([, c]) => c.role === 'enterprise_staking')[0]);
 ok('no backing token, no break mechanism, no Phoenix tier, no treasury/council wallets', plc.BACKING_CW20 === null && plc.BREAK_MECHANISM === false && plc.PHOENIX_TOKEN_IDS.length === 0 && plc.DAO_TREASURY_CONTRACT === null && plc.DAO_WALLET_8YWV === null, plc);
-ok('venues = the manifest\'s marketplaces (bbl only), supply 5000', JSON.stringify(plc.VENUES) === '["bbl"]' && plc.supply === 5000, [plc.VENUES, plc.supply]);
+ok(`venues = the manifest's marketplaces, in its order (${pl.marketplaces.map(m => m.key).join(', ')}), supply = the manifest's`, JSON.stringify(plc.VENUES) === JSON.stringify(pl.marketplaces.map(m => m.key).filter(k => venues.venues[k])) && plc.supply === Number(pl.supply), [plc.VENUES, plc.supply]);   // D.2: a relation — the chain names the venues (PL's first run found Atrium + Boost) and the registry follows
+ok('HAS_CUSTODY: aDAO true (custody block), PL false (none) — dao-controlled publishes only with a custody block', M.configFromManifest(adao, venues).HAS_CUSTODY === true && plc.HAS_CUSTODY === false, [M.configFromManifest(adao, venues).HAS_CUSTODY, plc.HAS_CUSTODY]);
 
 console.log('\n== 3. applyCollection rebinds the classifier ==');
 { M.applyCollection(plc);
@@ -57,4 +61,12 @@ console.log('\n== 4. compact-bundle differential (aDAO byte-identical) + a PL bu
   let plb = null, err = null; try { plb = CBpl.buildBundle(plNfts, plSum, plMeta, plRar, null); } catch (e) { err = e.message; }
   ok('PL bundle builds from PL metadata + rarity: fields = id + Back/Body/Eyes/Face/Mane/Prop + ranks + flags', plb && JSON.stringify(plb.fields) === JSON.stringify(['id', 'back', 'body', 'eyes', 'face', 'mane', 'prop', 'intended_rank', 'intended_pct', 'bbl_rank', 'flags', 'listing_usd']), err || (plb && plb.fields));
   ok('PL bundle: 5,000 rows, dictionaries per PL trait (Mane has 31 values), rank column filled from rarity.json', plb && plb.rows.length === 5000 && plb.dict.Mane && plb.dict.Mane.length === 31 && plb.rows.filter(r => r[7] != null).length >= 4990, plb && [plb.rows.length, plb.dict.Mane && plb.dict.Mane.length, plb.rows.filter(r => r[7] != null).length]); }
+console.log('\n== 5. the run-ally PATH case (D.2): a child process exactly as run-ally.js spawns it ==');
+{ const { spawnSync } = await import('node:child_process');
+  const paths = (slug) => { const env = Object.assign({}, process.env, { COLLECTION: slug, GITHUB_TOKEN: 'x' }); delete env.NFT_ROOT; const r = spawnSync(process.execPath, ['--max-old-space-size=200', '-e', "const M=require('./index.js'); console.log(JSON.stringify(M.PATHS))"], { cwd: path.dirname(new URL(import.meta.url).pathname), env, encoding: 'utf8' }); try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return { error: (r.stderr || r.stdout).slice(0, 300) }; } };
+  const a = paths('adao'), p = paths('pixel-lions');
+  ok('COLLECTION=adao, NFT_ROOT unset (run-ally) → NFT_ROOT "adao", OUTPUT_PATH under it, never nfts/adao', a.NFT_ROOT === 'adao' && String(a.OUTPUT_PATH).startsWith('adao/') && !/nfts\/adao/.test(JSON.stringify(a)), a);
+  ok('COLLECTION=pixel-lions, NFT_ROOT unset → NFT_ROOT "pixel-lions", OUTPUT_PATH under it', p.NFT_ROOT === 'pixel-lions' && String(p.OUTPUT_PATH).startsWith('pixel-lions/'), p);
+  const ra = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'run-ally.js'), 'utf8');
+  ok('run-ally.js deletes NFT_ROOT from the child env and sets COLLECTION=<slug> (the slug is the root, always)', /delete env\.NFT_ROOT/.test(ra) && /COLLECTION: slug/.test(ra)); }
 console.log(`\n=== GATE collection-config: ${pass} passed, ${fail} failed ===`); process.exit(fail ? 1 : 0);

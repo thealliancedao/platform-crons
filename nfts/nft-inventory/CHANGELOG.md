@@ -1,4 +1,32 @@
-# nfts/adao — changelog
+# nfts/nft-inventory — changelog
+
+## nft-inventory Rev D.2 — 2026-09-19 — BBL completeness from cw721 ownership · dao-controlled only with a custody block
+
+- Measured on both collections (aDAO chain 30 / warlock 43, PL 30 / 72): BBL's `auction_by_contract` returns the `limit`
+  auctions with the lexicographically LARGEST token ids and its `start_after` cursor (an auction_id in queries.md, never seen
+  to advance) hands back the same page. The sweep used to break silently on that "stuck" page; warlock quietly carried the
+  rest, and the C.6 chain-only detection could only see page 1 — the inverse #745 (PL: 1 BBL-held token invisible to both).
+- The sweep asks for 100 rows (the contract's cap is the page size — 30 today), tries the auction_id cursor then the last
+  row's token_id, and WARNS ONCE when neither advances. Completeness moved to `fetchMarketplaces(bblOwnedTokenIds)`: every
+  token the BBL contract HOLDS (cw721 owner) that the sweep missed is fetched by auction_id when warlock knows it (`auction{}`
+  → a real chain row, source `chain`, no warning; the warlock row is the fallback only when that query fails, warned as
+  `warlock_only_by_id_failed`) or by token (`nft_auction{}` → `chain_only` when structurally live, warned as before; a
+  bidder / timed end → `chain_only_not_structurally_live`; no auction → stays "marketplace-owned, no active listing").
+  Without the warlock liveness oracle a completed row is `chain` with `warlock_visible:null`, never a guessed chain-only.
+- Field names for `auction` / `nft_auction` SELF-RESOLVE: plausible shapes are tried, the contract's serde error ("expected
+  one of `…`") is read for the real ones, the answering shape is memoized and reported. `summary.listing_resolver.bbl_sweep`
+  = { asked, page_size, pages, cursor (auction_id | token_id | stuck | single_page), rows, completed_by_id,
+  completed_by_token, complete, owned, query_shapes }. `warlock_only_missing_from_chain_sweep` warnings are gone (a completed
+  row is not a warning) — listing_resolver_warnings should read 0 on both collections unless something is truly chain-only.
+- dao-controlled.json publishes only for a collection whose manifest has a `custody` block (`HAS_CUSTODY`; aDAO true, PL
+  false — PL's first run fired aDAO's ids_total / operator guards on a set that does not exist for it). The stale
+  pixel-lions/snapshots/dao-controlled.json is to be deleted by hand.
+- Heartbeat `stats.rev` = D.2 (was stuck at C.6). fetchJson error bodies carry 400 chars (the serde message).
+- Gates: mock-run-chain-only (stubbed contract = the measured live behaviour; C.6 + D.2 completion, warlock-down and
+  by-id-failing paths; 31 checks) · gate-collection-config (18: + the run-ally PATH case in a child process exactly as
+  run-ally.js spawns it, venues as a relation to the manifest, HAS_CUSTODY) · gate-nft-root (47: smart queries compared by
+  contract + variant, not base64 body) · market-history / compact-bundle mocks unchanged. Every mock under
+  --max-old-space-size=200. mock-run-custody's W 12 vs 8 on today's fixture is pre-existing and unchanged.
 
 ## nft-inventory Rev D.1 · compact-bundle 1.3.0 · analytics 1.1.1 — 2026-09-18 — collection-agnostic
 
