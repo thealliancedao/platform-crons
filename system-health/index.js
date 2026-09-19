@@ -17,6 +17,9 @@
 //   5 bucket_label_agreement   dex-data bucket vs catalog bucket per pair
 //   6 heartbeat_freshness      product-appropriate signals + one-off exemption
 //   7 identity_resolution      unresolved pools/tokens count (informational)
+//   8 nft_listings_reconcile   per collection (tenants.json): listings open per the event ledger == inventory listings
+//                              from contract state, per venue and per token; a difference younger than the two products'
+//                              lag is 'recent_unconfirmed', never a violation (1.0.9)
 //
 // Env (Render): GITHUB_TOKEN (rw tla-core), GITHUB_REPO, GITHUB_BRANCH.
 // =============================================================================
@@ -26,7 +29,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.8';   // 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.0.9';   // 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -224,6 +227,7 @@ const FRESHNESS_MAP = [
     { product: 'fuel-supply',        kind: 'cron',    path: 'token-catalog/supply/fuel/current.json',     ts: ['capturedAt'],                max_age_h: 12 },   // 2026-08-24: Boost DAO (Neutron) + Terra IBC map
     // 2026-09-12 (NFT ledger milestone): one Render service per collection (org-nft-flows-<slug>, hourly, platform-crons/
     // nfts/nft-flows) publishing into thealliancedao/nft-collections/<slug>/ — `repo` names where the heartbeat lives.
+    { product: 'nft-inventory-pixel-lions', kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'pixel-lions/snapshots/heartbeat.json', ts: ['capturedAt'], max_age_h: 6 },   // 1.0.9: org-nft-inventory-liondao (run-ally, 15-min)
     { product: 'nft-ledger-adao',        kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'adao/nft-flows/heartbeat.json',        ts: ['ran_at'], max_age_h: 6 },
     { product: 'nft-ledger-pixel-lions', kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'pixel-lions/nft-flows/heartbeat.json', ts: ['ran_at'], max_age_h: 6 },
     { product: 'nft-ledger-tla-locks',   kind: 'cron', repo: 'thealliancedao/nft-collections', path: 'tla-locks/nft-flows/heartbeat.json',   ts: ['ran_at'], max_age_h: 6 },
@@ -274,6 +278,73 @@ function invIdentityResolution(catalog) {
     }, 'informational — trend toward zero');
 }
 
+
+// --------------------------------------------------------------------------- INV 8 — nft_listings_reconcile (1.0.9, owner 2026-09-19)
+// Two products answer "what is listed": the event LEDGER (org-nft-flows, every list/delist/sale/transfer on chain, hourly)
+// and the INVENTORY (org-nft-inventory, contract state every 15 min: cw721 owner + the venues' auction/listing queries).
+// They must agree per venue and per token. When they do not, one of them is blind — the September case: BBL's
+// auction_by_contract shows 30 rows and its cursor never advances, so a chain-only auction the ledger had seen listed (PL
+// #2124) was invisible to the state read until D.2 completed it from ownership. This invariant keeps that class of gap loud.
+// Fold rule (the ledger side): `list` opens a token's listing on its venue; `delist`, `sale`, `venue_out`, `transfer` close
+// it (the token leaves the venue). Superseded rows never count. One month in memory at a time (read → fold → drop).
+// Lag rule: the ledger runs hourly, the inventory every 15 min, and a listing placed or closed inside that window is on
+// one side only — those are reported as recent_unconfirmed (with the timestamp that proves it), never as a violation.
+const LISTING_OPEN = new Set(['list']), LISTING_CLOSE = new Set(['delist', 'sale', 'venue_out', 'transfer']);
+const NFTC_REPO = 'thealliancedao/nft-collections';
+async function invNftListingsReconcile(reader, now, opts = {}) {
+    const tenants = (await reader('docs/curated/tenants.json')).data;
+    if (!tenants || !tenants.tenants) return skipped('docs/curated/tenants.json absent/unreadable — no collection list');
+    const slugs = [...new Set(Object.values(tenants.tenants).flatMap(t => t.collections || []))];
+    if (!slugs.length) return skipped('tenants.json names no collections');
+    const per = {}; const problems = []; let compared = 0;
+    for (const slug of slugs) {
+        const ix = (await reader(`${slug}/ledger/index.json`, NFTC_REPO)).data;
+        const hb = (await reader(`${slug}/nft-flows/heartbeat.json`, NFTC_REPO)).data;
+        const nfts = (await reader(`${slug}/snapshots/nfts.json`, NFTC_REPO)).data;
+        const first = (await reader(`${slug}/snapshots/listing-first-seen.json`, NFTC_REPO)).data;
+        if (!ix || !Array.isArray(ix.months) || !nfts || !Array.isArray(nfts.records)) { per[slug] = { status: 'skipped', reason: !ix ? 'no ledger index' : 'no inventory nfts.json' }; continue; }
+        // ledger side: fold open listings month by month
+        const open = {};   // token → { venue, ts }
+        for (const mk of ix.months) {
+            const m = (await reader(`${slug}/ledger/${mk}.json`, NFTC_REPO)).data; if (!Array.isArray(m)) continue;
+            m.sort((a, b) => (a.height - b.height) || (a.msg_index - b.msg_index));
+            for (const r of m) {
+                if (r.superseded_by || r.token_id == null) continue;
+                const t = String(r.token_id);
+                if (LISTING_OPEN.has(r.kind)) open[t] = { venue: String(r.venue || '').toLowerCase(), ts: r.ts };
+                else if (LISTING_CLOSE.has(r.kind) && open[t]) { open[t] = null; delete open[t]; }
+            }
+        }
+        // inventory side
+        const inv = {};
+        for (const r of nfts.records) if (r.listing && r.listing.marketplace) inv[String(r.id)] = { venue: String(r.listing.marketplace).toLowerCase(), source: r.listing.source || null };
+        const firstSeen = {}; for (const e of Object.values((first && first.entries) || {})) if (e && e.token_id) firstSeen[String(e.token_id)] = e.first_seen_at;
+        const ledgerAt = (hb && hb.ran_at) || null, invAt = nfts.capturedAt || null;
+        const lagMs = ledgerAt && invAt ? Math.abs(new Date(invAt) - new Date(ledgerAt)) : 0;
+        const window = Math.max(lagMs, (opts.min_lag_h || 2) * 36e5);   // at least 2 h: hourly cron + settle time
+        const countBy = (o) => { const c = {}; for (const v of Object.values(o)) c[v.venue] = (c[v.venue] || 0) + 1; return c; };
+        const ledgerOnly = [], invOnly = [], venueDiff = [], recent = [];
+        for (const t of Object.keys(open)) {
+            if (!inv[t]) { const age = now - new Date(open[t].ts); (age < window ? recent : ledgerOnly).push({ token_id: t, venue: open[t].venue, listed_at: open[t].ts, side: 'ledger' }); }
+            else if (inv[t].venue !== open[t].venue) venueDiff.push({ token_id: t, ledger_venue: open[t].venue, inventory_venue: inv[t].venue });
+        }
+        for (const t of Object.keys(inv)) {
+            if (open[t]) continue;
+            const fs = firstSeen[t]; const age = fs ? now - new Date(fs) : Infinity;
+            (age < window ? recent : invOnly).push({ token_id: t, venue: inv[t].venue, source: inv[t].source, first_seen_at: fs || null, side: 'inventory' });
+        }
+        compared++;
+        const bad = ledgerOnly.length + invOnly.length + venueDiff.length;
+        per[slug] = { status: bad ? 'violation' : 'ok', ledger_open: Object.keys(open).length, inventory_listed: Object.keys(inv).length, by_venue: { ledger: countBy(open), inventory: countBy(inv) },
+            ledger_open_not_in_inventory: ledgerOnly.slice(0, 25), inventory_listed_not_open_in_ledger: invOnly.slice(0, 25), venue_disagreements: venueDiff.slice(0, 25), recent_unconfirmed: recent.slice(0, 25),
+            ledger_as_of: ledgerAt, inventory_as_of: invAt, lag_window_h: Math.round(window / 36e5 * 10) / 10 };
+        if (bad) problems.push(`${slug}: ${ledgerOnly.length} open in ledger, not in inventory · ${invOnly.length} listed in inventory, not open in ledger · ${venueDiff.length} venue disagreement(s)`);
+    }
+    if (!compared) return skipped('no collection had both a ledger index and an inventory nfts.json');
+    if (problems.length) return violation(problems.join(' | '), per, 'per collection: listings open per the event ledger == inventory listings from contract state, per venue and per token (differences inside the products\' lag window are recent_unconfirmed)');
+    return ok(`${compared} collection(s) reconcile to the token`, per, 'per collection: listings open per the event ledger == inventory listings from contract state, per venue and per token');
+}
+
 // --------------------------------------------------------------------------- history append (monthly, never-shrink)
 async function appendHistory(now, runSummary) {
     const path = `system-health/history/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}.json`;
@@ -318,7 +389,7 @@ async function run() {
         }
     }
 
-    // ---- run the seven
+    // ---- run the eight
     const invariants = {
         bucket_vp_consistency:      invBucketVpConsistency(member, catalog),
         staked_le_depth:            invStakedLeDepth(dexSnapshots),
@@ -327,6 +398,7 @@ async function run() {
         bucket_label_agreement:     invBucketLabelAgreement(dexSnapshots, catalog),
         heartbeat_freshness:        await invHeartbeatFreshness(apiGetJson, now),
         identity_resolution:        invIdentityResolution(catalog),
+        nft_listings_reconcile:     await invNftListingsReconcile(apiGetJson, now),   // 1.0.9
     };
     for (const inv of Object.values(invariants)) inv.as_of = now.toISOString();
 
@@ -350,5 +422,5 @@ async function run() {
     return current;
 }
 
-module.exports = { run, T, apiGetJson, publishFile, invBucketVpConsistency, invStakedLeDepth, invDistributionFractions, invTributeCoverage, invBucketLabelAgreement, invHeartbeatFreshness, invIdentityResolution, FRESHNESS_MAP };
+module.exports = { run, T, apiGetJson, publishFile, invBucketVpConsistency, invStakedLeDepth, invDistributionFractions, invTributeCoverage, invBucketLabelAgreement, invHeartbeatFreshness, invIdentityResolution, invNftListingsReconcile, FRESHNESS_MAP };
 if (require.main === module) run().then(() => process.exit(0)).catch(e => { console.error('FATAL:', e.message); process.exit(1); });

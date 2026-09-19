@@ -76,6 +76,28 @@ function healthyRepo() {
         'tla-locks/nft-flows/heartbeat.json':   { ran_at: '2026-07-16T11:44:00Z', status: 'ok', cursor: 1 },
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),      // 1.0.6: nft-collections paths
+        'pixel-lions/snapshots/heartbeat.json': H('2026-07-16T11:15:00Z'),   // 1.0.9: org-nft-inventory-liondao
+        // 1.0.9 INV8 fixture: two collections; a two-month aDAO ledger where #1 was listed then delisted, #2 listed on bbl and
+        // still open, #3 listed on atrium and sold; #4 listed then transferred (closed). The inventory agrees: only #2 listed.
+        'docs/curated/tenants.json': { tenants: { adao: { collections: ['adao'] }, liondao: { collections: ['pixel-lions'] } } },
+        'adao/ledger/index.json': { months: ['2026/06', '2026/07'] },
+        'adao/ledger/2026/06.json': [
+            { txhash: 'A', height: 10, msg_index: 0, kind: 'list', token_id: '1', venue: 'bbl', ts: '2026-06-01T00:00:00Z' },
+            { txhash: 'B', height: 11, msg_index: 0, kind: 'list', token_id: '3', venue: 'atrium', ts: '2026-06-02T00:00:00Z' },
+            { txhash: 'C', height: 12, msg_index: 0, kind: 'list', token_id: '4', venue: 'bbl', ts: '2026-06-03T00:00:00Z' },
+            { txhash: 'Z', height: 13, msg_index: 0, kind: 'list', token_id: '9', venue: 'bbl', ts: '2026-06-03T00:00:00Z', superseded_by: 'repair-x' },   // never counts
+        ],
+        'adao/ledger/2026/07.json': [
+            { txhash: 'D', height: 20, msg_index: 0, kind: 'delist', token_id: '1', venue: 'bbl', ts: '2026-07-01T00:00:00Z' },
+            { txhash: 'E', height: 21, msg_index: 0, kind: 'list', token_id: '2', venue: 'bbl', ts: '2026-07-02T00:00:00Z' },
+            { txhash: 'F', height: 22, msg_index: 0, kind: 'sale', token_id: '3', venue: 'atrium', ts: '2026-07-03T00:00:00Z' },
+            { txhash: 'G', height: 23, msg_index: 0, kind: 'transfer', token_id: '4', ts: '2026-07-04T00:00:00Z' },
+        ],
+        'adao/snapshots/nfts.json': { capturedAt: '2026-07-16T11:00:00Z', records: [{ id: '1', listing: null }, { id: '2', listing: { marketplace: 'BBL', source: 'chain' } }, { id: '3', listing: null }, { id: '4', listing: null }] },
+        'adao/snapshots/listing-first-seen.json': { entries: { 'BBL:1': { token_id: '2', first_seen_at: '2026-07-02T00:10:00Z' } } },
+        'pixel-lions/ledger/index.json': { months: ['2026/07'] },
+        'pixel-lions/ledger/2026/07.json': [{ txhash: 'P', height: 30, msg_index: 0, kind: 'list', token_id: '2124', venue: 'bbl', ts: '2026-07-10T00:00:00Z' }],
+        'pixel-lions/snapshots/nfts.json': { capturedAt: '2026-07-16T11:15:00Z', records: [{ id: '2124', listing: { marketplace: 'BBL', source: 'chain_only' } }] },
         'adao/flows/heartbeat.json': H('2026-07-16T11:00:00Z'),
         'adao/provenance/heartbeat.json': { ran_at: '2026-07-08T00:00:00Z' },   // ancient — must be EXEMPT
         'price-history/2026/07.json': { meta: {}, days: { '2026-07-14': {}, '2026-07-15': {} } },
@@ -94,8 +116,12 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO = fixNotTla(healthyRepo()); WRITES = {};
     let out = await M.run();
     check('R1 overall skipped-not-violation (bribe_capture pending)', out.meta.status === 'skipped', out.meta.status);
-    for (const k of ['bucket_vp_consistency', 'staked_le_depth', 'distribution_fractions_sum', 'bucket_label_agreement', 'heartbeat_freshness', 'identity_resolution'])
+    for (const k of ['bucket_vp_consistency', 'staked_le_depth', 'distribution_fractions_sum', 'bucket_label_agreement', 'heartbeat_freshness', 'identity_resolution', 'nft_listings_reconcile'])
         check(`R1 ${k} ok`, out.invariants[k].status === 'ok', out.invariants[k]);
+    { const m = out.invariants.nft_listings_reconcile.measured;
+      check('R1 INV8 fold: only #2 open on aDAO (delisted, sold, transferred and superseded rows closed/ignored); by_venue both sides {bbl:1}', m.adao.ledger_open === 1 && m.adao.inventory_listed === 1 && JSON.stringify(m.adao.by_venue) === JSON.stringify({ ledger: { bbl: 1 }, inventory: { bbl: 1 } }), m.adao);
+      check('R1 INV8 PL: the chain-only #2124 listing is open in the ledger AND in the inventory (D.2 completion) → ok', m['pixel-lions'].status === 'ok' && m['pixel-lions'].ledger_open === 1, m['pixel-lions']);
+      check('R1 INV8 reads the ledger + inventory from nft-collections, tenants from tla-core', REPO_HITS['adao/ledger/2026/07.json'] === 'thealliancedao/nft-collections' && REPO_HITS['pixel-lions/snapshots/nfts.json'] === 'thealliancedao/nft-collections' && REPO_HITS['docs/curated/tenants.json'] === 'thealliancedao/tla-core', [REPO_HITS['adao/ledger/2026/07.json'], REPO_HITS['docs/curated/tenants.json']]); }
     check('R1 tribute skipped + declared', out.invariants.tribute_stream_coverage.status === 'skipped' && /not yet published/.test(out.invariants.tribute_stream_coverage.detail));
     check('R1 INV1 measured rows carry both sides', Array.isArray(out.invariants.bucket_vp_consistency.measured) && out.invariants.bucket_vp_consistency.measured[0].catalog_active_sum_vp > 0);
     check('R1 INV7 counts inactive-unresolved pool', out.invariants.identity_resolution.measured.unresolved_pools === 1 && out.invariants.identity_resolution.measured.tokens_without_identity === 1, out.invariants.identity_resolution.measured);
@@ -227,6 +253,32 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     out = await M.run();
     check('R6 append exactly one', REPO['system-health/history/2026/07.json'].runs.length === runsBefore + 1);
     check('R6 run summary carries coverage baseline', REPO['system-health/history/2026/07.json'].runs.at(-1).tribute_coverage.per_denom.uluna === 0.96);
+
+    console.log('— R8: INV8 nft_listings_reconcile (1.0.9) —');
+    REPO = fixNotTla(healthyRepo());
+    REPO['pixel-lions/snapshots/nfts.json'] = { capturedAt: '2026-07-16T11:15:00Z', records: [{ id: '2124', listing: { marketplace_owner_no_listing: true } }] };   // the pre-D.2 state read: blind to the chain-only listing
+    out = await M.run();
+    check('R8a a listing open in the ledger that the inventory cannot see → violation naming the token, venue and when it was listed', out.invariants.nft_listings_reconcile.status === 'violation' && out.invariants.nft_listings_reconcile.measured['pixel-lions'].ledger_open_not_in_inventory[0].token_id === '2124' && /pixel-lions: 1 open in ledger, not in inventory/.test(out.invariants.nft_listings_reconcile.detail), out.invariants.nft_listings_reconcile.detail);
+    check('R8a aDAO still ok inside the same run (per-collection verdicts)', out.invariants.nft_listings_reconcile.measured.adao.status === 'ok');
+    REPO = fixNotTla(healthyRepo());
+    REPO['adao/snapshots/nfts.json'].records[0].listing = { marketplace: 'Boost', source: 'chain' };   // #1 listed 20 min ago on Boost; the hourly ledger has not seen it
+    REPO['adao/snapshots/listing-first-seen.json'].entries['Boost:5'] = { token_id: '1', first_seen_at: '2026-07-16T11:40:00Z' };
+    out = await M.run();
+    check('R8b a listing the inventory saw inside the lag window (first_seen 20 min ago) → recent_unconfirmed, NOT a violation', out.invariants.nft_listings_reconcile.status === 'ok' && out.invariants.nft_listings_reconcile.measured.adao.recent_unconfirmed.length === 1 && out.invariants.nft_listings_reconcile.measured.adao.recent_unconfirmed[0].token_id === '1', out.invariants.nft_listings_reconcile.measured.adao);
+    REPO['adao/snapshots/listing-first-seen.json'].entries['Boost:5'].first_seen_at = '2026-07-15T11:40:00Z';   // a day old: the ledger should have it by now
+    out = await M.run();
+    check('R8c the same listing a day old → violation (inventory_listed_not_open_in_ledger)', out.invariants.nft_listings_reconcile.status === 'violation' && out.invariants.nft_listings_reconcile.measured.adao.inventory_listed_not_open_in_ledger[0].token_id === '1');
+    REPO = fixNotTla(healthyRepo());
+    REPO['adao/snapshots/nfts.json'].records[1].listing = { marketplace: 'Atrium', source: 'chain' };   // #2 open on bbl per the ledger, Atrium per the inventory
+    out = await M.run();
+    check('R8d venue disagreement → violation with both venues named', out.invariants.nft_listings_reconcile.status === 'violation' && out.invariants.nft_listings_reconcile.measured.adao.venue_disagreements[0].ledger_venue === 'bbl' && out.invariants.nft_listings_reconcile.measured.adao.venue_disagreements[0].inventory_venue === 'atrium');
+    REPO = fixNotTla(healthyRepo()); delete REPO['docs/curated/tenants.json'];
+    out = await M.run();
+    check('R8e tenants.json absent → INV8 skipped and says why (never a verdict without the collection list)', out.invariants.nft_listings_reconcile.status === 'skipped' && /tenants\.json/.test(out.invariants.nft_listings_reconcile.detail));
+    REPO = fixNotTla(healthyRepo()); delete REPO['pixel-lions/ledger/index.json'];
+    out = await M.run();
+    check('R8f one collection without a ledger → that collection skipped with a reason, the other still judged', out.invariants.nft_listings_reconcile.measured['pixel-lions'].status === 'skipped' && out.invariants.nft_listings_reconcile.measured.adao.status === 'ok' && out.invariants.nft_listings_reconcile.status === 'ok');
+    check('R8 PL inventory heartbeat row present in FRESHNESS_MAP (org-nft-inventory-liondao)', M.FRESHNESS_MAP.some(r => r.product === 'nft-inventory-pixel-lions' && r.repo === 'thealliancedao/nft-collections'));
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);

@@ -32,6 +32,17 @@ product is ever written to.
 7. `identity_resolution` — informational: unresolved pools + tokens without
    `discovered.symbol` (cross-checked against the catalog's own
    identity_stats). A shrinking number, tracked.
+8. `nft_listings_reconcile` (1.0.9, owner 2026-09-19) — per collection in
+   `tla-core/docs/curated/tenants.json`: the listings OPEN per the chain-event
+   ledger (`<slug>/ledger/`, `list` opens; `delist` / `sale` / `venue_out` /
+   `transfer` close; superseded rows never count) must equal the listings the
+   inventory reads from contract state (`<slug>/snapshots/nfts.json`), per
+   venue and per token. Ledger months are folded one at a time (heap). A
+   difference younger than the two products' lag (≥ 2 h; ledger `ran_at` vs
+   inventory `capturedAt`) is `recent_unconfirmed`, never a violation. Proven
+   live on its first run: Pixel Lions #2124, listed on BBL 2025-12-13 and
+   invisible to the state read until nft-inventory D.2 completed it from
+   cw721 ownership.
 
 ## Verdicts (D3)
 Per invariant `{status: ok|violation|skipped, detail, measured, expected,
