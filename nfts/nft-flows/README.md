@@ -1,3 +1,16 @@
+> **1.6.0 (2026-09-20, owner: "rethink Live Activity")** — `<slug>/ledger/activity.json`: the last 35 days of the ledger folded
+> into EPISODES by `lib/activity.js` (THE rule; `gate-activity.mjs` runs it on the real ledgers of all three collections). One act
+> = one row: a same-owner delist+relist inside 24 h is a `price_change`; the same wallet doing the same act (same venue /
+> custodian / counterparty) within 60 minutes is one episode with every token id (`count`, `token_ids`, flags `bulk` ≥ 2, `mass`
+> ≥ 10); the merge/split/migrate/auto-max verbs of a lock restructure are one `lock_restructure` per tx and per hour (a row with
+> no address adopts its tx-mates' actor). Facts on the episode, no thresholds: `tier` + the day's tier `floor_then` + `vs_floor_pct`
+> on listings and price changes (floor-history), `days_on_market` on a sale (null = listed before the window), `vp` on lock rows,
+> `backing` + `price_vs_backing` on a listed / sold lock (by-token shard, oracle USD today), `new_voter` on a wallet's first lock
+> (escrow collections keep `activity-known.json`, extended as the window slides; the first run reads every month once). Per
+> episode the first 12 tx hashes ride along with `tx_count`. Read by index Live Activity, the tenant home, the app and the help
+> agent; "big", "over floor" and "mass" percentages live in `tla-core/docs/curated/alert-thresholds.json`. Mock spawns index.js and
+> asserts the product (86/86).
+>
 > **1.5.3 (2026-09-20)** — index.js never handed the registry's custodian ROLES to the projector (only the system set): on
 > Render a holder's transfer into a custodian was a release, so the live PL shards carried 2,721 positions with acquired:null
 > and #6 with no holder while the lib gate (which passed custodians itself) was green. Fixed at the one call; the by-wallet

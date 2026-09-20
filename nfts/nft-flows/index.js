@@ -1,5 +1,14 @@
 'use strict';
-// org-nft-flows 1.5.3 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.6.0 — FORWARD CAPTURE for ONE collection
+// 1.6.0 (2026-09-20, owner: "rethink Live Activity"): ACTIVITY EPISODES — <slug>/ledger/activity.json, the last 35 days of
+//   the ledger folded by lib/activity.js (THE rule) into what a reader sees as one act: a same-owner delist+relist inside
+//   24 h is one price change, thirty unstakes in an hour are one row of thirty (ids carried), the merge/split/migrate/
+//   auto-max verbs of a lock restructure are one row per tx and per hour. Each episode carries FACTS — tier + the day's tier
+//   floor + vs-floor % on listings (floor-history), VP on locks, backing (+ price/backing) on a listed lock, new_voter on a
+//   first lock, days_on_market on a sale — and no thresholds: "big", "over floor" and "mass" live in the site's curated
+//   alert-thresholds.json. Escrow collections keep <slug>/ledger/activity-known.json (wallets that held a lock before the
+//   window) so new_voter is honest across runs; the first run reads every month once. Read → fold → drop; the inventory
+//   (nfts.json) and rarity are read for the token→tier map and dropped. Mock spawns index.js and asserts the product.
 // 1.5.3 (2026-09-20): index.js never handed the registry's custodian ROLES to the projector (only the system set), so on
 //   Render a holder's transfer into a custodian was a release, not a custody move — the live PL shards showed 2,721
 //   positions with acquired:null and #6 with no holder while the lib gate (which passed custodians itself) was green. Fixed
@@ -173,6 +182,8 @@ let MONTHS_WALKED = 0, MONTHS_TOUCHED = [];   // 1.2.1: the sweep's footprint, r
 const TOKENS_DIRTY = new Set();                 // 1.4.0: token ids whose by-token shard must be rebuilt this run
 const WALLETS_DIRTY = new Set();                // 1.5.1: addresses whose by-wallet shard must be rebuilt this run
 const BW = require('./lib/by-wallet.js');       // 1.5.1: THE per-wallet projection rule (pure; gated on real fixtures)
+const AC = require('./lib/activity.js');        // 1.6.0: THE episode fold (pure; gate-activity.mjs on the real ledgers)
+const ACTIVITY_DAYS = Number(process.env.ACTIVITY_DAYS || 35);
 let SYSTEM = new Set();                          // 1.5.1: addresses the registry names as machinery — never a wallet block
 let CUSTODIANS = new Map();                      // 1.5.3: address → role from capture.custodians — custody moves, not hand changes
 const markDirty = (r) => { if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id)); for (const a of [r.from, r.to]) if (typeof a === 'string' && a && !SYSTEM.has(a)) WALLETS_DIRTY.add(a); };   // 1.5.1: one place, both shards follow
@@ -248,6 +259,48 @@ async function rebuildByWallet(ix) {
   const index = { product: `${SLUG}/ledger/by-wallet`, collection: SLUG, rule_version: BW.VERSION, system_key: systemKey, engine: ENGINE, shard_of: 'last character of the bech32 address (terra1…x77ulw → w.json); non-terra ids → _.json', shards: meta, system_addresses: [...SYSTEM].sort(), rules: BW.RULES, updatedAt: stamp, note: 'read <shard>.json → wallets[<address>] for an address\'s whole history on this collection: events (verbatim ledger rows + role), holdings_now (state per token), held_past (closed positions, P&L two ways). System addresses listed here are machinery (contract, custodians, venues, launchpads, DAO cores) and have no block. Written by org-nft-flows (1.5.3).' };
   if (!ixb || before !== JSON.stringify(meta) || all) await writeJson(`${BYW}/index.json`, index, `nft-flows by-wallet ${SLUG} index`, ixb && ixb.sha);
   return { shards_rebuilt: shards.length, shards_written: written, wallets, mode: all ? (registryChanged ? 'all (registry changed)' : engineChanged ? 'all (engine changed)' : 'all') : 'dirty' };
+}
+// 1.6.0 — activity episodes (lib/activity.js). Runs every run: the window slides hourly, "ago" and "days on market" move,
+// and the fold is cheap (the two month files are already the reprice pass's footprint). Isolated: a failure is reported on
+// the heartbeat and never blocks the cursor.
+async function activityDuty(cj, venues) {
+  try {
+    const now = Date.now(); const cut = now - ACTIVITY_DAYS * 86400e3;
+    const kind = (cj.kind === 'escrow' || (cj.capture && cj.capture.kind === 'escrow')) ? 'escrow' : 'nft';
+    const ixf = await readFile(`${LEDGER}/index.json`); if (!ixf || !ixf.data) return { skipped: 'no ledger index' };
+    const months = []; for (const back of [1, 0]) { const d = new Date(Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() - back, 1)); months.push(`${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
+    const rows = []; for (const mk of months) { const m = await readFile(`${LEDGER}/${mk}.json`); if (m && Array.isArray(m.data)) for (const r of m.data) if (r.ts && Date.parse(r.ts) >= cut) rows.push(r); }
+    const ctx = { now, window_days: ACTIVITY_DAYS, kind, venues, custodians: CUSTODIANS, system: SYSTEM };
+    let floorNow = null, knownFile = null, knownAdded = [];
+    if (kind === 'nft') {
+      // token → tier: registry tiers (id sets) · inventory broken flag · rank-1 set from the rarity oracle. Read → fold → drop.
+      let broken = new Set(); { const inv = await readFile(`${SLUG}/snapshots/nfts.json`); if (inv && inv.data && Array.isArray(inv.data.records)) broken = new Set(inv.data.records.filter(r => r.broken).map(r => String(r.id))); }
+      let rank1 = new Set(); if (cj.rarity && cj.rarity.file) { const rp = String(cj.rarity.file).replace(/^[^/]+\//, `${SLUG}/`); const rr = await readFile(rp); if (rr && rr.data && Array.isArray(rr.data.records)) rank1 = new Set(rr.data.records.filter(r => Number(r.rank) === 1).map(r => String(r.token_id))); }
+      ctx.tierOf = AC.makeTierOf({ registryTiers: cj.tiers, brokenIds: broken, rank1Ids: rank1 });
+      const fh = await readFile(`${SLUG}/snapshots/floor-history.json`); ctx.floorAt = AC.makeFloorAt(fh && fh.data); const fr = fh && fh.data && fh.data.rows; floorNow = fr && fr.length ? { date: fr[fr.length - 1].date, per_tier: fr[fr.length - 1].per_tier } : null;
+    } else {
+      // backing of a listed / sold lock: the token's latest ledger row that carries lock.asset (by-token shard, read on demand)
+      const shardCache = new Map();
+      const shardOf = async (id) => { const n = Number(id); const sh = Number.isFinite(n) ? String(Math.floor(n / 100)).padStart(3, '0') : 'x'; if (!shardCache.has(sh)) { const f = await readFile(`${LEDGER}/by-token/${sh}.json`); shardCache.set(sh, (f && f.data && f.data.tokens) || {}); } return shardCache.get(sh); };
+      const listed = new Set(rows.filter(r => !r.superseded_by && (r.kind === 'list' || r.kind === 'sale') && r.token_id != null).map(r => String(r.token_id)));
+      const backing = new Map();
+      for (const id of listed) { const toks = await shardOf(id); const recs = (toks[id] || []).filter(r => !r.superseded_by && r.lock && r.lock.asset); const last = recs[recs.length - 1]; if (!last) continue; const mm = String(last.lock.asset).match(/^(?:cw20|native):([^:]+):(\d+)$/); if (!mm) continue; const dn = mm[1].startsWith('terra1') ? 'cw20:' + mm[1] : mm[1]; const so = symOf(dn); const u = usdAt({ amount: mm[2], denom: dn }, new Date(now).toISOString()); backing.set(id, { amount: Number(mm[2]) / Math.pow(10, so && so.decimals != null ? so.decimals : 6), denom: mm[1], symbol: (so && so.symbol) || null, usd: u && u.usd != null ? u.usd : null, usd_basis: u && u.usd_basis ? u.usd_basis : null, as_of: last.ts }); }   // the LUNA-equivalent backing at today's oracle day (a listing under it is the opportunity)
+      ctx.backingOf = (id) => backing.get(String(id)) || null;
+      // known voters: wallets that created / received a lock before the window (activity-known.json; first run reads every month once)
+      knownFile = await readFile(`${LEDGER}/activity-known.json`); const known = new Set((knownFile && knownFile.data && knownFile.data.wallets) || []); const asOf = knownFile && knownFile.data && knownFile.data.as_of ? Date.parse(knownFile.data.as_of) : null;
+      if (asOf == null) { for (const mk of (ixf.data.months || [])) { const m = months.includes(mk) ? null : await readFile(`${LEDGER}/${mk}.json`); const list = m ? m.data : null; for (const r of (list || [])) if (!r.superseded_by && Date.parse(r.ts) < cut && (r.kind === 'lock_create' || r.kind === 'lock_transfer') && (r.to || r.from)) known.add(r.to || r.from); } }
+      for (const mk of months) { const m = await readFile(`${LEDGER}/${mk}.json`); for (const r of ((m && m.data) || [])) if (!r.superseded_by && Date.parse(r.ts) < cut && (asOf == null || Date.parse(r.ts) >= asOf) && (r.kind === 'lock_create' || r.kind === 'lock_transfer') && (r.to || r.from)) known.add(r.to || r.from); }
+      ctx.knownWallets = known; knownAdded = [...known];
+    }
+    const r = AC.fold(rows, ctx);
+    const out = { product: `${SLUG}/ledger/activity`, collection: SLUG, rule_version: AC.VERSION, engine: ENGINE, window_days: ACTIVITY_DAYS, built_at: new Date(now).toISOString(), rules: AC.RULES, floor_now: floorNow, stats: r.stats, episodes: r.episodes,
+      note: 'The last window of the ledger folded into episodes (one act = one row) by lib/activity.js; facts only — thresholds live in tla-core/docs/curated/alert-thresholds.json. Rebuilt every run by org-nft-flows.' };
+    const ex = await readFile(`${LEDGER}/activity.json`);
+    await writeFile(`${LEDGER}/activity.json`, JSON.stringify(out) + '\n', `nft-flows activity ${SLUG} (${r.episodes.length} episodes, ${rows.length} rows, ${ACTIVITY_DAYS}d)`, ex && ex.sha);
+    if (kind === 'escrow') { const body = { product: `${SLUG}/ledger/activity-known`, as_of: new Date(cut).toISOString(), wallets: knownAdded.sort(), note: 'wallets that created or received a lock before the activity window — the new_voter flag\'s memory; extended each run as the window slides' }; if (!knownFile || JSON.stringify((knownFile.data || {}).wallets || []) !== JSON.stringify(body.wallets) || (knownFile.data || {}).as_of !== body.as_of) await writeJson(`${LEDGER}/activity-known.json`, body, `nft-flows activity-known ${SLUG} (${body.wallets.length} wallets)`, knownFile && knownFile.sha); }
+    console.log(`  activity: ${rows.length} rows → ${r.episodes.length} episodes (${ACTIVITY_DAYS}d) · ${Object.entries(r.stats.by_kind).map(([k, n]) => k + ' ' + n).join(' · ')}`);
+    return { rows: rows.length, episodes: r.episodes.length, by_kind: r.stats.by_kind, price_changes: r.stats.price_changes };
+  } catch (e) { errors.push('activity: ' + e.message); console.warn('  ⚠ activity: ' + e.message); return { error: e.message }; }
 }
 // 1.4.1 — THE ONE rule, from lib/oracle-usd.js: months fetched from the org oracle, symbols from the catalog resolver.
 const OU = require('./lib/oracle-usd.js');
@@ -336,7 +389,8 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   if (to < from) {
     const byt = await byTokenDuty();   // 1.4.0: a re-priced record (or the first run) still rebuilds its shards on a nothing-new run
     const byw = await byWalletDuty();   // 1.5.1
-    await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0);
+    const act = await activityDuty(cj.data, vj.data.venues);   // 1.6.0: the window slides every hour
+    await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, activity: act, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0);
   }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
@@ -405,9 +459,10 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
 
   const byt = await byTokenDuty();   // 1.4.0: shards for every token that gained or re-priced a record this run
   const byw = await byWalletDuty();   // 1.5.1: shards for every wallet that gained or re-priced a record this run
+  const act = await activityDuty(cj.data, vj.data.venues);   // 1.6.0: episodes from the last window of the ledger
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
   if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
-  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, per_collection: perColAdded });
+  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, activity: act, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
