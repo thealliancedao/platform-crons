@@ -112,6 +112,15 @@ function connectorAddrFromDenom(denom) {
 // PRICING-DOCTRINE order tla > coingecko > astroport > skeletonswap; every
 // fallback use is source-labeled — adapter prices stay primary when present.
 const TOKEN_CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
+// 1.4.3 (2026-09-20, owner's APR audit): the LUNA price that prices a year of emissions must be FRESH. The adapters have never
+// carried a uluna asset price on a real run (every product since 08-02 says 'fallback'), so the token-catalog day price — captured
+// once at ~12:36Z — was pricing the tiles for the whole day: on a 19 % LUNA day the product read −14.8 % against Eris's own
+// Rewards $ on every pool. Second tier now: the org's LIVE LUNA feed (network-and-prices, hourly, the price the page trusts),
+// labeled with its capture time; the catalog stays the last resort. The formula is untouched — only the input's freshness.
+const NETWORK_PRICES_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/network-and-prices/current.json';
+async function fetchLivePrices(T = CH) {
+  try { const d = await T.fetchJson(NETWORK_PRICES_URL + '?t=' + Date.now()); const L = d && d.token_prices && d.token_prices.LUNA; const px = L && Number(L.final_price_usd); if (!(px > 0)) return null; return { luna_usd: px, source: `network-and-prices/${L.final_source || 'live'}`, captured_at: d.capturedAt || null }; } catch (e) { return null; }
+}
 async function fetchCatalog(T = CH) {
   if (typeof T.fetchJson !== 'function') return null;
   try { return await T.fetchJson(TOKEN_CATALOG_URL + '?t=' + Date.now()); }
@@ -336,7 +345,7 @@ async function captureInputs(T = CH) {
 // assetPrices (optional) = { denomOrCw20 -> { price_usd, decimals } } for
 // single-asset gauge entries that never appear as an LP pair.
 // ---------------------------------------------------------------------------
-function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null) {
+function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null, livePrices = null) {
   // LUNA price: adapters' own asset captures (median) PRIMARY; token-catalog
   // fallback (labeled) when no adapter carried uluna this run.
   const lunaPrices = [];
@@ -345,7 +354,8 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
   }
   lunaPrices.sort((x, y) => x - y);
   let lunaUsd = lunaPrices.length ? lunaPrices[Math.floor(lunaPrices.length / 2)] : null;
-  let lunaSource = lunaUsd != null ? 'adapter uluna asset prices (median)' : null;
+  let lunaSource = lunaUsd != null ? 'adapter uluna asset prices (median)' : null; let lunaAsOf = null;
+  if (lunaUsd == null && livePrices && livePrices.luna_usd > 0) { lunaUsd = livePrices.luna_usd; lunaSource = livePrices.source + ' (live)'; lunaAsOf = livePrices.captured_at || null; }   // 1.4.3: fresh before stale
   if (lunaUsd == null && catalog) {
     const cp = catalogPrice(catalog, 'uluna');
     if (cp) { lunaUsd = cp.price_usd; lunaSource = cp.source + ' (fallback)'; }
@@ -495,6 +505,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
       validation: 'reconciled 2026-09-10 vs the Eris liquidity-hub screen (owner screenshots + HAR): 18 Astroport rows within 1 pp, SkeletonSwap + Credia within 0.5% staked / 0.4 pp, singles within 0.15 pp with the source-verbatim own-yield leg (1.3.4). Residual = LUNA price at capture vs Eris /prices.',
       luna_price_used_usd: lunaUsd,
       luna_price_source: lunaSource,
+      luna_price_as_of: lunaAsOf,   // 1.4.3: when the live feed priced this run (null for adapter / catalog)
       annual_provisions_luna: inputs.annual_provisions_luna ?? null,
       total_reward_weight: inputs.total_reward_weight ?? null,
       alliances_active_count: inputs.alliances_active_count ?? null,
@@ -512,7 +523,8 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null)
 async function runErisApr(dexPools, assetPrices, T = CH) {
   const inputs = await captureInputs(T);
   const catalog = await fetchCatalog(T);
-  return composeErisApr(inputs, dexPools, assetPrices || {}, catalog);
+  const live = await fetchLivePrices(T);   // 1.4.3
+  return composeErisApr(inputs, dexPools, assetPrices || {}, catalog, live);
 }
 
-module.exports = { runErisApr, captureInputs, composeErisApr, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, SINGLE_YIELD_SOURCES, CH, ERIS_INCENTIVE_CUT };
+module.exports = { runErisApr, captureInputs, composeErisApr, fetchLivePrices, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, SINGLE_YIELD_SOURCES, CH, ERIS_INCENTIVE_CUT };
