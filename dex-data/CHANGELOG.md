@@ -1,3 +1,17 @@
+## dex-data 1.4.3 — 2026-09-20 — eris-apr: a fresh LUNA price (owner's APR audit vs Eris)
+
+- Finding: every eris-apr product since 08-02 says `luna_price_source: token-catalog/tla (fallback)` — the adapters have never
+  carried a uluna asset price on a real run, so the catalog's once-a-day price (~12:36Z) priced the whole day. On 2026-09-20
+  LUNA moved 19 % intraday and the 18:02Z product read −14.8 % against Eris's own Rewards $ on EVERY pool (same factor);
+  the 23:02Z product, on a refreshed catalog price, read +2.1 % — stage 2 (provisions × weight × distribution) is exact.
+- Fix: second tier = the org's live LUNA feed (network-and-prices `token_prices.LUNA.final_price_usd`, hourly, the price the
+  page trusts), labeled `network-and-prices/<source> (live)` with `luna_price_as_of`; the catalog stays the last resort.
+  The formula is untouched. Mock: live feed up → priced live and labeled; live feed down → catalog fallback as before;
+  incentive APR scales with the price alone (84/84).
+- Still open after this: four pools (LUNA-USDC.n −23 %, LUNA-USDT −22 %, LUNA-INJ −30 %, LUNA-SOLID −12 % on APY) with
+  rewards identical to Eris — the trading-fee leg substitution (their pool service is not queryable); a label on the page
+  until Eris's fee source is found.
+
 # 1.3.5 — 2026-09-10 — eris-apr: validation marker cleared; Credia row named
 
 ## 1.4.0 — 2026-09-13 — state-history duty folded in (moved from the tla-core Action) — PUBLIC endpoints forward

@@ -358,12 +358,18 @@ NET.pools_list = () => ([
             { denom: 'uluna', decimals: 6, prices: { tla: { usd: 0.10, status: 'ok' } } },
             { denom: 'terra1xastro', decimals: 6, prices: { coingecko: { usd: 0.02, status: 'ok' } } },
         ] };
-        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT; throw new Error('unexpected fetch ' + url); };
+        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT; if (/network-and-prices\/current\.json/.test(url)) throw new Error('live feed down'); throw new Error('unexpected fetch ' + url); };
         const noAstroPools = dexPools.filter(p => p.dex !== 'astroport');   // SS survivor only — no uluna price anywhere
-        const doc3 = await E.runErisApr(noAstroPools, {});                  // no adapter assetPrices either
+        const doc3 = await E.runErisApr(noAstroPools, {});                  // no adapter assetPrices either; live feed DOWN → catalog
         const by3 = Object.fromEntries(doc3.pools.map(p => [p.gauge_pool_id, p]));
-        assert(doc3.meta.luna_price_used_usd === 0.10 && doc3.meta.luna_price_source === 'token-catalog/tla (fallback)', 'LUNA price recovered from token-catalog, source LABELED fallback');
-        const xa3 = by3[K.xastro];
+        assert(doc3.meta.luna_price_used_usd === 0.10 && doc3.meta.luna_price_source === 'token-catalog/tla (fallback)', 'LUNA price recovered from token-catalog, source LABELED fallback (live feed down)');
+        const xa3 = by3[K.xastro]; const xa3_ref_apr = xa3.incentive_apr_pct;
+        // 1.4.3: with the live feed UP it wins over the catalog day price, labeled live with its capture time; the formula is untouched
+        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT; if (/network-and-prices\/current\.json/.test(url)) return { capturedAt: '2026-09-20T18:05:21.337Z', token_prices: { LUNA: { final_price_usd: 0.12, final_source: 'astroport' } } }; throw new Error('unexpected fetch ' + url); };
+        const doc3b = await E.runErisApr(noAstroPools, {});
+        assert(doc3b.meta.luna_price_used_usd === 0.12 && doc3b.meta.luna_price_source === 'network-and-prices/astroport (live)' && doc3b.meta.luna_price_as_of === '2026-09-20T18:05:21.337Z', '1.4.3: live LUNA feed priced the run (0.12), labeled live + as-of, ahead of the catalog day price (0.10)');
+        { const xa = Object.fromEntries(doc3b.pools.map(p => [p.gauge_pool_id, p]))[K.xastro]; assert(Math.abs(xa.incentive_apr_pct / xa3_ref_apr - 1.2) < 1e-9, '1.4.3: incentive APR scales with the LUNA price alone (0.12/0.10 = 1.2×) — nothing else moved'); }
+        E.CH.fetchJson = async (url) => { if (/token-catalog\/snapshots\/current\.json/.test(url)) return CAT; if (/network-and-prices\/current\.json/.test(url)) throw new Error('live feed down'); throw new Error('unexpected fetch ' + url); };
         assert(Math.abs(xa3.tla_staked_usd - 5000) < 1e-9 && /token-catalog\/coingecko \(fallback\)/.test(xa3.tla_staked_usd_basis), 'single-asset priced via catalog fallback, basis labeled');
         assert(Math.abs(xa3.incentive_apr_pct - 1935.483870967742) < 1e-6 && xa3.eris_apy_pct != null, 'single-asset figures fully computed through the outage');
         const ls3 = by3[K.lunaSolid];
