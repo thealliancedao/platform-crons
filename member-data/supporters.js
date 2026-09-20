@@ -10,7 +10,7 @@ const ADDR = 'terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw';
 const MEMO = 'thanks_defi';
 const LCDS = ['https://terra-lcd.publicnode.com', 'https://terra.publicnode.com'];
 const PRODUCT = 'member-data/supporters/current.json';
-const VERSION = 'supporters-1.1';   // 1.1 (2026-09-10): LCD answer visible in the log (rows/newest height/memo hits); second event key (coin_received.receiver) when transfer.recipient answers empty
+const VERSION = 'supporters-1.2';   // 1.2 (2026-09-20, owner): TARGETS from tla-core/docs/curated/supporters.json — the builder's wallet (current.json) plus every ally treasury (thanks_adao / thanks_liondao / thanks_pixel_lions), each walked by its own memo into its own product; the registry line is the whole switch   // 1.1 (2026-09-10): LCD answer visible in the log (rows/newest height/memo hits); second event key (coin_received.receiver) when transfer.recipient answers empty
 
 // pure: LCD /cosmos/tx/v1beta1/txs response → gifts [{tx_hash, height, ts, from, denom, amount_raw, kind}]
 function extractGifts(resp, addr = ADDR, memo = MEMO) {
@@ -43,11 +43,11 @@ function merge(existing, gifts, now = new Date()) {
 // answer is logged (rows, newest height, memo hits) so the log says WHY, and an empty first page under
 // transfer.recipient is retried under coin_received.receiver (same event, the key some indexers serve instead).
 const EVENT_KEYS = ['transfer.recipient', 'coin_received.receiver'];
-async function fetchPage(fetchJson, offsetOrKey, params, log = console) {
+async function fetchPage(fetchJson, offsetOrKey, params, log = console, addr = ADDR) {   // 1.2: per target address
     let empty = null;
     for (const key of EVENT_KEYS) {
         for (const lcd of LCDS) for (const p of ['events', 'query']) {
-            const u = `${lcd}/cosmos/tx/v1beta1/txs?${p}=${encodeURIComponent(key)}%3D%27${ADDR}%27&order_by=ORDER_BY_DESC&limit=100${params}`;
+            const u = `${lcd}/cosmos/tx/v1beta1/txs?${p}=${encodeURIComponent(key)}%3D%27${addr}%27&order_by=ORDER_BY_DESC&limit=100${params}`;
             try {
                 const r = await fetchJson(u);
                 if (r && Array.isArray(r.tx_responses)) {
@@ -61,22 +61,34 @@ async function fetchPage(fetchJson, offsetOrKey, params, log = console) {
     }
     return empty;
 }
-async function run({ fetchJson, readProduct, publish, log = console }) {
-    const existing = await readProduct(PRODUCT).catch(() => null);
+const DEFAULT_TARGETS = [{ key: 'defi', label: 'The builder (DeFi_Patriot)', kind: 'builder', address: ADDR, memo: MEMO, product: PRODUCT }];
+const REGISTRY = 'docs/curated/supporters.json';
+async function runTarget(t, { fetchJson, readProduct, publish, log = console }) {
+    const existing = await readProduct(t.product).catch(() => null);
     const lastHeight = existing && existing.gifts && existing.gifts.length ? existing.gifts[0].height : 0;
     let gifts = [], page = 0, done = false;
     while (!done && page < 20) {                       // ≤ 2,000 newest transfers per run; the product carries the rest
-        const r = await fetchPage(fetchJson, null, page ? `&page=${page + 1}` : '', log);
+        const r = await fetchPage(fetchJson, null, page ? `&page=${page + 1}` : '', log, t.address);
         if (!r) { if (page === 0) throw new Error('LCD tx search unavailable on every endpoint'); break; }
-        const found = extractGifts(r); gifts = gifts.concat(found);
-        if (page === 0) log.log(`  supporters: page 1 → ${found.length} tx${found.length === 1 ? '' : 's'} with memo "${MEMO}" (last committed height ${lastHeight})`);
-        const heights = (r.tx_responses || []).map(t => Number(t.height));
+        const found = extractGifts(r, t.address, t.memo); gifts = gifts.concat(found);
+        if (page === 0) log.log(`  supporters[${t.key}]: page 1 → ${found.length} tx${found.length === 1 ? '' : 's'} with memo "${t.memo}" (last committed height ${lastHeight})`);
+        const heights = (r.tx_responses || []).map(x => Number(x.height));
         if (!heights.length || Math.min(...heights) <= lastHeight || (r.tx_responses || []).length < 100) done = true;
         page++;
     }
     const { product, added } = merge(existing, gifts);
-    if (added || !existing) await publish(PRODUCT, product, `supporters: +${added} (${product.count} gifts, ${product.supporters} supporters)`);
-    log.log(`  supporters: walked ${page} page(s), +${added} new, ${product.count} total from ${product.supporters} supporters`);
-    return { added, count: product.count };
+    product.address = t.address; product.memo = t.memo; product.target = { key: t.key, label: t.label, kind: t.kind, tenant: t.tenant || null };   // 1.2: the product says whose gifts these are
+    if (added || !existing) await publish(t.product, product, `supporters[${t.key}]: +${added} (${product.count} gifts, ${product.supporters} supporters)`);
+    log.log(`  supporters[${t.key}]: walked ${page} page(s), +${added} new, ${product.count} total from ${product.supporters} supporters`);
+    return { key: t.key, added, count: product.count };
 }
-module.exports = { extractGifts, merge, run, ADDR, MEMO, PRODUCT };
+// 1.2: every target of the curated registry (tla-core/docs/curated/supporters.json), the builder's wallet as the fallback
+// when the registry is unreadable. Targets are isolated — one failing LCD walk never blocks the others.
+async function run({ fetchJson, readProduct, publish, log = console, readRegistry }) {
+    let targets = DEFAULT_TARGETS;
+    try { const reg = readRegistry ? await readRegistry() : await readProduct(REGISTRY); if (reg && Array.isArray(reg.targets) && reg.targets.length) targets = reg.targets.filter(t => t && t.address && t.memo && t.product && t.key); } catch (e) { log.log('  supporters: registry unreadable (' + e.message + ') — builder wallet only'); }
+    const out = [];
+    for (const t of targets) { try { out.push(await runTarget(t, { fetchJson, readProduct, publish, log })); } catch (e) { log.log(`  supporters[${t.key}] failed (isolated): ${e.message}`); out.push({ key: t.key, error: e.message }); } }
+    return { targets: out, added: out.reduce((s, x) => s + (x.added || 0), 0), count: out.reduce((s, x) => s + (x.count || 0), 0) };
+}
+module.exports = { extractGifts, merge, run, runTarget, ADDR, MEMO, PRODUCT, REGISTRY, DEFAULT_TARGETS, VERSION };
