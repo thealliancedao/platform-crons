@@ -323,7 +323,7 @@ async function orchestrate() {
     return;
   }
   if (!snapshotOk) { console.log('(rollups skipped — snapshot failed this run)'); return; }
-  for (const mod of ['./apr-history-rollup.js', './pool-status-history-rollup.js']) {
+  for (const mod of ['./apr-history-rollup.js', './pool-status-history-rollup.js', './epoch-history-rollup.js']) {   // T6.2 (2026-09-20): the hero tiles' per-epoch series (epoch-history.json) folded from the same dailies
     try {
       console.log(`\n=== ${mod} (folded rollup) ===`);
       await require(mod).main();
