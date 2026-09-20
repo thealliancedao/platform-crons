@@ -1,5 +1,10 @@
 'use strict';
-// org-nft-flows 1.5.2 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.5.3 — FORWARD CAPTURE for ONE collection
+// 1.5.3 (2026-09-20): index.js never handed the registry's custodian ROLES to the projector (only the system set), so on
+//   Render a holder's transfer into a custodian was a release, not a custody move — the live PL shards showed 2,721
+//   positions with acquired:null and #6 with no holder while the lib gate (which passed custodians itself) was green. Fixed
+//   at the one call; the mock now stakes into a registry custodian and asserts the holder keeps the token as
+//   `staked:<role>`. A gate that does not run the entry point gates a different program.
 // 1.5.2 (2026-09-20): the by-wallet index carries `system_key` (a hash of the registry's system-address set); a registry
 //   change (a custodian added — pixeLions staking v1 landed one commit after the first by-wallet build, so 33 shards were
 //   built with the v1 contract as a "wallet") makes the next run rebuild every shard. The registry holds the literals; a
@@ -95,6 +100,7 @@ const LAG           = Number(process.env.HEAD_LAG || 10);
 const PACE_MS       = Number(process.env.PACE_MS || 60);
 const DRY           = /^1|true$/i.test(String(process.env.DRY_RUN || ''));
 const CURSOR_PATH   = `${SLUG}/ledger/cursor.json`, HB_PATH = `${SLUG}/nft-flows/heartbeat.json`, LEDGER = `${SLUG}/ledger`, RAWF = `${SLUG}/raw/forward`;
+const ENGINE = (require('fs').readFileSync(__filename, 'utf8').match(/^\/\/ org-nft-flows (\d+\.\d+\.\d+)/m) || [])[1] || '0';   // 1.5.3: the header's version is the one literal (heartbeat + by-wallet index)
 const AGENT = new https.Agent({ keepAlive: true, maxSockets: 8 });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const t0 = Date.now(); const errors = [];
@@ -168,6 +174,7 @@ const TOKENS_DIRTY = new Set();                 // 1.4.0: token ids whose by-tok
 const WALLETS_DIRTY = new Set();                // 1.5.1: addresses whose by-wallet shard must be rebuilt this run
 const BW = require('./lib/by-wallet.js');       // 1.5.1: THE per-wallet projection rule (pure; gated on real fixtures)
 let SYSTEM = new Set();                          // 1.5.1: addresses the registry names as machinery — never a wallet block
+let CUSTODIANS = new Map();                      // 1.5.3: address → role from capture.custodians — custody moves, not hand changes
 const markDirty = (r) => { if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id)); for (const a of [r.from, r.to]) if (typeof a === 'string' && a && !SYSTEM.has(a)) WALLETS_DIRTY.add(a); };   // 1.5.1: one place, both shards follow
 const SHARD_SIZE = 100;                         // tokens per by-token shard (aDAO 10,000 → 100 files; PL 5,000 → 50; TLA locks by lock id)
 const shardOf = (id) => { const n = Number(id); return Number.isInteger(n) && n >= 0 ? String(Math.floor(n / SHARD_SIZE)).padStart(3, '0') : 'x'; };   // non-numeric ids share one shard
@@ -215,14 +222,15 @@ async function rebuildByWallet(ix) {
   const BYW = `${LEDGER}/by-wallet`; const ixb = await readFile(`${BYW}/index.json`);
   const systemKey = crypto.createHash('sha1').update([...SYSTEM].sort().join('\n')).digest('hex').slice(0, 16);   // 1.5.2
   const registryChanged = !!(ixb && ixb.data && ixb.data.system_key !== undefined && ixb.data.system_key !== systemKey);
-  const all = process.env.BY_WALLET_ALL === '1' || !ixb || !ixb.data || ixb.data.rule_version !== BW.VERSION || ixb.data.system_key === undefined || registryChanged;
+  const engineChanged = !!(ixb && ixb.data && ixb.data.engine !== ENGINE);   // 1.5.3: a new engine rebuilds its projection once (the 1.5.2 shards were built without custodian roles)
+  const all = process.env.BY_WALLET_ALL === '1' || !ixb || !ixb.data || ixb.data.rule_version !== BW.VERSION || ixb.data.system_key === undefined || registryChanged || engineChanged;
   const dirty = new Set([...WALLETS_DIRTY].map(BW.shardOf));
   if (!all && !dirty.size) return { shards_rebuilt: 0, shards_written: 0, wallets: 0, mode: 'nothing dirty' };
   const shards = all ? [...BW.SHARDS, '_'] : [...dirty].sort();
   const GROUP = Math.max(1, Number(process.env.BY_WALLET_GROUP || 8)); const groups = []; for (let i = 0; i < shards.length; i += GROUP) groups.push(shards.slice(i, i + GROUP));
   const before = JSON.stringify((ixb && ixb.data && ixb.data.shards) || {}); const meta = JSON.parse(before); const stamp = new Date().toISOString(); let written = 0, wallets = 0, done = 0;
   for (const g of groups) {
-    const wanted = new Set(g); const P = BW.makeProjector({ system: SYSTEM, wanted });
+    const wanted = new Set(g); const P = BW.makeProjector({ system: SYSTEM, custodians: CUSTODIANS, wanted });   // 1.5.3: roles too
     for (const mk of (ix.months || [])) {   // months ascending; rows in height order — the replay needs the order, not the whole ledger
       const m = await readFile(`${LEDGER}/${mk}.json`); if (!m || !Array.isArray(m.data)) continue;
       for (const r of BW.orderRows(m.data)) P.add(r);   // the lib's replay order (height, kind rank, msg_index)
@@ -237,9 +245,9 @@ async function rebuildByWallet(ix) {
       await writeJson(p, body, `nft-flows by-wallet ${SLUG} shard ${sh} (${body.wallets_in_shard} wallets, ${body.records} records)`, ex && ex.sha); written++;
     }
   }
-  const index = { product: `${SLUG}/ledger/by-wallet`, collection: SLUG, rule_version: BW.VERSION, system_key: systemKey, shard_of: 'last character of the bech32 address (terra1…x77ulw → w.json); non-terra ids → _.json', shards: meta, system_addresses: [...SYSTEM].sort(), rules: BW.RULES, updatedAt: stamp, note: 'read <shard>.json → wallets[<address>] for an address\'s whole history on this collection: events (verbatim ledger rows + role), holdings_now (state per token), held_past (closed positions, P&L two ways). System addresses listed here are machinery (contract, custodians, venues, launchpads, DAO cores) and have no block. Written by org-nft-flows (1.5.2).' };
+  const index = { product: `${SLUG}/ledger/by-wallet`, collection: SLUG, rule_version: BW.VERSION, system_key: systemKey, engine: ENGINE, shard_of: 'last character of the bech32 address (terra1…x77ulw → w.json); non-terra ids → _.json', shards: meta, system_addresses: [...SYSTEM].sort(), rules: BW.RULES, updatedAt: stamp, note: 'read <shard>.json → wallets[<address>] for an address\'s whole history on this collection: events (verbatim ledger rows + role), holdings_now (state per token), held_past (closed positions, P&L two ways). System addresses listed here are machinery (contract, custodians, venues, launchpads, DAO cores) and have no block. Written by org-nft-flows (1.5.3).' };
   if (!ixb || before !== JSON.stringify(meta) || all) await writeJson(`${BYW}/index.json`, index, `nft-flows by-wallet ${SLUG} index`, ixb && ixb.sha);
-  return { shards_rebuilt: shards.length, shards_written: written, wallets, mode: all ? (registryChanged ? 'all (registry changed)' : 'all') : 'dirty' };
+  return { shards_rebuilt: shards.length, shards_written: written, wallets, mode: all ? (registryChanged ? 'all (registry changed)' : engineChanged ? 'all (engine changed)' : 'all') : 'dirty' };
 }
 // 1.4.1 — THE ONE rule, from lib/oracle-usd.js: months fetched from the org oracle, symbols from the catalog resolver.
 const OU = require('./lib/oracle-usd.js');
@@ -305,6 +313,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   const R = { venues: vj.data.venues, collections: { [SLUG]: Object.assign({ label: cj.data.name, collection: cj.data.nft_contract, supply: cj.data.supply, kind: cj.data.kind }, cj.data.capture) } };
   const idx = buildIndex(R); const cols = [SLUG];
   SYSTEM = BW.systemAddresses(cj.data, vj.data.venues);   // 1.5.1: the registry's machinery addresses (no wallet block, never dirty)
+  CUSTODIANS = new Map(Object.entries((cj.data.capture && cj.data.capture.custodians) || {}).map(([a, c]) => [a, c && c.role]));   // 1.5.3
   // watch set = every collection contract + custodians + launchpads + distributors + every venue (offers/deposits are venue-only records)
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...((c.launchpad && c.launchpad.addresses) || []), ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }   // 1.3.1: every launchpad holder is watched
@@ -404,7 +413,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.5.2', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: ENGINE, status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }

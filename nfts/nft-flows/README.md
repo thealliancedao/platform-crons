@@ -1,3 +1,9 @@
+> **1.5.3 (2026-09-20)** — index.js never handed the registry's custodian ROLES to the projector (only the system set): on
+> Render a holder's transfer into a custodian was a release, so the live PL shards carried 2,721 positions with acquired:null
+> and #6 with no holder while the lib gate (which passed custodians itself) was green. Fixed at the one call; the by-wallet
+> index carries `engine` and a new engine rebuilds its projection once (`mode: all (engine changed)`); the mock stakes into a
+> registry custodian and asserts the holder keeps the token as `staked:<role>`. Mock 81/81.
+>
 > **1.5.2 (2026-09-20)** — the by-wallet index carries `system_key` (hash of the registry system-address set): a registry change
 > (a custodian added) rebuilds every shard on the next run, no env toggle (`mode: all (registry changed)`). Mock 78/78.
 >
