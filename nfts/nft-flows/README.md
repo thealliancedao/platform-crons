@@ -1,3 +1,12 @@
+> **1.5.1 (2026-09-20, D.1)** — by-wallet shards: `<slug>/ledger/by-wallet/<shard>.json` + index.json — the ledger replayed
+> per address (lib/by-wallet.js 1.0.0, THE rule): every live row naming the address (+ `role`), `holdings_now` per token with
+> its state, `held_past` (closed positions, P&L two ways), counts. 32 shards keyed by the address's last bech32 char (`_` for
+> non-terra ids); system addresses get no block; registry custodians are custody moves, custodian→custodian migrations
+> re-label the holder, a stale position closes as a labeled `gap`. Rebuilt for the shards a run's wallets touch;
+> `BY_WALLET_ALL=1` or a missing index rebuilds all in groups of `BY_WALLET_GROUP` (8). Gates: mock 76/76;
+> `gate-by-wallet.mjs` on the REAL ledgers vs the REAL inventory (aDAO 3982/3983 tokens agree, PL 4798/4819; no token
+> held by two wallets; heap < 100 MB). Readers: help-agent v1.14 `nft_wallet`, the journey sheet's buyer holdings (next).
+>
 > **1.4.0 (2026-09-18)** — by-token shards: `<slug>/ledger/by-token/<shard>.json` + index.json (100 tokens per shard, live
 > rows only, rebuilt for the shards a run touches; `BY_TOKEN_ALL=1` or a missing index rebuilds all, one month in memory at a
 > time). 1.3.1: `launchpad.addresses` watched. classify.js **1.1.5**: several launchpad holders per collection; launchpad →
@@ -22,6 +31,19 @@ current. Env `COLLECTION=<slug>` selects the folder; the service reads and write
 - Mock: `node mock-run.js` — fake RPC + fake GitHub; asserts raw file, ledger merge, index coverage, cursor last.
 
 ## Changelog
+### 1.5.1 — 2026-09-20 (D.1)
+- `lib/by-wallet.js` 1.0.0 + the by-wallet duty in index.js (see the top note). Replay order inside a block: acquisition →
+  return-from-custody → transfer → custody-entry → destruction, then msg_index (the ledger carries no tx index; a wallet
+  cannot move what it has not received). Self-transfers move nothing (`role:self`).
+- `mock-run.js`: failing assertions print what they saw; by-wallet cases (system addresses excluded, pre-ledger holding labeled,
+  P&L two ways incl. a LUNA→bLUNA trip with no LUNA-terms number, superseded twin never enters, dirty vs full rebuild).
+- `gate-by-wallet.mjs` (new): real ledgers + real `snapshots/nfts.json` (needs the nft-collections checkout beside
+  platform-crons or `NC=…`). It surfaced pixeLions staking v1 (`terra1exj6fxvr…sqnp0stl`, registered as custodian
+  `legacy_staking` in pixel-lions/collection.json the same day) and shows the ledger names a holder for every
+  Enterprise/DAODAO custody-unattributed token (B.3's input).
+- First run per service: `by-wallet/index.json` missing → full rebuild (4 passes over the months, ~2 min); after that dirty only.
+### 1.5.0 — 2026-09-19 (B.1)
+- Message bodies decoded at walk time (`lib/tx-body.js`) and archived as `m` on the raw record; classify 1.1.6 e.
 ### 1.4.1 — 2026-09-19
 - `lib/oracle-usd.js` = the pricing rule (makeOracle({ fetchMonth, resolve }) → usdAt / loadMonth / dropMonth); index.js delegates to it, derive.js (nft-collections) requires it from `_crons` at run time — one rule, no copy.
 - by-token: `by-token: N/M shards (k written so far)` every 20 shards and at the end.

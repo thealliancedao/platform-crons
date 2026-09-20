@@ -1,5 +1,13 @@
 'use strict';
-// org-nft-flows 1.5.0 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.5.1 — FORWARD CAPTURE for ONE collection
+// 1.5.1 (2026-09-20, D.1): BY-WALLET SHARDS — <slug>/ledger/by-wallet/<shard>.json (index.json beside them): the ledger
+//   replayed per address (lib/by-wallet.js, THE rule): every live record naming the address as from or to (+ `role`), its
+//   positions replayed into holdings_now (state per token: liquid · listed:<venue> · staked · staked_enterprise · unstaking ·
+//   escrow · locked) and held_past (closed positions with P&L two ways), counts. 32 shards keyed by the address's last
+//   bech32 character (a reader computes the file from the address alone). System addresses (contract, custodians, venues,
+//   launchpads, DAO cores — every address the registry names) get no block. Rebuilt for the shards whose wallets gained or
+//   re-priced a record this run; the first run (no by-wallet/index.json) or BY_WALLET_ALL=1 rebuilds every shard in groups
+//   of BY_WALLET_GROUP (8) — one month in memory, one group of shards being built (Render heap). Changed shards only.
 // 1.5.0 (2026-09-19, B.1): MESSAGE BODIES at walk time — every matched tx's MsgExecuteContract bodies are decoded from the
 //   block's tx bytes (lib/tx-body.js, no protobuf library) and archived as `m` on the raw record, the FCD `messages` shape,
 //   so Boost list prices, Atrium list denoms and DAODAO unstake token ids classify from the body forward (classify 1.1.6 e).
@@ -153,6 +161,10 @@ let RESOLVE = null;                 // denom → { symbol, decimals } from the t
 let STAMPED = 0;                    // records that received denom_symbol in the reprice pass (heartbeat)
 let MONTHS_WALKED = 0, MONTHS_TOUCHED = [];   // 1.2.1: the sweep's footprint, reported on the heartbeat
 const TOKENS_DIRTY = new Set();                 // 1.4.0: token ids whose by-token shard must be rebuilt this run
+const WALLETS_DIRTY = new Set();                // 1.5.1: addresses whose by-wallet shard must be rebuilt this run
+const BW = require('./lib/by-wallet.js');       // 1.5.1: THE per-wallet projection rule (pure; gated on real fixtures)
+let SYSTEM = new Set();                          // 1.5.1: addresses the registry names as machinery — never a wallet block
+const markDirty = (r) => { if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id)); for (const a of [r.from, r.to]) if (typeof a === 'string' && a && !SYSTEM.has(a)) WALLETS_DIRTY.add(a); };   // 1.5.1: one place, both shards follow
 const SHARD_SIZE = 100;                         // tokens per by-token shard (aDAO 10,000 → 100 files; PL 5,000 → 50; TLA locks by lock id)
 const shardOf = (id) => { const n = Number(id); return Number.isInteger(n) && n >= 0 ? String(Math.floor(n / SHARD_SIZE)).padStart(3, '0') : 'x'; };   // non-numeric ids share one shard
 // 1.4.0 — by-token shards: the ledger re-projected per token. Reads every month once (read → pick the wanted tokens → drop),
@@ -188,6 +200,40 @@ async function rebuildByToken(ix) {
   const index = { product: `${SLUG}/ledger/by-token`, collection: SLUG, shard_size: SHARD_SIZE, shard_of: 'floor(token_id / shard_size) zero-padded to 3 · non-numeric ids → "x"', shards: meta, updatedAt: stamp, note: 'read <shard>.json for a token\'s whole on-chain history; written by org-nft-flows (1.4.0), superseded ledger rows never included' };
   if (!ixb || before !== JSON.stringify(meta) || all) await writeJson(`${BYT}/index.json`, index, `nft-flows by-token ${SLUG} index`, ixb && ixb.sha);
   return { shards_rebuilt: shards.length, shards_written: written, records, mode: all ? 'all' : 'dirty' };
+}
+// 1.5.1 — by-wallet shards: the ledger replayed per address (lib/by-wallet.js). Every month is read once per group of
+// shards (read → feed the projector → drop); a shard is written only when its wallets changed.
+async function byWalletDuty() {
+  try { const ixf = await readFile(`${LEDGER}/index.json`); if (!ixf || !ixf.data) return { skipped: 'no ledger index' }; const r = await rebuildByWallet(ixf.data); console.log(`  by-wallet: ${r.mode} · ${r.shards_rebuilt} shard(s) rebuilt · ${r.shards_written} written · ${r.wallets} wallet(s)`); return r; }
+  catch (e) { errors.push('by-wallet: ' + e.message); console.warn('  ⚠ by-wallet: ' + e.message); return { error: e.message }; }
+}
+async function rebuildByWallet(ix) {
+  const BYW = `${LEDGER}/by-wallet`; const ixb = await readFile(`${BYW}/index.json`);
+  const all = process.env.BY_WALLET_ALL === '1' || !ixb || !ixb.data || ixb.data.rule_version !== BW.VERSION;
+  const dirty = new Set([...WALLETS_DIRTY].map(BW.shardOf));
+  if (!all && !dirty.size) return { shards_rebuilt: 0, shards_written: 0, wallets: 0, mode: 'nothing dirty' };
+  const shards = all ? [...BW.SHARDS, '_'] : [...dirty].sort();
+  const GROUP = Math.max(1, Number(process.env.BY_WALLET_GROUP || 8)); const groups = []; for (let i = 0; i < shards.length; i += GROUP) groups.push(shards.slice(i, i + GROUP));
+  const before = JSON.stringify((ixb && ixb.data && ixb.data.shards) || {}); const meta = JSON.parse(before); const stamp = new Date().toISOString(); let written = 0, wallets = 0, done = 0;
+  for (const g of groups) {
+    const wanted = new Set(g); const P = BW.makeProjector({ system: SYSTEM, wanted });
+    for (const mk of (ix.months || [])) {   // months ascending; rows in height order — the replay needs the order, not the whole ledger
+      const m = await readFile(`${LEDGER}/${mk}.json`); if (!m || !Array.isArray(m.data)) continue;
+      for (const r of BW.orderRows(m.data)) P.add(r);   // the lib's replay order (height, kind rank, msg_index)
+    }
+    const bodies = BW.shardBodies(SLUG, P.finish(), { system: SYSTEM, wanted });
+    for (const sh of g) {
+      const body = bodies[sh]; wallets += body.wallets_in_shard; const p = `${BYW}/${sh}.json`; const ex = await readFile(p);
+      const same = ex && ex.data && JSON.stringify(ex.data.wallets) === JSON.stringify(body.wallets);
+      meta[sh] = { wallets: body.wallets_in_shard, records: body.records, updatedAt: same ? (meta[sh] && meta[sh].updatedAt) || stamp : stamp };
+      if (++done % 8 === 0 || done === shards.length) console.log(`  by-wallet: ${done}/${shards.length} shards${written ? ` (${written} written so far)` : ''}`);
+      if (same) continue;
+      await writeJson(p, body, `nft-flows by-wallet ${SLUG} shard ${sh} (${body.wallets_in_shard} wallets, ${body.records} records)`, ex && ex.sha); written++;
+    }
+  }
+  const index = { product: `${SLUG}/ledger/by-wallet`, collection: SLUG, rule_version: BW.VERSION, shard_of: 'last character of the bech32 address (terra1…x77ulw → w.json); non-terra ids → _.json', shards: meta, system_addresses: [...SYSTEM].sort(), rules: BW.RULES, updatedAt: stamp, note: 'read <shard>.json → wallets[<address>] for an address\'s whole history on this collection: events (verbatim ledger rows + role), holdings_now (state per token), held_past (closed positions, P&L two ways). System addresses listed here are machinery (contract, custodians, venues, launchpads, DAO cores) and have no block. Written by org-nft-flows (1.5.1).' };
+  if (!ixb || before !== JSON.stringify(meta) || all) await writeJson(`${BYW}/index.json`, index, `nft-flows by-wallet ${SLUG} index`, ixb && ixb.sha);
+  return { shards_rebuilt: shards.length, shards_written: written, wallets, mode: all ? 'all' : 'dirty' };
 }
 // 1.4.1 — THE ONE rule, from lib/oracle-usd.js: months fetched from the org oracle, symbols from the catalog resolver.
 const OU = require('./lib/oracle-usd.js');
@@ -225,7 +271,7 @@ async function repriceMissingDays() {
         const again = usdAt(r.price, r.ts); if (again.usd == null) continue;
         const moved = Math.abs(again.usd - r.usd) > Math.abs(r.usd) * 5e-3;
         if (moved) { r.usd_prev = r.usd; r.usd_prev_basis = r.usd_basis; }
-        Object.assign(r, again); r.usd_repriced_at = stamp; if (moved) changed++; else stamped++; if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id));   // a relabel is not a repair; 1.4.0: the shard follows either way
+        Object.assign(r, again); r.usd_repriced_at = stamp; if (moved) changed++; else stamped++; markDirty(r);   // a relabel is not a repair; 1.4.0/1.5.1: the shards follow either way
         continue;
       }
       if (r.usd != null || typeof r.usd_reason !== 'string') continue;
@@ -233,7 +279,7 @@ async function repriceMissingDays() {
       if (!/^(luna_usd_daily_missing|usd_daily_missing|no_usd_series_for_denom|price_history_(missing|not_yet_written|month_missing)):/.test(r.usd_reason)) continue;   // every earlier spelling qualifies
       const again = usdAt(r.price, r.ts);
       if (again.usd == null) { if (again.usd_reason && again.usd_reason !== r.usd_reason) { r.usd_reason = again.usd_reason; stamped++; } continue; }   // 1.2.2: the reason is kept current (day missing + gap), never left stale
-      delete r.usd_reason; Object.assign(r, again); r.usd_repriced_at = stamp; changed++; if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id));   // 1.4.0: its shard is rebuilt
+      delete r.usd_reason; Object.assign(r, again); r.usd_repriced_at = stamp; changed++; markDirty(r);   // 1.4.0/1.5.1: its shards are rebuilt
     }
     if (!changed && !stamped) { dropOracleMonth(mk); continue; }
     await writeJson(p, ex.data, `nft-flows reprice ${SLUG} ${mk} (${changed} repriced, ${stamped} symbol-stamped)`, ex.sha);
@@ -252,6 +298,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   const vj = await readFile('venues.json'); if (!vj) throw new Error('venues.json missing');
   const R = { venues: vj.data.venues, collections: { [SLUG]: Object.assign({ label: cj.data.name, collection: cj.data.nft_contract, supply: cj.data.supply, kind: cj.data.kind }, cj.data.capture) } };
   const idx = buildIndex(R); const cols = [SLUG];
+  SYSTEM = BW.systemAddresses(cj.data, vj.data.venues);   // 1.5.1: the registry's machinery addresses (no wallet block, never dirty)
   // watch set = every collection contract + custodians + launchpads + distributors + every venue (offers/deposits are venue-only records)
   const watchOf = {}; const WATCH = new Set();
   for (const [k, c] of Object.entries(R.collections)) { const s = new Set([c.collection, ...Object.keys(c.custodians || {}), c.distributor, c.launchpad && c.launchpad.address, ...((c.launchpad && c.launchpad.addresses) || []), ...(c.distribution_wallets || [])].filter(Boolean)); watchOf[k] = s; s.forEach(a => WATCH.add(a)); }   // 1.3.1: every launchpad holder is watched
@@ -273,7 +320,8 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   console.log(`org-nft-flows-${SLUG} · cursor ${cursor} · head ${head} · walking ${from} → ${to} (${Math.max(0, to - from + 1)} blocks) · watch ${WATCH.size}`);
   if (to < from) {
     const byt = await byTokenDuty();   // 1.4.0: a re-priced record (or the first run) still rebuilds its shards on a nothing-new run
-    await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0);
+    const byw = await byWalletDuty();   // 1.5.1
+    await heartbeat('ok', { cursor, head, walked: 0, matched: 0, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, note: 'nothing new' }); console.log('done: nothing new'); process.exit(0);
   }
 
   // ---- walk (tla-flows pattern: concurrency, any failed read stops the run BEFORE the cursor moves)
@@ -324,7 +372,7 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
       const p = `${LEDGER}/${mk}.json`; const ex = await readFile(p); const existing = (ex && Array.isArray(ex.data)) ? ex.data : []; const seen = new Set(existing.map(recordKey));
       const fresh = rs.filter(r => !seen.has(recordKey(r))); if (!fresh.length) continue;
       const merged = [...existing, ...fresh].sort((a, b) => a.height - b.height || a.msg_index - b.msg_index);
-      fresh.forEach(r => { if (r.token_id != null) TOKENS_DIRTY.add(String(r.token_id)); });   // 1.4.0
+      fresh.forEach(markDirty);   // 1.4.0 / 1.5.1
       await writeJson(p, merged, `nft-flows forward ${k} ${mk} (+${fresh.length})`, ex && ex.sha); added += fresh.length; perColAdded[k] = (perColAdded[k] || 0) + fresh.length; monthsTouched[mk] = merged;
     }
     if (Object.keys(monthsTouched).length) {
@@ -341,15 +389,16 @@ const usdAt = (price, ts) => ORACLE.usdAt(price, ts);   // 1.4.1: lib/oracle-usd
   for (const k of cols) { if (perColAdded[k]) continue; const ixf = await readFile(`${LEDGER}/index.json`); if (!ixf) continue; const ix = ixf.data; const fw = ix.coverage.find(c => c.source === 'forward:org-nft-flows'); if (fw) { if (processedTo > fw.to) { fw.to = processedTo; ix.updatedAt = new Date().toISOString(); await writeJson(`${LEDGER}/index.json`, ix, `nft-flows forward ${k} coverage → ${processedTo}`, ixf.sha); } } else { ix.coverage.push({ source: 'forward:org-nft-flows', from, to: processedTo, parts: 0 }); ix.updatedAt = new Date().toISOString(); await writeJson(`${LEDGER}/index.json`, ix, `nft-flows forward ${k} coverage start`, ixf.sha); } }
 
   const byt = await byTokenDuty();   // 1.4.0: shards for every token that gained or re-priced a record this run
+  const byw = await byWalletDuty();   // 1.5.1: shards for every wallet that gained or re-priced a record this run
   // ---- cursor LAST (raw + ledger are on main before we say so), then heartbeat
   if (processedTo > cursor) await writeJson(CURSOR_PATH, { height: processedTo, updatedAt: new Date().toISOString(), note: `block cursor for org-nft-flows-${SLUG}; this service walks only this collection` }, `nft-flows cursor → ${processedTo}`, cur && cur.sha);
-  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, per_collection: perColAdded });
+  await heartbeat(errors.length ? 'degraded' : 'ok', { cursor: processedTo, head, walked: processedTo - cursor, matched: matched.length, raw_files: rawFiles, records_added: added, repriced, symbol_stamped: STAMPED, months_walked: MONTHS_WALKED, months_touched: MONTHS_TOUCHED, by_token: byt, by_wallet: byw, per_collection: perColAdded });
   console.log(`done: +${added} ledger records, ${rawFiles} raw files, cursor ${processedTo}, ${Date.now() - t0} ms`);
   process.exit(0);   // keep-alive sockets would otherwise hold the process open on Render
 })().catch(async (e) => { console.error('FATAL', e); errors.push(e.message); try { await heartbeat('failed', {}); } catch { } process.exit(1); });
 
 async function heartbeat(status, extra) {
-  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.5.0', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
+  const hb = Object.assign({ module: 'nft-collections', product: `${SLUG}/nft-flows`, cron: `org-nft-flows-${SLUG}`, version: '1.5.1', status, ran_at: new Date().toISOString(), duration_ms: Date.now() - t0, errors }, extra);
   const ex = await readFile(HB_PATH).catch(() => null);
   await writeJson(HB_PATH, hb, `nft-flows heartbeat ${status}`, ex && ex.sha);
 }
