@@ -1,3 +1,6 @@
+> **1.5.2 (2026-09-20)** — the by-wallet index carries `system_key` (hash of the registry system-address set): a registry change
+> (a custodian added) rebuilds every shard on the next run, no env toggle (`mode: all (registry changed)`). Mock 78/78.
+>
 > **1.5.1 (2026-09-20, D.1)** — by-wallet shards: `<slug>/ledger/by-wallet/<shard>.json` + index.json — the ledger replayed
 > per address (lib/by-wallet.js 1.0.0, THE rule): every live row naming the address (+ `role`), `holdings_now` per token with
 > its state, `held_past` (closed positions, P&L two ways), counts. 32 shards keyed by the address's last bech32 char (`_` for
