@@ -1,5 +1,13 @@
 # help-agent — the site's grounded Q&A service (v1)
 
+> **v1.14.0 (2026-09-20, D.1)** — NFT routes: tools `nft_wallet` (an address's whole history on a collection — holdings now
+> by state, past holdings with P&L two ways, counts, events; from `nft-collections/<slug>/ledger/by-wallet/`) and `nft_token`
+> (a token's journey from `ledger/by-token/`); collections from `tla-core/docs/curated/tenants.json` (+ `NFT_EXTRA_COLLECTIONS`,
+> default `tla-locks`); the shard rule is required from `../nfts/nft-flows/lib/by-wallet.js` (one rule, no copy — Render clones
+> the whole repo). `read_product key` lifts `wallets[<addr>]` / `tokens[<id>]` and compacts events head/tail; system-prompt
+> rule 14 = the NFT data map (staked-vs-held discipline). Logic in `lib/nft-tools.js`; gate `gate-nft-tools.mjs` (real shards,
+> 16/16) + `gate-nftc-routing.mjs` (19/19). DATA-MAP.md gained the NFT section.
+
 Spec: `tla-core/docs/pending-changes/SPEC-site-help-agent.md`.
 The Help page (help.html) works fully WITHOUT this service (v0: FAQ + GitHub
 report/request forms). Deploying this adds the live assistant.

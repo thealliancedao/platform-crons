@@ -1,5 +1,11 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.14.0 (2026-09-20, D.1): NFT ROUTES — two tools on the nft-flows shards: nft_wallet (an address's whole history on a
+//   collection: holdings now by state, past holdings with P&L two ways, counts, events — from <slug>/ledger/by-wallet/) and
+//   nft_token (a token's journey — from <slug>/ledger/by-token/); collections from the tenant registry; the shard rule is
+//   required from nfts/nft-flows/lib/by-wallet.js (one rule, no copy); read_product's `key` now lifts `wallets[<addr>]` /
+//   `tokens[<id>]` blocks and compacts a block's events head/tail instead of cutting the JSON mid-object; the system prompt
+//   carries the NFT data map (which product answers staked-vs-held, floor/volume/mark, who-owns-what, journeys, histories).
 // -----------------------------------------------------------------------------
 // A tiny Node web service (zero dependencies, Node 18+) that answers visitor
 // questions about thealliancedao.com, grounded on the site's OWN docs and live
@@ -24,6 +30,7 @@
 // =============================================================================
 'use strict';
 const http = require('http');
+const NFT = require('./lib/nft-tools.js');   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
@@ -224,7 +231,28 @@ Hard rules, in priority order:
      ampROAR-ROAR Astroport pair) — not a venue anyone can trade; say so, do not speculate
      "contract-owned or paused".
    - Repo doc paths: CHANGES_PENDING lives at docs/pending-changes/CHANGES_PENDING.md. Link
-     only paths you have seen in the corpus.`;
+     only paths you have seen in the corpus.
+14. NFT DATA MAP (v1.14.0) — collections: adao (AllianceDAO NFTs), pixel-lions (pixeLions, Lion
+   DAO), tla-locks (TLA lock NFTs). Products live at nft-collections/<slug>/… (read_product):
+   - HOW MANY / WHO HOLDS → snapshots/summary.json (nft-inventory, every 15 min): staked, listed,
+     liquid, broken, custody counts + per_owner_counts. STAKED-VS-HELD DISCIPLINE: enterprise_staked_count
+     = tokens the legacy Enterprise staking contract HOLDS; enterprise_unattributed_count = of those, the
+     ones no staker record names (unstaked-but-unclaimed / legacy) — say the split ("676 held by the
+     contract: 552 attributed to stakers, 124 unattributed"), never one "staked" number. Same for
+     daodao_staked_count vs daodao_custody_unattributed_count.
+   - FLOOR / VOLUME / MARK / SUPPLY / HOLD TIME → snapshots/nft-analytics.json (the explorer's analytics
+     tab: mark = lower of last-sales floor and cheapest ask; floor per tier; all-time volume USD-at-sale
+     and in LUNA). snapshots/floor-history.json = floor per period. snapshots/sales-enriched.json = every
+     sale priced; snapshots/listing-history.json = every listing episode.
+   - ONE TOKEN'S JOURNEY → the nft_token tool (by-token shard). Prices in the token paid + USD at the day.
+   - AN ADDRESS'S HISTORY, INCLUDING PAST HOLDINGS → the nft_wallet tool (by-wallet shard). It returns
+     holdings NOW by state and held_past with P&L two ways. A wallet that holds nothing now but has
+     held_past rows DID hold before — say what and when. Never use search_address_txs for NFT history
+     (sender-side only, no prices, no custody).
+   - NAMES: an address's registered name comes from the DAO registries / trusted catalog already in the
+     corpus; never invent one. Write addresses in full.
+   - Rarity: aDAO has grades + rank; pixeLions is BBL's statistical rank only ("Rank N · top X%", ties
+     share a rank) — never say "Rarity —" for a lion.`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
@@ -384,6 +412,12 @@ const CHAIN_TOOLS = [
   { name: 'audit_proposal',
     description: 'Registry-backed audit of a governance proposal\'s wasm/bank messages: resolves every address against the platform registries with an evidence tier (structural / gauge_set / token / curated / unknown), checks allowance=amount, gauge/bucket match, distribution math, current runway, and flags admin/upgrade actions. Use whenever a visitor pastes proposal messages or asks whether a proposal is genuine.',
     input_schema: { type: 'object', properties: { messages_json: { type: 'string', description: 'the raw JSON (array of messages) pasted by the visitor' } }, required: ['messages_json'] } },
+  { name: 'nft_wallet',   // v1.14.0
+    description: 'An address\'s WHOLE NFT history on one collection from the nft-flows by-wallet product: holdings now (per token: liquid / listed:<venue> / staked / staked_enterprise / unstaking / locked, since when, what it was acquired by and for), PAST holdings (closed positions with what closed them and P&L two ways: USD at each end, LUNA-terms when both ends were LUNA), counts (bought, sold, minted, listings, stakes…), first/last seen, and the events themselves. Use for "what does terra1… hold", "what did this wallet hold before / sell / buy / mint", "is this address still in the DAO", "how many lions did X flip". Collections: adao, pixel-lions, tla-locks (locks by lock id). Omit collection to read every live collection.',
+    input_schema: { type: 'object', properties: { address: { type: 'string', description: 'terra1… address' }, collection: { type: 'string', description: 'slug: adao | pixel-lions | tla-locks (omit = all)' } }, required: ['address'] } },
+  { name: 'nft_token',   // v1.14.0
+    description: 'One token\'s whole on-chain journey from the nft-flows by-token product: every ledger record of that token (mint, mint_purchase with the mint price, transfers, listings with prices, sales with price/USD/buyer/seller, stakes/unstakes/claims, breaks, locks), plus a summary (hand changes, listings, sales, last custody event). Use for "what happened to #1234", "who minted / sold / owns pixeLion #7", "how many times did #500 change hands".',
+    input_schema: { type: 'object', properties: { collection: { type: 'string', description: 'slug: adao | pixel-lions | tla-locks' }, token_id: { type: 'string', description: 'token / lock id' } }, required: ['collection', 'token_id'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -638,6 +672,53 @@ async function auditProposal(msgs) {
     how_to_read: 'Tiers are evidence, not verdicts. structural/gauge_set/token = chain-verified by live captures; trust_register = the platform trust product listing HOW the address is known (methods chain/github/scv_audit/oak_audit are checkable without trusting this site; owner/project_team/dao_registry/docs are human labels; past_prop is precedent) — print its verified[] entries with their links; curated = a human label; unknown = unverified. No finding here asserts a proposal is "safe". This site\'s registry is NOT the source of truth — the chain is; every address carries independent `verify` links (explorer, source repo, audit) so the reader can check without trusting this site.',
   };
 }
+// v1.14.0 — the NFT tools: fetch one shard, lift one block, compact it (lib/nft-tools.js). Collections from tenants.json.
+let tenantsCache = { at: 0, cols: null }; let byTokenIndexCache = {}; let sysCache = {};
+async function nftCollections() {
+  if (tenantsCache.cols && Date.now() - tenantsCache.at < 15 * 60 * 1000) return tenantsCache.cols;
+  try { const r = await fetch(`${CORE}/docs/curated/tenants.json`, { headers: { 'User-Agent': 'tla-help-agent' } }); const j = r.ok ? await r.json() : null; const cols = NFT.collectionsFromTenants(j); if (cols.length) { tenantsCache = { at: Date.now(), cols }; return cols; } } catch (e) { /* fall through */ }
+  return tenantsCache.cols || ['adao', 'pixel-lions', 'tla-locks'];   // the registry's list when reachable; the known set otherwise
+}
+const EXTRA_COLLECTIONS = String(process.env.NFT_EXTRA_COLLECTIONS || 'tla-locks').split(',').map(x => x.trim()).filter(Boolean);   // collections with a ledger that are the platform's, not an ally's (TLA locks)
+async function nftCollectionsAll() { const cols = await nftCollections(); return [...cols, ...EXTRA_COLLECTIONS.filter(c => !cols.includes(c))];
+}
+async function nftSystem(slug) {   // the collection's machinery addresses (contract, custodians, venues) — for the journey summary
+  if (sysCache[slug] && Date.now() - sysCache[slug].at < 60 * 60 * 1000) return sysCache[slug].set;
+  const set = new Set(); try { const [c, v] = await Promise.all([fetch(`${NFTC_REPO}/${slug}/collection.json`).then(r => r.ok ? r.json() : null), fetch(`${NFTC_REPO}/venues.json`).then(r => r.ok ? r.json() : null)]);
+    const walk = (x) => { if (!x) return; if (typeof x === 'string') { if (/^terra1[a-z0-9]{38,58}$/.test(x)) set.add(x); return; } if (Array.isArray(x)) return x.forEach(walk); if (typeof x === 'object') { Object.keys(x).forEach(walk); Object.values(x).forEach(walk); } };
+    if (c) { walk(c.nft_contract); walk(c.capture); walk(c.governance); } for (const ve of Object.values((v && v.venues) || {})) if (ve && ve.address) set.add(ve.address); } catch (e) { /* empty set: summary counts every address as a wallet */ }
+  sysCache[slug] = { at: Date.now(), set }; return set;
+}
+async function nftTool(name, input) {
+  const slugAsk = String(input.collection || '').trim().toLowerCase();
+  const known = await nftCollectionsAll();
+  if (name === 'nft_wallet') {
+    const a = String(input.address || '').trim(); if (!NFT.ADDR.test(a)) return { error: 'invalid terra1 address' };
+    if (!NFT.hasWalletRule()) return { error: 'by-wallet shard rule unavailable on this deploy (nfts/nft-flows/lib/by-wallet.js) — read nft-collections/<slug>/ledger/by-wallet/index.json for the rule and use read_product with key' };
+    const slugs = slugAsk ? [slugAsk] : known; if (slugAsk && !known.includes(slugAsk)) return { error: `unknown collection "${slugAsk}" — known: ${known.join(', ')}` };
+    const out = { address: a, collections: {} , note: 'per collection: holdings_now by state, held_past (closed positions, P&L two ways), counts, events (head/tail when long). "Not on this collection" = no ledger record names the address. Staked tokens still belong to the wallet (state says where they sit).' };
+    for (const slug of slugs) {
+      try { const r = await fetch(NFT.walletShardUrl(slug, a), { headers: { 'User-Agent': 'tla-help-agent' } });
+        if (r.status === 404) { out.collections[slug] = { unavailable: 'by-wallet shards not built yet for this collection (org-nft-flows 1.5.1 writes them on its next run)' }; continue; }
+        if (!r.ok) { out.collections[slug] = { error: 'fetch ' + r.status }; continue; }
+        const j = await r.json(); const block = j.wallets && j.wallets[a];
+        out.collections[slug] = block ? NFT.compactWallet(block, slug) : { not_on_this_collection: true, shard_read: NFT.walletShard(a), shard_updated_at: j.updatedAt || undefined };
+      } catch (e) { out.collections[slug] = { error: String(e.message || e).slice(0, 120) }; }
+    }
+    return out;
+  }
+  // nft_token
+  const slug = slugAsk; if (!known.includes(slug)) return { error: `unknown collection "${slug}" — known: ${known.join(', ')}` };
+  const id = String(input.token_id || '').trim().replace(/^#/, ''); if (!id) return { error: 'token_id required' };
+  try {
+    let shardSize = 100; if (!byTokenIndexCache[slug] || Date.now() - byTokenIndexCache[slug].at > 60 * 60 * 1000) { const ir = await fetch(`${NFTC_REPO}/${slug}/ledger/by-token/index.json`, { headers: { 'User-Agent': 'tla-help-agent' } }); byTokenIndexCache[slug] = { at: Date.now(), size: ir.ok ? ((await ir.json()).shard_size || 100) : 100 }; } shardSize = byTokenIndexCache[slug].size;
+    const r = await fetch(NFT.tokenShardUrl(slug, id, shardSize), { headers: { 'User-Agent': 'tla-help-agent' } });
+    if (r.status === 404) return { error: 'by-token shard not found for this collection/id' }; if (!r.ok) return { error: 'fetch ' + r.status };
+    const j = await r.json(); const rows = j.tokens && j.tokens[id];
+    if (!rows || !rows.length) return { collection: slug, token_id: id, records: 0, note: 'no ledger record for this id (unminted, or the id is not in this collection)' };
+    const c = NFT.compactToken(rows, slug, id, await nftSystem(slug)); c.source_url = `https://github.com/thealliancedao/nft-collections/blob/main/${slug}/ledger/by-token/${NFT.tokenShard(id, shardSize)}.json`; return c;
+  } catch (e) { return { error: 'fetch failed: ' + String(e.message || e).slice(0, 120) }; }
+}
 async function runTool(name, input) {
   if (name === 'audit_proposal') {
     const msgs = Array.isArray(input.messages) ? input.messages : extractMessages(String(input.messages_json || ''));
@@ -669,12 +750,15 @@ async function runTool(name, input) {
           const hit = (arr) => arr.find(x => String(x.name || x.symbol || x.canonical || '').toLowerCase() === kl)
                    || arr.find(x => String(x.name || x.symbol || x.denom || '').toLowerCase().includes(kl));
           let found = null, where = null;
-          for (const field of ['pools', 'tokens', 'epochs', 'entries', 'vaults', 'members']) {
+          for (const field of ['pools', 'tokens', 'epochs', 'entries', 'vaults', 'members', 'wallets']) {   // v1.14.0: wallets (by-wallet shards); tokens[<id>] already lifts a by-token block
             if (Array.isArray(j[field])) { const h = hit(j[field]); if (h) { found = h; where = field; break; } }
             if (j[field] && typeof j[field] === 'object' && j[field][key]) { found = j[field][key]; where = field; break; }
           }
           if (!found && j[key]) { found = j[key]; where = 'root'; }
           if (found) {
+            // v1.14.0: a block with an `events` array (by-wallet / by-token) is compacted head/tail, never cut mid-object
+            if (found && typeof found === 'object' && !Array.isArray(found) && Array.isArray(found.events) && JSON.stringify(found).length > 13000) found = Object.assign({}, found, { events: { _truncated: true, total: found.events.length, first: found.events.slice(0, 6), last: found.events.slice(-30) } });
+            else if (Array.isArray(found) && JSON.stringify(found).length > 13000) found = { _truncated: true, total: found.length, first: found.slice(0, 6), last: found.slice(-30) };
             return { path: p, extracted_key: key, from: where,
               meta: { epochs: j.epochs, generatedAt: j.generatedAt || (j.meta && j.meta.generated_at) },
               source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p,
@@ -695,6 +779,7 @@ async function runTool(name, input) {
       return { path: p, source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p, content: t };
     } catch (e) { return { error: 'fetch failed: ' + e.message }; }
   }
+  if (name === 'nft_wallet' || name === 'nft_token') return nftTool(name, input);   // v1.14.0
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };
