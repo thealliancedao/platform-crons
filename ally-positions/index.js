@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* ============================================================================
- * ally-positions/index.js 1.0.0 (2026-09-21) — POSITIONS for an ally's wallet roster (crons per ally).
+ * ally-positions/index.js 1.0.1 (2026-09-21 · 1.0.1: LCD read errors surfaced on the row, validator account skips the TLA engine, gate-#0 reference from tenants.json) — POSITIONS for an ally's wallet roster (crons per ally).
  * ----------------------------------------------------------------------------
  * ONE engine, one Render service per ally: `TENANT=liondao node ally-positions/index.js`. The roster, the validator, the
  * staking contracts and the DAO folder all come from tla-core/docs/curated/tenants.json — this file holds no address.
@@ -29,7 +29,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const TENANT = process.env.TENANT || 'liondao';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/dao-originations';
@@ -43,7 +43,8 @@ const LCD = E.TERRA_LCD_PRIMARY;
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const sum = (arr) => { let t = 0, any = false; for (const v of arr) if (Number.isFinite(v)) { t += v; any = true; } return any ? t : null; };
 const day = () => new Date().toISOString().slice(0, 10);
-async function lcd(p, label) { try { return await E.fetchJson(LCD + p, label || p.slice(0, 40)); } catch (e) { try { return await E.fetchJson(E.TERRA_LCD_FALLBACK + p, label); } catch (e2) { return null; } } }
+const lastLcdError = {};
+async function lcd(p, label) { try { return await E.fetchJson(LCD + p, label || p.slice(0, 40)); } catch (e) { try { return await E.fetchJson(E.TERRA_LCD_FALLBACK + p, label); } catch (e2) { lastLcdError[p] = `${e.message} · fallback: ${e2.message}`; return null; } } }
 async function lcdPaged(p, key, max = 20) { let out = [], next = null, n = 0; do { const r = await lcd(p + (p.includes('?') ? '&' : '?') + 'pagination.limit=500' + (next ? '&pagination.key=' + encodeURIComponent(next) : '')); if (!r) return n ? out : null; out = out.concat(r[key] || []); next = r.pagination && r.pagination.next_key; n++; } while (next && n < max); return out; }
 
 // ---------------------------------------------------------------- readers the engine lacks
@@ -73,7 +74,7 @@ function priceRow(row, ctx) {
 }
 async function readDelegations(wallet, ctx) {
   const [dl, rw] = await Promise.all([lcd(`/cosmos/staking/v1beta1/delegations/${wallet}?pagination.limit=100`, 'delegations'), lcd(`/cosmos/distribution/v1beta1/delegators/${wallet}/rewards`, 'rewards')]);
-  if (!dl) return null;
+  if (!dl) return { rows: null, luna: null, usd_value: null, rewards_luna: null, rewards_usd: null, error: lastLcdError[`/cosmos/staking/v1beta1/delegations/${wallet}?pagination.limit=100`] || 'delegations read failed' };
   const rewardsBy = {}; for (const r of (rw && rw.rewards) || []) rewardsBy[r.validator_address] = sum((r.reward || []).filter(c => c.denom === 'uluna').map(c => num(c.amount) / 1e6));
   const rows = (dl.delegation_responses || []).map(r => { const v = r.delegation.validator_address; const luna = num(r.balance.amount) / 1e6; return { validator: v, own_validator: v === ctx.validator, luna, usd_value: ctx.lunaPriceUsd != null ? luna * ctx.lunaPriceUsd : null, rewards_luna: rewardsBy[v] != null ? rewardsBy[v] : null, rewards_usd: rewardsBy[v] != null && ctx.lunaPriceUsd != null ? rewardsBy[v] * ctx.lunaPriceUsd : null }; });
   return { rows, luna: sum(rows.map(r => r.luna)), usd_value: sum(rows.map(r => r.usd_value)), rewards_luna: sum(rows.map(r => r.rewards_luna)), rewards_usd: sum(rows.map(r => r.rewards_usd)), price_basis: 'LUNA at network-and-prices' };
@@ -161,11 +162,12 @@ async function loadContext() {
   ctx.nftSummaries = {};
   await Promise.all((t.collections || []).map(async (slug) => { ctx.nftSummaries[slug] = await E.fetchJson(NFTC + slug + '/snapshots/summary.json', 'nft-summary ' + slug).catch(() => null); }));
   ctx.tenant = t; ctx.tenantSlug = TENANT; ctx.outRoot = OUT_ROOT || ((t.daos || [])[0] || TENANT);
+  ctx.gate0 = t.gate0_reference ? await E.fetchJson(CORE + t.gate0_reference, 'gate0-reference').catch(() => null) : null;
   return ctx;
 }
 async function captureWallet(address, w, ctx) {
   const [portfolio, balances, delegations] = await Promise.all([
-    E.fetchMemberPortfolio({ address, name: w.label }, ctx).catch(e => ({ _errors: ['engine: ' + e.message], summary: null })),
+    w.counts_as === 'validator' ? Promise.resolve({ wallet: address, _errors: [], summary: null, skipped: 'validator account: no TLA capture' }) : E.fetchMemberPortfolio({ address, name: w.label }, ctx).catch(e => ({ _errors: ['engine: ' + e.message], summary: null })),
     readBalances(address, ctx).catch(e => null),
     readDelegations(address, ctx).catch(e => null),
   ]);
@@ -180,7 +182,7 @@ async function run(opts = {}) {
   if (ctx.validatorAccount && !wallets[ctx.validatorAccount]) wallets[ctx.validatorAccount] = await captureWallet(ctx.validatorAccount, { label: 'validator account', role: 'validator', counts_as: 'validator' }, ctx);
   const validator = await readValidatorCommission(ctx).catch(() => null);
   const roll = rollup(wallets, { validator });
-  const fixture = opts.fixture || null;
+  const fixture = opts.fixture || ctx.gate0 || null;
   const doc = { schemaVersion: 1, product: `${ctx.outRoot}/positions`, engine: VERSION, tenant: TENANT, capturedAt: new Date().toISOString(), startedAt,
     prices: { luna_usd: ctx.lunaPriceUsd, source: 'network-and-prices', captured_at: ctx.networkPrices && ctx.networkPrices.capturedAt || null },
     validator, wallets, rollup: roll, reconciliation: reconcile(wallets, fixture),
