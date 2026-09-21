@@ -28,9 +28,9 @@ assert(typeof M.runPriceCanary === 'function' && typeof M.assemblePriceTable ===
     'module loads under require.main guard; test surface exported');
 assert(M.OUT_BASE === 'network-and-prices' && M.GITHUB_REPO === 'thealliancedao/tla-core',
     `org paths: OUT_BASE='${M.OUT_BASE}', GITHUB_REPO default '${M.GITHUB_REPO}'`);
-assert(M.TOKEN_REGISTRY.EURE.cgId === 'monerium-eur-money-2',
+assert(M.TOKEN_REGISTRY['EURe'].cgId === 'monerium-eur-money-2',
     "3.0.1: EURE cgId is 'monerium-eur-money-2' (current Monerium token post-migration; 'euroe-stablecoin' was the wrong coin)",
-    M.TOKEN_REGISTRY.EURE.cgId);
+    M.TOKEN_REGISTRY['EURe'].cgId);
 assert(!/pushToGithub\('data\//.test(shipped), "no legacy 'data/' write paths remain");
 const legacyReads = shipped.split('\n').filter(l => !/^\s*\/\//.test(l) && /LEGACY_REPO_RAW|raw\.githubusercontent\.com\/defipatriot\//.test(l)).length;   // code lines only — comments may cite history
 assert(legacyReads === 0, 'no legacy-repo reads remain in code (seed + heartbeat fallbacks removed 2026-09-10; personal repos deleted)', legacyReads);
@@ -42,9 +42,9 @@ const c = M.runPriceCanary(tokenPrices, [dexA, dexS]);
 
 // -- pinned expectations computed independently from fixture numbers --
 const solidFinal = tokenPrices.SOLID.final_price_usd;                      // 1.0015615474611197
-const usdcFinal = tokenPrices.USDC.final_price_usd;
+const usdcFinal = tokenPrices['USDC.n'].final_price_usd;   // 3.1.0: the catalog symbol is the key
 const usdcSolid = dexA.pools.find(p => p.pool_name === 'USDC-SOLID');
-const [uSide, sSide] = usdcSolid.assets[0].symbol === 'USDC' ? usdcSolid.assets : [...usdcSolid.assets].reverse();
+const [uSide, sSide] = /^USDC/.test(usdcSolid.assets[0].symbol) ? usdcSolid.assets : [...usdcSolid.assets].reverse();   // the venue's spelling; the canary matches by denom
 const impliedSolid = (Number(uSide.amount_raw) / 1e6 * usdcFinal) / (Number(sSide.amount_raw) / 1e6);
 const solidDrift = (solidFinal / impliedSolid - 1) * 100;
 
@@ -85,9 +85,9 @@ const f2 = c2.flagged.find(f => f.symbol === 'SOLID');
 const expDrift = Math.round(((solidFinal * 1.25) / impliedSolid - 1) * 100 * 100) / 100;
 assert(!!f2, 'mutated SOLID is flagged');
 assert(f2 && f2.drift_pct === expDrift, `drift_pct === ${expDrift} (gate-computed)`, f2 && f2.drift_pct);
-assert(f2 && f2.ref_pool === 'USDC-SOLID' && f2.ref_dex === 'astroport' && f2.ref_anchor === 'USDC'
+assert(f2 && f2.ref_pool === 'USDC-SOLID' && f2.ref_dex === 'astroport' && f2.ref_anchor === 'USDC.n'
     && f2.reference_unverified === false,
-    'ref fields exact: USDC-SOLID / astroport / USDC anchor / verified');
+    'ref fields exact: USDC-SOLID / astroport / USDC.n anchor (matched by denom, named by the registry key) / verified');
 assert(f2 && f2.ref_depth_usd === Math.round(Number(uSide.amount_raw) / 1e6 * usdcFinal * 2),
     `ref_depth_usd === ${Math.round(Number(uSide.amount_raw) / 1e6 * usdcFinal * 2)}`, f2 && f2.ref_depth_usd);
 
@@ -101,6 +101,42 @@ assert(f3 && f3.reference_unverified === true && f3.ref_dex === 'skeletonswap',
 
 console.log('  -- canary never mutates finals --');
 assert(tokenPrices.SOLID.final_price_usd === solidFinal, 'input token_prices untouched');
+
+console.log('\n=== 3.1.0: stables keyed by the CATALOG symbol; canary anchored by denom; registry ↔ catalog gate ===');
+assert(['USDC.n', 'USDt', 'EURe'].every(k => M.TOKEN_REGISTRY[k]) && !['USDC', 'USDT', 'EURE'].some(k => M.TOKEN_REGISTRY[k]),
+    'registry keys the three stables by the catalog symbol (USDC.n / USDt / EURe) and no longer by the old spelling');
+assert(M.CANARY.ANCHORS.join() === 'USDC.n,USDt,LUNA' && M.CANARY.STABLE_ANCHORS.join() === 'USDC.n,USDt', 'canary anchors are the registry keys; stables anchor at 1.0 without a final');
+// the SS capture spells the same denom `USDC`; the Astroport capture `USDC.n` (live captures) — the canary must anchor on both
+const ssUsdc = dexS.pools.filter(p => (p.pool_type || 'xyk') === 'xyk' && p.assets.some(a => a.denom === 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB'));
+const renamed = JSON.parse(JSON.stringify(dexA)); for (const p of renamed.pools) for (const a of p.assets) if (a.symbol === 'USDC') a.symbol = 'USDC.n';
+const cR = M.runPriceCanary(mutated, [renamed, dexS]);
+const fR = cR.flagged.find(f => f.symbol === 'SOLID');
+assert(fR && fR.ref_anchor === 'USDC.n' && fR.ref_pool === 'USDC-SOLID' && fR.drift_pct === expDrift,
+    'Astroport spelling the anchor USDC.n (as its live captures do) → same USDC-SOLID reference, same drift: matched by denom, not by the venue\'s symbol', fR && fR.ref_anchor);
+// the SS USDC-SOLID pool in the fixture is $420 deep (under the $5k floor) — scale its reserves ×100 so it qualifies, Astroport absent
+const deepS = JSON.parse(JSON.stringify(dexS)); for (const p of deepS.pools) if (p.pool_name === 'USDC-SOLID') for (const a of p.assets) a.amount_raw = String(Number(a.amount_raw) * 100);
+const cS = M.runPriceCanary(mutated, [null, deepS]);
+const fS = cS.flagged.find(f => f.symbol === 'SOLID');
+assert(ssUsdc.length > 0 && fS && fS.ref_anchor === 'USDC.n' && fS.ref_dex === 'skeletonswap' && fS.reference_unverified === true,
+    'SkeletonSwap spelling the anchor USDC → still the USDC.n anchor (matched by denom), reference marked unverified', fS && [fS.ref_anchor, fS.ref_dex, fS.reference_unverified]);
+const catFx = { tokens: [
+    { denom: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB', effective: { symbol: 'USDC.n' } },
+    { denom: 'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5', discovered: { symbol: 'USDt' } },
+    { denom: 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1', effective: { symbol: 'EURe' } },
+    { denom: 'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB', effective: { symbol: 'wBTC.atom' } },
+    { denom: 'uluna', effective: { symbol: 'LUNA' } },
+] };
+const g = M.catalogSymbolDrift(catFx);
+assert(g.status === 'ok' && ['USDC.n', 'USDt', 'EURe', 'LUNA'].every(k => g.aligned.includes(k)), 'gate: the stables + LUNA read aligned with the catalog', g.aligned);
+assert(g.drift.some(d => d.key === 'WBTC' && d.catalog_symbol === 'wBTC.atom' && !d.stable), 'gate: WBTC → wBTC.atom is PUBLISHED as drift (not renamed, not a stable)', g.drift);
+assert(g.drift.some(d => d.key === 'PAXG' && d.catalog_symbol === null), 'gate: a registry denom the catalog does not hold is published with catalog_symbol null', g.drift.filter(d => d.catalog_symbol === null).map(d => d.key));
+const gStable = M.catalogSymbolDrift({ tokens: [{ denom: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB', effective: { symbol: 'USDC.inj' } }] });
+assert(gStable.drift.some(d => d.key === 'USDC.n' && d.stable === true), 'gate: a stable whose catalog symbol moved is flagged stable:true (the loud warning path)');
+assert(M.catalogSymbolDrift(null).status === 'skipped', 'gate: catalog unavailable → skipped, never a crash');
+if (process.env.TLA_CORE_DIR) {
+    const real = M.catalogSymbolDrift(JSON.parse(fs.readFileSync(path.join(process.env.TLA_CORE_DIR, 'token-catalog/snapshots/current.json'), 'utf8')));
+    assert(real.status === 'ok' && !real.drift.some(d => d.stable), `REAL catalog: no stable drifts; published drift = ${real.drift.map(d => d.key + '→' + d.catalog_symbol).join(', ')}`, real.drift);
+}
 
 console.log('\n=== freshness machinery (ported intact) ===');
 const snap = { token_prices: tokenPrices, luna_market: { price_usd: 0.0409 } };

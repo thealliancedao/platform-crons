@@ -1,5 +1,16 @@
 // =============================================================================
-// Network & Prices Cron — 3.0.0 (ORG PORT + price canary)
+// Network & Prices Cron — 3.1.0 (2026-09-21: stables keyed by the CATALOG symbol; canary anchored by denom)
+// 3.1.0 — TLA queue item 1. `token_prices` keys are what every reader looks up by, and the readers resolve a denom through
+// the token-catalog's effective layer (lib/denom-symbol.js) — so the stables are keyed by THAT symbol: `USDC.n` (was
+// USDC), `USDt` (was USDT), `EURe` (was EURE). One symbol across products (the LUNA-EURe pot read $0 because the page
+// asked for USDC.n and the feed said USDC). The price canary now anchors by DENOM (the contract names the venue's asset;
+// Astroport's captures already said `USDC.n` where the old anchor list said `USDC`, so the Astroport USDC anchor was
+// blind). The registry ↔ catalog reconciliation becomes a gate the cron keeps: every registry entry with a phoenix-1
+// denom is compared with the catalog's symbol for that denom and the Δ is PUBLISHED as `catalog_symbol_drift` (WBTC →
+// wBTC.atom, WSTETH → wstETH, BNB → wBNB.axl today — visible, not renamed; a stable drifting logs a loud warning).
+// Readers moved in the same delivery: member-data/tla-snapshot IBC_REGISTRY, member-data/dao-dashboard DENOM_MAP,
+// dex-data/epochs-skeletonswap price lookup (denom first), site index.html seed cache (by address), tla-stats T6.7
+// (page bridge dropped), dao_treasury colour map.
 // Home: thealliancedao/platform-crons/network-and-prices → publishes to
 // thealliancedao/tla-core under network-and-prices/. Ported 2026-08-04 from
 // defipatriot/cron-scripts (v2, proven in production since 2026-05); the old
@@ -102,15 +113,15 @@ const XASTRO_DENOM_NEUTRON = 'factory/neutron1zlf3hutsa4qnmue53lz2tfxrutp8y2e3rj
 const TOKEN_REGISTRY = {
     LUNA:    { cgId: 'terra-luna-2',         astroportAddresses: { 'phoenix-1': 'uluna' }, preferChain: 'phoenix-1' },
     // All IBC denom → base traces verified via /ibc/apps/transfer/v1/denom_traces.
-    // USDC: Noble USDC via channel-253. There's also a channel-6 variant (B3504E0...);
+    // USDC.n (catalog symbol, 3.1.0): Noble USDC via channel-253. There's also a channel-6 variant (B3504E0...);
     //       we use channel-253 because it has more TVL on Astroport.
-    USDC:    { cgId: 'usd-coin',             astroportAddresses: { 'phoenix-1': 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB' }, preferChain: 'phoenix-1' },
-    // USDT: erc20/tether/usdt via channel-272 (Astroport prices this one)
-    USDT:    { cgId: 'tether',               astroportAddresses: { 'phoenix-1': 'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5' }, preferChain: 'phoenix-1' },
+    'USDC.n': { cgId: 'usd-coin',             astroportAddresses: { 'phoenix-1': 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB' }, preferChain: 'phoenix-1' },
+    // USDt (catalog symbol, 3.1.0): erc20/tether/usdt via channel-272 (Astroport prices this one)
+    'USDt':  { cgId: 'tether',               astroportAddresses: { 'phoenix-1': 'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5' }, preferChain: 'phoenix-1' },
     WBTC:    { cgId: 'wrapped-bitcoin',      astroportAddresses: { 'phoenix-1': 'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB' }, preferChain: 'phoenix-1' },
     PAXG:    { cgId: 'pax-gold',             astroportAddresses: { 'phoenix-1': 'ibc/0EF5630576C66968EF0787868CF09FD866FAD131BC148D24A148358A85F0EB62' }, preferChain: 'phoenix-1' },
-    // EURE: ueure native, channel-253 from Noble
-    EURE:    { cgId: 'monerium-eur-money-2', astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },   // 3.0.1: was 'euroe-stablecoin' (wrong coin) — see E11
+    // EURe (catalog symbol, 3.1.0): ueure native, channel-253 from Noble
+    'EURe':  { cgId: 'monerium-eur-money-2', astroportAddresses: { 'phoenix-1': 'ibc/8D52B251B447B7160421ACFBD50F6B0ABE5F98D2C404B03701130F12044439A1' }, preferChain: 'phoenix-1' },   // 3.0.1: was 'euroe-stablecoin' (wrong coin) — see E11
     INJ:     { cgId: 'injective-protocol',   astroportAddresses: {}, preferChain: null },
     // F2-forward (owner-sourced 2026-08-21): FUEL is priced ONLY on Astroport's
     // DEX metrics (no CoinGecko listing we trust) — thin pool (~$22K TVL) but
@@ -905,7 +916,8 @@ const CANARY = {
         ['astroport',    'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/astroport/snapshots/current.json'],
         ['skeletonswap', 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/skeletonswap/snapshots/current.json'],
     ],
-    ANCHORS: ['USDC', 'USDT', 'LUNA'],   // anchor at OUR final prices → measures internal consistency
+    ANCHORS: ['USDC.n', 'USDt', 'LUNA'],   // anchor at OUR final prices → measures internal consistency (registry keys)
+    STABLE_ANCHORS: ['USDC.n', 'USDt'],     // a stable anchor without a final prices at 1.0
 };
 
 function runPriceCanary(tokenPrices, dexPayloads) {
@@ -914,7 +926,14 @@ function runPriceCanary(tokenPrices, dexPayloads) {
         const p = t && t.final_price_usd;
         if (Number.isFinite(p) && p > 0) finals[sym] = p;
     }
-    const anchorPrice = (sym) => finals[sym] || (sym === 'USDC' || sym === 'USDT' ? 1.0 : null);
+    const anchorPrice = (sym) => finals[sym] || (CANARY.STABLE_ANCHORS.includes(sym) ? 1.0 : null);
+    // 3.1.0: the venue's asset is matched by DENOM, never by the venue's spelling of the symbol (Astroport says USDC.n,
+    // SkeletonSwap says USDC, the registry said USDC — one asset). denom → registry key; a token the registry does not
+    // hold keeps the venue's symbol (it cannot be in `finals` anyway).
+    const keyByDenom = {};
+    for (const [key, cfg] of Object.entries(TOKEN_REGISTRY)) { const a = cfg.astroportAddresses && cfg.astroportAddresses['phoenix-1']; if (a) keyByDenom[a] = key; }
+    for (const [key, m] of Object.entries(CALCULATED_LST_MARKET_ADDR)) { if (m && m['phoenix-1']) keyByDenom[m['phoenix-1']] = key; }
+    const keyOf = (asset) => (asset && asset.denom && keyByDenom[asset.denom]) || (asset && asset.symbol) || null;
 
     // Collect candidate references: xyk pools pairing a priced token with an anchor.
     const refs = new Map();   // sym -> best {implied, depth, pool, dex, unverified}
@@ -929,9 +948,10 @@ function runPriceCanary(tokenPrices, dexPayloads) {
             if (!Array.isArray(a) || a.length !== 2) continue;
             for (const k of [0, 1]) {
                 const tok = a[k], anc = a[1 - k];
-                if (!CANARY.ANCHORS.includes(anc.symbol)) continue;
-                if (CANARY.ANCHORS.includes(tok.symbol)) continue;   // anchors don't canary each other here
-                const ap = anchorPrice(anc.symbol);
+                const tokKey = keyOf(tok), ancKey = keyOf(anc);
+                if (!CANARY.ANCHORS.includes(ancKey)) continue;
+                if (CANARY.ANCHORS.includes(tokKey)) continue;   // anchors don't canary each other here
+                const ap = anchorPrice(ancKey);
                 if (!ap) continue;
                 const ta = Number(tok.amount_raw) / 10 ** (tok.decimals ?? 6);
                 const aa = Number(anc.amount_raw) / 10 ** (anc.decimals ?? 6);
@@ -939,13 +959,13 @@ function runPriceCanary(tokenPrices, dexPayloads) {
                 const implied = aa * ap / ta;
                 const depth = aa * ap * 2;
                 if (depth < CANARY.MIN_DEPTH_USD) continue;
-                const cur = refs.get(tok.symbol);
+                const cur = refs.get(tokKey);
                 // deepest reference wins; a verified (Astroport) ref beats an
                 // unverified (SS) ref at any depth — trust before size.
                 const better = !cur
                     || (cur.unverified && !unverified)
                     || (cur.unverified === unverified && depth > cur.depth);
-                if (better) refs.set(tok.symbol, { implied, depth, pool: p.pool_name, dex: dexName, anchor: anc.symbol, unverified });
+                if (better) refs.set(tokKey, { implied, depth, pool: p.pool_name, dex: dexName, anchor: ancKey, unverified });
             }
         }
     }
@@ -974,6 +994,31 @@ function runPriceCanary(tokenPrices, dexPayloads) {
         thresholds: { drift_flag_pct: CANARY.DRIFT_FLAG_PCT, min_depth_usd: CANARY.MIN_DEPTH_USD },
         doctrine: 'xyk-only references; concentrated/stable excluded by design; SS refs unverified; canary never changes final prices',
     };
+}
+
+// -----------------------------------------------------------------------------
+// 3.1.0 — REGISTRY ↔ CATALOG SYMBOL GATE (the cron keeps it; the Δ is published)
+// -----------------------------------------------------------------------------
+// The token-catalog's effective layer is THE symbol source on this platform; every reader resolves a denom through it and
+// looks `token_prices` up by that symbol. This registry keys by symbol too, so the two must agree denom by denom. A
+// validation that mattered (USDC.n vs USDC hid a funded pot for weeks) becomes a gate the cron keeps: compare every
+// registry entry that has a phoenix-1 denom with the catalog's symbol for that denom; publish the mismatches as
+// `catalog_symbol_drift` in the snapshot (+ a count in the heartbeat); never fail the run, never rename here — a stable
+// drifting is a loud warning (it breaks pot pricing), the rest is visible until the owner renames the key.
+const CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
+function catalogSymbolDrift(catalog) {
+    if (!catalog || !Array.isArray(catalog.tokens)) return { status: 'skipped', reason: 'token-catalog unavailable', drift: [] };
+    const symByDenom = {};
+    for (const t of catalog.tokens) { const e = t.effective || {}, d = t.discovered || {}; const sym = e.symbol || d.symbol; if (t.denom && sym) symByDenom[t.denom] = sym; }
+    const drift = [], aligned = [];
+    for (const [key, cfg] of Object.entries(TOKEN_REGISTRY)) {
+        const denom = cfg.astroportAddresses && cfg.astroportAddresses['phoenix-1']; if (!denom) continue;
+        const cat = symByDenom[denom];
+        if (!cat) { drift.push({ key, catalog_symbol: null, denom, note: 'denom not in the token-catalog' }); continue; }
+        if (cat !== key) drift.push({ key, catalog_symbol: cat, denom, stable: CANARY.STABLE_ANCHORS.includes(key) || CANARY.STABLE_ANCHORS.includes(cat) });
+        else aligned.push(key);
+    }
+    return { status: 'ok', checked: aligned.length + drift.length, aligned, drift, rule: 'registry key must equal the token-catalog effective symbol of its phoenix-1 denom; mismatches are published, never renamed here' };
 }
 
 // -----------------------------------------------------------------------------
@@ -1137,6 +1182,16 @@ async function captureNetworkAndPrices() {
         priceCanary = { status: 'skipped', reason: e.message.slice(0, 120) };
     }
 
+    // 3.1.0 — registry ↔ catalog symbol gate (published Δ; never fails the run)
+    let symbolGate;
+    try {
+        symbolGate = catalogSymbolDrift(await fetchJsonAbs(CATALOG_URL));
+        if (symbolGate.status === 'ok') {
+            console.log(`  \u2713 catalog symbols: ${symbolGate.aligned.length}/${symbolGate.checked} registry keys match the catalog${symbolGate.drift.length ? '; drift: ' + symbolGate.drift.map(d => `${d.key}→${d.catalog_symbol}`).join(', ') : ''}`);
+            for (const d of symbolGate.drift) if (d.stable) console.warn(`  \u26A0 STABLE SYMBOL DRIFT ${d.key} vs catalog ${d.catalog_symbol} (${d.denom}) — pots priced by the catalog symbol will read this stable as unpriced`);
+        } else console.log(`  (catalog symbol gate skipped: ${symbolGate.reason})`);
+    } catch (e) { symbolGate = { status: 'skipped', reason: e.message.slice(0, 120), drift: [] }; }
+
     const snapshot = {
         schemaVersion: 2,    // v2 — added dual-source price comparison + match_quality + series + refresh metadata
         capturedAt: startedAt.toISOString(),
@@ -1163,6 +1218,7 @@ async function captureNetworkAndPrices() {
         lst_ratios: ratios.ratios,
         token_prices: tokenPrices,
         price_canary: priceCanary,   // v3 additive — see PHASE 6.5
+        catalog_symbol_drift: symbolGate,   // 3.1.0 additive — registry keys vs the token-catalog symbol, by denom
     };
 
     const content = JSON.stringify(snapshot, null, 2);
@@ -1221,6 +1277,7 @@ async function captureNetworkAndPrices() {
                 source_failures: sourceFailures,
                 price_canary_flags: (priceCanary && priceCanary.flagged) ? priceCanary.flagged.length : 0,
                 price_canary_symbols: (priceCanary && priceCanary.flagged) ? priceCanary.flagged.map(f => f.symbol) : [],
+                catalog_symbol_drift: (symbolGate && symbolGate.drift) ? symbolGate.drift.length : null,   // 3.1.0
             },
             // Freshness-monitoring fields (catches oracle-frozen failures)
             dataFingerprint,
@@ -1269,6 +1326,6 @@ if (require.main === module) {
 // real fixtures; it must never re-implement them (no-third-copy doctrine).
 module.exports = {
     assemblePriceTable, classifyMatchQuality, computeDataFingerprint,
-    classifyFreshness, runPriceCanary, CANARY,
+    classifyFreshness, runPriceCanary, CANARY, catalogSymbolDrift,
     TOKEN_REGISTRY, CALCULATED_TOKENS, OUT_BASE, GITHUB_REPO,
 };

@@ -1,3 +1,13 @@
+# 3.1.0 — 2026-09-21 — stables keyed by the CATALOG symbol; canary anchored by denom; registry ↔ catalog gate
+
+`token_prices` keys `USDC.n` / `USDt` / `EURe` (were USDC / USDT / EURE) — the token-catalog effective symbols every
+reader resolves a denom to (TLA queue item 1). The price canary matches venue assets by DENOM (`keyOf`), so Astroport's
+`USDC.n` spelling and SkeletonSwap's `USDC` both anchor the same Noble denom. NEW `catalogSymbolDrift`: every registry
+entry with a phoenix-1 denom vs the catalog's symbol, published as `snapshot.catalog_symbol_drift` +
+`heartbeat.stats.catalog_symbol_drift`; a stable drifting warns loudly, nothing renames itself, the run never fails on it.
+Readers moved in the same delivery: member-data 1.2.1, dex-data 1.4.4, site index 4.38 / tla-stats T6.7 / dao_treasury 3.3.
+Gate: mock-run.js 34/34 (fixture token-prices.json re-keyed to the 3.1.0 output).
+
 # 3.0.3 — 2026-09-10 — legacy reads removed; provenance gate retired
 
 The two remaining reads of `defipatriot/network-and-prices-data_2026` (one-time ratio-history seed; heartbeat
