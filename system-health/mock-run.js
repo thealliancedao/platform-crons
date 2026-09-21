@@ -77,6 +77,7 @@ function healthyRepo() {
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),      // 1.0.6: nft-collections paths
         'pixel-lions/snapshots/heartbeat.json': H('2026-07-16T11:15:00Z'),   // 1.0.9: org-nft-inventory-liondao
+        'lion-dao/positions/heartbeat.json':    { product: 'lion-dao/positions', engine: '1.0.2', status: 'ok', capturedAt: '2026-07-16T11:20:00Z', wallets: 5, known_usd: 188105.31, errors: 0 },   // 1.0.10: org-ally-positions-liondao (real heartbeat shape, 2026-09-21)
         // 1.0.9 INV8 fixture: two collections; a two-month aDAO ledger where #1 was listed then delisted, #2 listed on bbl and
         // still open, #3 listed on atrium and sold; #4 listed then transferred (closed). The inventory agrees: only #2 listed.
         'docs/curated/tenants.json': { tenants: { adao: { collections: ['adao'] }, liondao: { collections: ['pixel-lions'] } } },
@@ -279,6 +280,18 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     out = await M.run();
     check('R8f one collection without a ledger → that collection skipped with a reason, the other still judged', out.invariants.nft_listings_reconcile.measured['pixel-lions'].status === 'skipped' && out.invariants.nft_listings_reconcile.measured.adao.status === 'ok' && out.invariants.nft_listings_reconcile.status === 'ok');
     check('R8 PL inventory heartbeat row present in FRESHNESS_MAP (org-nft-inventory-liondao)', M.FRESHNESS_MAP.some(r => r.product === 'nft-inventory-pixel-lions' && r.repo === 'thealliancedao/nft-collections'));
+    // 1.0.10: the tenant-keyed positions cron is a row, read from dao-originations, judged fresh on the real heartbeat shape,
+    // and FAILED (not green) when its own status says so — the 1.0.7 rule extends to it unchanged.
+    check('R9 ally-positions-liondao row present in FRESHNESS_MAP (dao-originations)', M.FRESHNESS_MAP.some(r => r.product === 'ally-positions-liondao' && r.repo === 'thealliancedao/dao-originations' && r.path === 'lion-dao/positions/heartbeat.json'));
+    { REPO = fixNotTla(healthyRepo()); WRITES = {}; REPO_HITS = {};
+      const out = await M.run();
+      const row = out.invariants.heartbeat_freshness.measured.find(r => r.product === 'ally-positions-liondao');
+      check('R9 ally-positions-liondao judged fresh from capturedAt', row && row.status === 'fresh' && row.hb_status === 'ok', row);
+      check('R9 ally-positions-liondao read from dao-originations', REPO_HITS['lion-dao/positions/heartbeat.json'] === 'thealliancedao/dao-originations', REPO_HITS['lion-dao/positions/heartbeat.json']);
+      REPO['lion-dao/positions/heartbeat.json'] = { product: 'lion-dao/positions', engine: '1.0.2', status: 'failed', capturedAt: '2026-07-16T11:20:00Z', wallets: 5, errors: 3 };
+      const out2 = await M.run();
+      const inv2 = out2.invariants.heartbeat_freshness; const row2 = inv2.measured.all.find(r => r.product === 'ally-positions-liondao');
+      check('R9 ally-positions-liondao fresh-but-failed → FAILED + raised', inv2.status === 'violation' && row2 && row2.status === 'FAILED' && row2.hb_status === 'failed' && inv2.measured.stale.length === 1 && inv2.measured.stale[0].product === 'ally-positions-liondao', row2); }
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);
