@@ -159,6 +159,13 @@ Without `GITHUB_TOKEN` it writes local `token-catalog.json` + `heartbeat.json` o
 
 ## Recent changes
 
+- **repair-oracle-symbol.js (one-off, 2026-09-21)** — when the catalog renames a symbol (Noble USDC `USDC` → `USDC.n` on
+  2026-08-28), the oracle's earlier days sit under the old key and every catalog-resolving reader sees "no row". The tool
+  gives those days a row under the catalog symbol, copied verbatim and labeled (`aliased_from`, `repair`), labels the old row
+  `superseded_by` (never deletes), records one `meta.repairs` entry per month file and rebuilds `series/<symbol>.json` in the
+  cron's shape. Run locally on a fresh tla-core checkout; commit the changed files. Gate: `mock-run-repair-oracle-symbol.js`
+  (TLA_CORE_DIR; runs member-data's real epoch-history fold to prove the bribe join prices E188–E199).
+
 - **1.4.2-stage3.1** — concurrent-write hardening. Commit now retries on GitHub
   409/422 sha-conflict (multiple crons write to tla-core; a file's sha can change
   between our GET and PUT). Re-fetches fresh sha and retries up to 5x. No
