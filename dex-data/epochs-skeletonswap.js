@@ -209,10 +209,11 @@ function isoDate(ms) { return new Date(ms).toISOString().slice(0, 10); }
 // PRICE LOOKUP (verbatim legacy — SS symbol idiosyncrasies + ampROAR derivation)
 // -----------------------------------------------------------------------------
 
-//    SS pool_assets[].symbol → canonical symbol used in network-and-prices.json:
-//      - USDt        → USDT          (case)
+//    SS pool_assets[].symbol → key used in network-and-prices.json (denom-first since 2026-09-21; the table is the fallback):
+//      - USDC        → USDC.n        (catalog symbol, 3.1.0)
+//      - USDt        → USDt          (catalog symbol, 3.1.0)
 //      - wstETH      → WSTETH        (case)
-//      - EURe        → EURE          (case)
+//      - EURe        → EURe          (catalog symbol, 3.1.0)
 //      - wBTC.osmo   → WBTC          (different bridge, same underlying)
 //      - wBTC.axl    → WBTC          (different bridge, same underlying)
 //      - ampROAR     → derived: ROAR_usd × lst_ratios.ampROAR.ratio
@@ -222,14 +223,23 @@ function buildPriceLookup(napData) {
   const lstRatios = napData.lst_ratios || {};
 
   const lookup = {};
+  // 2026-09-21 (TLA queue item 1): network-and-prices 3.1.0 keys the stables by the token-catalog symbol (USDC.n / USDt /
+  // EURe) while SkeletonSwap spells the same denoms USDC / USDt / EURe. The venue's spelling is not the identity — the denom
+  // is. So the lookup is keyed by DENOM first (every feed entry carries its phoenix-1 address) and computePoolTvl asks by
+  // the asset's denom before its symbol; the symbol table stays for assets the feed holds without an address.
+  const byDenom = {};
   for (const [name, entry] of Object.entries(tokenPrices)) {
     const price = entry?.prices?.astroport?.final_price_usd
       ?? entry?.final_price_usd
       ?? null;
     if (price != null) {
       lookup[name.toLowerCase()] = price;
+      const addr = entry?.prices?.astroport?.address || entry?.prices?.astroport?.all_chains?.['phoenix-1']?.address || null;
+      if (addr) byDenom[addr] = price;
+      if (name === 'LUNA') byDenom['uluna'] = price;
     }
   }
+  Object.defineProperty(lookup, '__byDenom', { value: byDenom, enumerable: false });
 
   const alias = (from, to) => {
     if (lookup[to.toLowerCase()] != null) lookup[from.toLowerCase()] = lookup[to.toLowerCase()];
@@ -239,7 +249,8 @@ function buildPriceLookup(napData) {
   alias('eure',         'EURE');
   alias('wbtc.osmo',    'WBTC');
   alias('wbtc.axl',     'WBTC');
-  alias('axlusdc',      'USDC');     // Axelar-bridged USDC, par with native USDC
+  alias('axlusdc',      'USDC.n');   // Axelar-bridged USDC, par with native USDC (feed key = the catalog symbol since 3.1.0)
+  alias('usdc',         'USDC.n');   // SkeletonSwap's spelling of the Noble denom — denom-first lookup makes this a fallback
   alias('astro.cw20',   'ASTRO');    // legacy CW20 ASTRO, same underlying token
 
   const roarPrice = lookup['roar'];
@@ -255,6 +266,12 @@ function priceForSymbol(symbol, lookup) {
   if (!symbol) return null;
   const v = lookup[symbol.toLowerCase()];
   return (typeof v === 'number' && isFinite(v)) ? v : null;
+}
+// denom first (the contract is the identity), the venue's symbol second
+function priceForAsset(asset, lookup) {
+  const bd = lookup && lookup.__byDenom; const d = asset && asset.denom;
+  if (bd && d && typeof bd[d] === 'number' && isFinite(bd[d])) return bd[d];
+  return priceForSymbol(asset && asset.symbol, lookup);
 }
 
 // -----------------------------------------------------------------------------
@@ -282,7 +299,7 @@ function computePoolTvl(poolMeta, chainData, priceLookup) {
   let tvl = 0;
   for (let i = 0; i < 2; i++) {
     const a = assets[i];
-    const price = priceForSymbol(a.symbol, priceLookup);
+    const price = priceForAsset(a, priceLookup);
     const rawAmount = i === 0 ? chainData.reserve_0 : chainData.reserve_1;
     if (price == null) {
       missing.push(a.symbol);
@@ -841,7 +858,7 @@ module.exports = {
   main: captureSkeletonswapSeries,
   // Exposed for the mock gate ONLY (real-fixture parity tests). Not a public API.
   _test: { buildWeekly, buildMonthly, buildSixDayAvg, buildDaily, parseCSV,
-           buildPriceLookup, computePoolTvl, getEpochNumber, classifyFreshness },
+           buildPriceLookup, computePoolTvl, priceForAsset, getEpochNumber, classifyFreshness },
 };
 if (require.main === module) captureSkeletonswapSeries()
   .then(() => process.exit(0))

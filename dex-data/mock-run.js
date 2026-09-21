@@ -470,6 +470,30 @@ NET.pools_list = () => ([
         E.CH.queryContract = baseQC; E.CH.fetchJson = baseFJ;
     }
 
+    // ---- 1.4.4 (2026-09-21, TLA queue item 1): SS pool assets priced by DENOM first — the feed keys the stables by the catalog symbol
+    {
+        const ES = require('./epochs-skeletonswap.js')._test;
+        const NOBLE = 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB';
+        const nap = { token_prices: {
+            LUNA: { final_price_usd: 0.05, prices: { astroport: { price_usd: 0.05, address: 'uluna' } } },
+            'USDC.n': { final_price_usd: 0.9998, prices: { astroport: { price_usd: 0.9998, address: NOBLE } } },
+            'USDt': { final_price_usd: 0.9997, prices: { astroport: { price_usd: 0.9997, address: 'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5' } } },
+            SOLID: { final_price_usd: 1.0, prices: { astroport: { price_usd: 1.0, address: 'terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst' } } },
+        }, lst_ratios: {} };
+        const L = ES.buildPriceLookup(nap);
+        assert(L['usdc.n'] === 0.9998 && L['usdc'] === 0.9998 && L['usdt'] === 0.9997 && L['axlusdc'] === 0.9998, '1.4.4: symbol table keys the catalog symbol; SS spellings (usdc, axlusdc) fall back onto it');
+        const meta = { pool_assets: [{ symbol: 'LUNA', denom: 'uluna', decimals: 6 }, { symbol: 'USDC', denom: NOBLE, decimals: 6 }] };   // SkeletonSwap's spelling of the Noble denom
+        const tv = ES.computePoolTvl(meta, { reserve_0: '1000000000', reserve_1: '50000000' }, L);
+        assert(tv.tvl_usd === Math.round((1000 * 0.05 + 50 * 0.9998) * 100) / 100 && tv.missing.length === 0, '1.4.4: LUNA-USDC (SS) TVL prices the USDC side by DENOM → the USDC.n feed price', tv);
+        const metaNoDenom = { pool_assets: [{ symbol: 'LUNA', decimals: 6 }, { symbol: 'USDt', decimals: 6 }] };
+        const tv2 = ES.computePoolTvl(metaNoDenom, { reserve_0: '1000000000', reserve_1: '50000000' }, L);
+        assert(tv2.tvl_usd != null && tv2.missing.length === 0, '1.4.4: an asset without a denom still prices by its symbol (case-insensitive, USDt)', tv2);
+        const metaUnknown = { pool_assets: [{ symbol: 'LUNA', denom: 'uluna', decimals: 6 }, { symbol: 'MEME', denom: 'terra1meme', decimals: 6 }] };
+        const tv3 = ES.computePoolTvl(metaUnknown, { reserve_0: '1000000000', reserve_1: '50000000' }, L);
+        assert(tv3.tvl_usd === null && tv3.missing.join() === 'MEME', '1.4.4: an unpriced asset still yields an honest null TVL with the symbol named', tv3);
+        assert(ES.priceForAsset({ symbol: 'WRONG', denom: NOBLE }, L) === 0.9998, '1.4.4: the denom wins over a wrong symbol (the contract is the identity)');
+    }
+
     console.log('\n' + '='.repeat(60));
     console.log(failed ? `❌ mock gate: ${passed} passed, ${failed} failed` : `✅ mock gate: ${passed} passed, 0 failed`);
     process.exit(failed ? 1 : 0);
