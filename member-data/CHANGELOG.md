@@ -1,5 +1,15 @@
 # member-data — changelog
 
+## 1.2.1 — 2026-09-21 — stables named by the catalog symbol (TLA queue item 1)
+
+- tla-snapshot `IBC_REGISTRY`: `USDC` → `USDC.n`, `USDT` → `USDt`, `EURE` → `EURe` — the token-catalog's effective symbols.
+  network-and-prices 3.1.0 keys `token_prices` by them, and the PriceResolver's direct lookup would otherwise miss the
+  stables and fall to pool-derived / prev-daily prices. `lp_health.asset_N.symbol` on the stable pools now reads the catalog
+  symbol (the pool names already did: LUNA-USDC.n).
+- dao-dashboard 1.8 `DENOM_MAP`: Noble USDC → `USDC.n` (treasury token named and priced by the catalog symbol). dao_treasury
+  3.3 normalizes `USDC.n` = `USDC` in its "What changed" matching so the rename does not read as a DAO action across the
+  boundary; `token_prices` in the dashboard product keys `USDC.n` from this run on (older epoch snapshots keep `USDC`).
+
 ## 1.1.3 — 2026-09-13 — dao-dashboard reads the aDAO NFT products from nft-collections/adao/
 
 - dao-dashboard 1.7: `summary.json` + `nft-analytics.json` (the NFT strips) now come from `thealliancedao/nft-collections/adao/snapshots/`; tla-core/nfts/adao is gone. No other change. mock-run-last-claims identical to 1.1.2.

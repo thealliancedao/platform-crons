@@ -116,7 +116,7 @@ const LION_ALLIANCE_META = {
 const DENOM_MAP = {
     'uluna': { symbol: 'LUNA', decimals: 6 },
     'ibc/8D8A7F7253615E5F76CB6252A1E1BD921D5EDB7BBAAF8913FB1C77FF125D9995': { symbol: 'ASTRO', decimals: 6 },
-    'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB': { symbol: 'USDC', decimals: 6 },
+    'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB': { symbol: 'USDC.n', decimals: 6 },   // 1.8 (2026-09-21): catalog symbol — network-and-prices 3.1.0 keys token_prices by it; dao_treasury 3.3 normalizes USDC.n = USDC across the rename
     'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB': { symbol: 'wBTC', decimals: 8 },
     'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct': { symbol: 'ampLUNA', decimals: 6 },
     'terra1t4p3u8khpd7f8qzurwyafxt648dya6mp6vur3vaapswt6m24gkuqrfdhar': { symbol: 'CAPA', decimals: 6 },
@@ -747,7 +747,7 @@ async function main() {
 
     const payload = {
         meta: {
-            version: 'dao-dashboard-1.7-nftc',   // 1.7 (2026-09-13): NFT strips read nft-collections/adao/
+            version: 'dao-dashboard-1.8-nftc',   // 1.8 (2026-09-21): treasury USDC priced + named by the catalog symbol USDC.n · 1.7 (2026-09-13): NFT strips read nft-collections/adao/
             epoch,
             phase: 'live',
             generated_at: new Date().toISOString(),
