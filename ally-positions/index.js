@@ -29,7 +29,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const TENANT = process.env.TENANT || 'liondao';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/dao-originations';
@@ -77,7 +77,8 @@ async function readDelegations(wallet, ctx) {
   if (!dl) return { rows: null, luna: null, usd_value: null, rewards_luna: null, rewards_usd: null, error: lastLcdError[`/cosmos/staking/v1beta1/delegations/${wallet}?pagination.limit=100`] || 'delegations read failed' };
   const rewardsBy = {}; for (const r of (rw && rw.rewards) || []) rewardsBy[r.validator_address] = sum((r.reward || []).filter(c => c.denom === 'uluna').map(c => num(c.amount) / 1e6));
   const rows = (dl.delegation_responses || []).map(r => { const v = r.delegation.validator_address; const luna = num(r.balance.amount) / 1e6; return { validator: v, own_validator: v === ctx.validator, luna, usd_value: ctx.lunaPriceUsd != null ? luna * ctx.lunaPriceUsd : null, rewards_luna: rewardsBy[v] != null ? rewardsBy[v] : null, rewards_usd: rewardsBy[v] != null && ctx.lunaPriceUsd != null ? rewardsBy[v] * ctx.lunaPriceUsd : null }; });
-  return { rows, luna: sum(rows.map(r => r.luna)), usd_value: sum(rows.map(r => r.usd_value)), rewards_luna: sum(rows.map(r => r.rewards_luna)), rewards_usd: sum(rows.map(r => r.rewards_usd)), price_basis: 'LUNA at network-and-prices' };
+  const z = (v) => (v == null && rows.length === 0 ? 0 : v);   // a successful read with no delegations is 0; null is reserved for a failed read
+  return { rows, luna: z(sum(rows.map(r => r.luna))), usd_value: z(sum(rows.map(r => r.usd_value))), rewards_luna: z(sum(rows.map(r => r.rewards_luna))), rewards_usd: z(sum(rows.map(r => r.rewards_usd))), price_basis: 'LUNA at network-and-prices' };
 }
 async function readValidatorCommission(ctx) {
   if (!ctx.validator) return null;
