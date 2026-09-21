@@ -1,0 +1,8 @@
+{
+  "name": "ally-positions",
+  "version": "1.0.0",
+  "description": "Positions for an ally's wallet roster (tenants.json) — one Render service per ally: TENANT=<slug> node index.js",
+  "main": "index.js",
+  "scripts": { "start": "node index.js", "mock": "node mock-run.js" },
+  "license": "MIT"
+}
