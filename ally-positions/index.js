@@ -20,6 +20,8 @@
  *   - GATE #0 BY SECTION. The wallet total hid two errors cancelling (ours short on balances + Credia, theirs short on five
  *     compounder receipts priced $0). reconciliation now publishes ours vs theirs per SECTION per wallet (balances · tla ·
  *     compounder · locks · credia · votion) with `reference_as_of` (the fixture's date) and their own $0-with-amount rows.
+ * 1.1.1: `daily/index.json` — depth is a product: every page's trend reads this series (one small row per archived day,
+ *   merged never-shrink, same-day overwrite) instead of fetching every daily file.
  * 1.0.1: LCD read errors surfaced on the row, validator account skips the TLA engine, gate-#0 reference from tenants.json.
  * ----------------------------------------------------------------------------
  * ONE engine, one Render service per ally: `TENANT=liondao node ally-positions/index.js`. The roster, the validator, the
@@ -49,7 +51,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
 const C = require('../config/contracts.js');
 const COMPOUNDER_PREFIX = `factory/${C.COMPOUNDER.addr}/`;
 const CREDIA_PORTFOLIO = C.CREDIA.portfolio;
@@ -288,6 +290,26 @@ async function run(opts = {}) {
     errors: Object.values(wallets).flatMap(w => (w.portfolio && w.portfolio._errors || []).map(e => ({ wallet: w.label, error: e }))) };
   return doc;
 }
+// 1.1.1 — one row per day for the charts (never-shrink: an existing day is overwritten by the same day only, never dropped)
+function seriesRow(doc) {
+  const R = doc.rollup && doc.rollup.dao || {}; const W = doc.wallets || {};
+  const vp = sum(Object.keys(W).map(a => { const s = W[a].portfolio && W[a].portfolio.summary; return s ? s.voting_power_human : null; }));
+  const roar = Object.keys(W).map(a => (W[a].balances || []).find(b => b.symbol === 'ROAR')).find(Boolean);
+  const rc = doc.reconciliation;
+  return { capturedAt: doc.capturedAt, engine: doc.engine, known_usd: R.known_usd, liabilities_usd: R.liabilities_usd == null ? null : R.liabilities_usd,
+    by_section: { balances_usd: R.balances_usd, tla_staked_usd: R.tla_staked_usd, tla_compounder_usd: R.tla_compounder_usd, tla_locked_usd: R.tla_locked_usd, tla_pending_usd: R.tla_pending_usd, delegations_usd: R.delegations_usd, credia_collateral_usd: R.credia_collateral_usd, credia_debt_usd: R.credia_debt_usd, votion_usd: R.votion_usd },
+    by_wallet: Object.fromEntries(Object.keys(W).map(a => [a, W[a].totals ? W[a].totals.known_usd : null])), vp,
+    prices: { luna_usd: doc.prices ? doc.prices.luna_usd : null, roar_usd: roar ? roar.price_usd : null },
+    validator_commission_luna: doc.validator ? doc.validator.commission_unclaimed_luna : null,
+    recon_delta_usd: rc && num(rc.ours_total_known_usd) != null && num(rc.theirs_total_usd) != null ? rc.ours_total_known_usd - rc.theirs_total_usd : null };
+}
+function mergeSeries(existing, d, row, product) {
+  const s = existing && existing.days ? JSON.parse(JSON.stringify(existing)) : { product: product + '/daily', engine: VERSION, note: 'one row per archived day — known value, liabilities, by section, by wallet, VP, prices, validator commission, gate-#0 delta; the pages chart THIS, never the daily files. Never-shrink: a day is overwritten only by that same day.', days: {} };
+  s.engine = VERSION; s.days[d] = row; s.updatedAt = row.capturedAt; s.day_count = Object.keys(s.days).length;
+  const sorted = {}; Object.keys(s.days).sort().forEach(k => { sorted[k] = s.days[k]; }); s.days = sorted;
+  return s;
+}
+async function readJson(filePath) { try { const ex = await gh('GET', `/repos/${GITHUB_REPO}/contents/${filePath}?ref=${GITHUB_BRANCH}`); return JSON.parse(Buffer.from(ex.content || '', 'base64').toString()); } catch (e) { if (e.status === 404) return null; throw e; } }
 async function main() {
   const doc = await run();
   const content = JSON.stringify(doc, null, 1); const d = day();
@@ -296,7 +318,9 @@ async function main() {
   if (!GITHUB_TOKEN) { fs.mkdirSync('out', { recursive: true }); fs.writeFileSync('out/current.json', content); fs.writeFileSync('out/heartbeat.json', hb); console.log('⚠️  GITHUB_TOKEN not set — wrote out/'); return; }
   console.log(`  current.json → ${await publish(`${root}/current.json`, content, `🦁 ${TENANT} positions ${doc.capturedAt}`)}`);
   console.log(`  daily/${d}.json → ${await publish(`${root}/daily/${d}.json`, content, `📸 ${TENANT} positions daily — ${d}`)}`);
+  const series = mergeSeries(await readJson(`${root}/daily/index.json`), d, seriesRow(doc), root);
+  console.log(`  daily/index.json (${series.day_count} days) → ${await publish(`${root}/daily/index.json`, JSON.stringify(series, null, 1), `📈 ${TENANT} positions series — ${d}`)}`);
   console.log(`  heartbeat → ${await publish(`${root}/heartbeat.json`, hb, `💓 ${TENANT} positions heartbeat`)}`);
 }
-module.exports = { VERSION, run, loadContext, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP };
+module.exports = { VERSION, run, loadContext, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });

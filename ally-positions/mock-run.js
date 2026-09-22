@@ -107,6 +107,12 @@ let pass = 0, fail = 0; const chk = (m, c, x) => { if (c) { pass++; console.log(
   chk("1.1.0 gate #0 by section: credia = their collateral $10,204 vs ours (receipt read) " + rr.sections.credia.ours_usd.toFixed(0), rr.sections.credia.theirs_usd > 10000 && rr.sections.credia.ours_usd > 3000, rr.sections.credia);
   chk('1.1.0 gate #0 by section: by_section totals present for all six, reference_as_of = the fixture folder date', ['balances', 'tla', 'compounder', 'locks', 'credia', 'votion'].every(s => rc.by_section[s] && 'delta_usd' in rc.by_section[s]) && rc.reference_as_of === '2026-09-21', [rc.reference_as_of, rc.by_section]);
   chk('1.1.0 sources block: credia markets (11) + as-of, feed denoms indexed, known_cw20s count', doc.sources && doc.sources.credia_markets === 11 && doc.sources.feed_denoms_indexed > 10 && doc.sources.known_cw20s === 1, doc.sources);
+  // ---- 1.1.1 the daily series
+  { const row = P.seriesRow(doc); const d = doc.capturedAt.slice(0, 10);
+    chk('1.1.1 series row: known, liabilities, by_section (9 keys), by_wallet (5), VP, prices, commission, recon delta', row.known_usd === doc.rollup.dao.known_usd && Object.keys(row.by_section).length === 9 && Object.keys(row.by_wallet).length === 5 && row.vp > 1e6 && row.prices.luna_usd > 0 && row.prices.roar_usd > 0 && row.validator_commission_luna === 2000.0000005 && typeof row.recon_delta_usd === 'number', row);
+    const s1 = P.mergeSeries(null, d, row, doc.product); const older = Object.assign({}, row, { known_usd: 1 });
+    const s2 = P.mergeSeries(s1, '2026-09-01', older, doc.product); const s3 = P.mergeSeries(s2, d, row, doc.product);
+    chk('1.1.1 series merge: never-shrink (older day kept), same-day overwrite, days sorted, day_count right', s1.day_count === 1 && s2.day_count === 2 && s3.day_count === 2 && Object.keys(s3.days)[0] === '2026-09-01' && s3.days[d].known_usd === row.known_usd && s3.days['2026-09-01'].known_usd === 1 && s3.product === 'lion-dao/positions/daily', Object.keys(s3.days)); }
   fs.mkdirSync('out', { recursive: true }); fs.writeFileSync('out/positions-mock-current.json', JSON.stringify(doc, null, 1));
   console.log(`\n${pass} passed, ${fail} failed · out/positions-mock-current.json`); process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
