@@ -1,1 +1,31 @@
-
+# One-shot (re-runnable) history backfill for an ally from an ARCHIVE LCD — state-at-height reads, never a tx index.
+# Run from the Actions tab (workflow_dispatch). Secrets: ARCHIVE_LCD (an archive LCD URL that serves historical heights),
+# DAOO_TOKEN (fine-grained PAT, dao-originations Contents write — the same one org-ally-positions-liondao uses).
+# Output: dao-originations/<dao>/history/daily.json, never-shrink; a day the node no longer serves is skipped, never invented.
+name: liondao-history-backfill
+on:
+  workflow_dispatch:
+    inputs:
+      tenant: { description: 'tenant slug (tenants.json)', default: 'liondao', required: true }
+      from: { description: 'first UTC day (YYYY-MM-DD)', default: '2023-09-01', required: true }
+      to: { description: 'last UTC day (YYYY-MM-DD)', default: '2026-09-21', required: true }
+      step_days: { description: 'sample every N days (1 = daily; 7 for a first pass on a slow node, then re-run with 1)', default: '1', required: true }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: backfill
+        working-directory: ally-positions
+        env:
+          TENANT: ${{ github.event.inputs.tenant }}
+          FROM: ${{ github.event.inputs.from }}
+          TO: ${{ github.event.inputs.to }}
+          STEP_DAYS: ${{ github.event.inputs.step_days }}
+          ARCHIVE_LCD: ${{ secrets.ARCHIVE_LCD }}
+          GITHUB_TOKEN: ${{ secrets.DAOO_TOKEN }}
+          GITHUB_REPO: thealliancedao/dao-originations
+        run: node --max-old-space-size=512 backfill.js
