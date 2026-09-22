@@ -1,7 +1,9 @@
 # One-shot (re-runnable) history backfill for an ally from an ARCHIVE LCD — state-at-height reads, never a tx index.
-# Run from the Actions tab (workflow_dispatch). Secrets: ARCHIVE_LCD (an archive LCD URL that serves historical heights),
-# DAOO_TOKEN (fine-grained PAT, dao-originations Contents write — the same one org-ally-positions-liondao uses).
-# Output: dao-originations/<dao>/history/daily.json, never-shrink; a day the node no longer serves is skipped, never invented.
+# THE ARCHIVE IS A COURTESY (owner, 2026-09-22): this job is MANUAL ONLY (no schedule, ever), one run at a time, hard-timed,
+# and the script throttles itself (≤ RPS req/s sequential, ceiling 4), backs off on 429/5xx, stops after a few consecutive
+# refusals, and caps requests + minutes per run — partial results are merged never-shrink, so a stopped run loses nothing.
+# Secrets: ARCHIVE_LCD (the archive LCD URL — lives ONLY here, never on a Render service), DAOO_TOKEN (dao-originations PAT).
+# Output: dao-originations/<dao>/history/daily.json; a day the node no longer serves is skipped, never invented.
 name: liondao-history-backfill
 on:
   workflow_dispatch:
@@ -9,23 +11,34 @@ on:
       tenant: { description: 'tenant slug (tenants.json)', default: 'liondao', required: true }
       from: { description: 'first UTC day (YYYY-MM-DD)', default: '2023-09-01', required: true }
       to: { description: 'last UTC day (YYYY-MM-DD)', default: '2026-09-21', required: true }
-      step_days: { description: 'sample every N days (1 = daily; 7 for a first pass on a slow node, then re-run with 1)', default: '1', required: true }
+      step_days: { description: 'sample every N days (7 for a first pass, then 1)', default: '7', required: true }
+      rps: { description: 'requests per second to the archive (ceiling 4 — the script clamps)', default: '2', required: true }
+      max_requests: { description: 'stop the run after this many requests (ceiling 20000)', default: '5000', required: true }
+      max_minutes: { description: 'stop the run after this many minutes (ceiling 240)', default: '60', required: true }
+concurrency:
+  group: liondao-history-backfill
+  cancel-in-progress: false   # never two runs against the archive at once; a second click waits, it does not double the load
 jobs:
   backfill:
+    if: github.event_name == 'workflow_dispatch'   # belt and braces: nothing but a person's click runs this
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 250   # a hard wall above the script's own MAX_MINUTES ceiling; the runner kills a stuck job
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - name: backfill
+        with: { node-version: '22' }
+      - name: backfill (manual, throttled, capped)
         working-directory: ally-positions
         env:
+          RUN_MODE: manual
           TENANT: ${{ github.event.inputs.tenant }}
           FROM: ${{ github.event.inputs.from }}
           TO: ${{ github.event.inputs.to }}
           STEP_DAYS: ${{ github.event.inputs.step_days }}
+          RPS: ${{ github.event.inputs.rps }}
+          MAX_REQUESTS: ${{ github.event.inputs.max_requests }}
+          MAX_MINUTES: ${{ github.event.inputs.max_minutes }}
           ARCHIVE_LCD: ${{ secrets.ARCHIVE_LCD }}
           GITHUB_TOKEN: ${{ secrets.DAOO_TOKEN }}
           GITHUB_REPO: thealliancedao/dao-originations
-        run: node --max-old-space-size=512 backfill.js
+        run: timeout --signal=TERM 245m node --max-old-space-size=512 backfill.js
