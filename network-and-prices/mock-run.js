@@ -149,5 +149,23 @@ assert(s2.dataFreshness === 'suspicious' && s2.consecutiveStuckRuns === 2, 'same
 const s3 = M.classifyFreshness(fp, { dataFingerprint: fp, consecutiveStuckRuns: 2 });
 assert(s3.dataFreshness === 'stuck' && s3.consecutiveStuckRuns === 3, 'same fp ×3 → stuck');
 
+console.log('\n=== 3.1.1: USDC.inj registered; every token entry carries its phoenix-1 denom ===');
+const USDC_INJ = 'ibc/E8481AD838C31D4FC12A504B10F9B4E2F830F8818D2735C2FFC707579B5FA60B';
+assert(M.TOKEN_REGISTRY['USDC.inj'] && M.TOKEN_REGISTRY['USDC.inj'].cgId === 'usd-coin' && M.TOKEN_REGISTRY['USDC.inj'].astroportAddresses['phoenix-1'] === USDC_INJ,
+    'registry: USDC.inj keyed by the catalog spelling, CoinGecko usd-coin, phoenix-1 denom ibc/E8481AD…');
+{   // CG has usd-coin; Astroport has nothing for the denom (the live pools are empty) → cg_only, priced ~1.0, denom published
+    const tp = M.assemblePriceTable({ astroData: {}, cgData: { 'usd-coin': { usd: 0.9998, usd_24h_change: 0 }, 'stride-staked-atom': { usd: 3.6 } }, lstRatios: {} });
+    const inj = tp['USDC.inj'], st = tp['STATOM'];
+    assert(inj && inj.final_price_usd === 0.9998 && inj.final_source === 'coingecko' && inj.match_quality === 'cg_only' && inj.denom === USDC_INJ,
+        'USDC.inj with no Astroport market → cg_only at the CG price, `denom` published at the root', inj && [inj.final_source, inj.match_quality, inj.denom]);
+    assert(st && st.denom === null && st.final_price_usd === 3.6, 'a registry entry with no phoenix-1 address publishes denom: null (honest — nothing to key on)', st && st.denom);
+    assert(Object.values(tp).every(e => 'denom' in e), 'every token_prices entry carries the `denom` field (3.1.1 additive)');
+}
+{   // the drift gate names USDC.inj as not-in-catalog until the catalog carries the denom — that is the watch, not a failure
+    const g = M.catalogSymbolDrift({ tokens: [{ denom: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB', effective: { symbol: 'USDC.n' } }] });
+    const d = g.drift.find(x => x.key === 'USDC.inj');
+    assert(g.status === 'ok' && d && d.catalog_symbol === null && /not in the token-catalog/.test(d.note), 'catalog gate: USDC.inj published as `denom not in the token-catalog` (never fails the run)', d);
+}
+
 console.log(`\nGATE: ${passed}/${passed + failed} passed${failed ? ' — FAIL' : ' — ALL GREEN'}\n`);
 process.exit(failed ? 1 : 0);

@@ -1,5 +1,13 @@
 // =============================================================================
-// Network & Prices Cron — 3.1.0 (2026-09-21: stables keyed by the CATALOG symbol; canary anchored by denom)
+// Network & Prices Cron — 3.1.1 (2026-09-22: USDC.inj registered; every token_prices entry carries its phoenix-1 `denom`)
+// 3.1.1 — Lion DAO positions audit (2026-09-21 late): Ryan's wallet holds 19,349 USDC.inj (ibc/E8481AD…, the Injective
+// route of USDC that the USDC.n → USDC.inj migration lands people on) and no product could price it. Registered here by
+// its catalog spelling (the token-catalog does not carry the denom yet — catalog_symbol_drift will say so until it
+// does; that is the watch). Astroport lists LUNA-USDC.inj / USDC.inj-USDT but both pools are empty (TVL 0), so the
+// final lands on CoinGecko usd-coin as cg_only / astroport_zero_cg_only — labeled, never silent. And because readers
+// now key on the DENOM first (ally-positions 1.1.0: the denom is the identity, the feed's spelling is not), every entry
+// publishes `denom` (its phoenix-1 address from this registry) at the root — CG-only entries used to carry no address
+// at all, so a denom-keyed reader could never find them.
 // 3.1.0 — TLA queue item 1. `token_prices` keys are what every reader looks up by, and the readers resolve a denom through
 // the token-catalog's effective layer (lib/denom-symbol.js) — so the stables are keyed by THAT symbol: `USDC.n` (was
 // USDC), `USDt` (was USDT), `EURe` (was EURE). One symbol across products (the LUNA-EURe pot read $0 because the page
@@ -118,6 +126,10 @@ const TOKEN_REGISTRY = {
     'USDC.n': { cgId: 'usd-coin',             astroportAddresses: { 'phoenix-1': 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB' }, preferChain: 'phoenix-1' },
     // USDt (catalog symbol, 3.1.0): erc20/tether/usdt via channel-272 (Astroport prices this one)
     'USDt':  { cgId: 'tether',               astroportAddresses: { 'phoenix-1': 'ibc/9B19062D46CAB50361CE9B0A3E6D0A7A53AC9E7CB361F32A73CC733144A9A9E5' }, preferChain: 'phoenix-1' },
+    // USDC.inj (3.1.1, catalog spelling by convention — the catalog does not carry the denom yet): USDC via Injective
+    // (ibc/E8481AD…). Astroport's LUNA-USDC.inj and USDC.inj-USDT pools exist but are EMPTY (TVL 0 on 2026-09-21), so
+    // CoinGecko usd-coin is the final; the address is listed so the denom is published and the drift gate watches it.
+    'USDC.inj': { cgId: 'usd-coin',          astroportAddresses: { 'phoenix-1': 'ibc/E8481AD838C31D4FC12A504B10F9B4E2F830F8818D2735C2FFC707579B5FA60B' }, preferChain: 'phoenix-1' },
     WBTC:    { cgId: 'wrapped-bitcoin',      astroportAddresses: { 'phoenix-1': 'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB' }, preferChain: 'phoenix-1' },
     PAXG:    { cgId: 'pax-gold',             astroportAddresses: { 'phoenix-1': 'ibc/0EF5630576C66968EF0787868CF09FD866FAD131BC148D24A148358A85F0EB62' }, preferChain: 'phoenix-1' },
     // EURe (catalog symbol, 3.1.0): ueure native, channel-253 from Noble
@@ -623,6 +635,7 @@ function assemblePriceTable({ astroData, cgData, lstRatios }) {
 
         tokens[symbol] = {
             canonical: symbol,
+            denom: config.astroportAddresses['phoenix-1'] || null,   // 3.1.1: the phoenix-1 identity, present even when only CG priced it
             prices: {
                 astroport: astroPrice != null ? {
                     price_usd: astroPrice,
@@ -1193,7 +1206,7 @@ async function captureNetworkAndPrices() {
     } catch (e) { symbolGate = { status: 'skipped', reason: e.message.slice(0, 120), drift: [] }; }
 
     const snapshot = {
-        schemaVersion: 2,    // v2 — added dual-source price comparison + match_quality + series + refresh metadata
+        schemaVersion: 2,    // v2 — added dual-source price comparison + match_quality + series + refresh metadata (3.1.1: token entries carry `denom`)
         capturedAt: startedAt.toISOString(),
         capturedAtUnix: startedAt.getTime(),
 
