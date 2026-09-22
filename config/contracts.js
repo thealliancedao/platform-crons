@@ -42,6 +42,13 @@ const COMPOUNDER = {
     addr: 'terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx',
     role: 'Eris LP compounder (asset_configs, user_infos; mints factory amplp)',
 };
+// Credia Finance (lending, not a dex) — docs/ecosystem-knowledge/credia.facts.json (credia.contracts.portfolio,
+// chain-confirmed 2026-07-16). The Portfolio contract answers {metrics:{}} (every market; dex-data/dexes/credia.js)
+// and {portfolio:{address}} (one user's supplies/borrows; ally-positions 1.1.0). 2026-09-22.
+const CREDIA = {
+    portfolio: 'terra1y6hfmr3lxxj6srduhlfz96x7sga2984pr757a0nrfuqxa9rqxapqcjv4zz',
+    role: 'Credia Portfolio contract (metrics; portfolio{address}; receipt tokens = each market\'s vproxy_addr)',
+};
 
 // ── TLA staking buckets (the 4 pools members stake into) ────────────────────
 const STAKING_BUCKETS = {
@@ -124,6 +131,7 @@ module.exports = {
     VOTING_ESCROW,
     BRIBE_MANAGER,
     COMPOUNDER,
+    CREDIA,
     ZAPPER,
     STAKING_BUCKETS,
     BUCKETS,
