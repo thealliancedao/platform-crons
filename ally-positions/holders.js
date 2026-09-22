@@ -24,7 +24,7 @@
  *   its source; a series never rebuilds from a failed read (a failed product is not written — the previous snapshot stands).
  */
 'use strict';
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
 const https = require('https');
 const fs = require('fs');
 const E = require('../lib/capture-engine.js');
@@ -48,7 +48,7 @@ const b64 = (q) => Buffer.from(JSON.stringify(q)).toString('base64');
 
 async function lcd(p, label) { try { return await E.fetchJson(LCD + p, label || p.slice(0, 40)); } catch (e) { try { return await E.fetchJson(E.TERRA_LCD_FALLBACK + p, label); } catch (e2) { return null; } } }
 async function smart(contract, q) { const r = await lcd(`/cosmwasm/wasm/v1/contract/${contract}/smart/${b64(q)}`); return r && r.data !== undefined ? r.data : null; }
-async function isContract(addr) { try { const r = await E.fetchJson(LCD + `/cosmwasm/wasm/v1/contract/${addr}`, 'contract-info'); return !!(r && r.contract_info); } catch (e) { return /404|not found|no such contract/i.test(String(e.message)) ? false : null; } }   // false = the chain said no; null = the read failed
+async function isContract(addr) { try { const r = await E.fetchJson(LCD + `/cosmwasm/wasm/v1/contract/${addr}`, 'contract-info'); return r && r.contract_info ? { yes: true, label: r.contract_info.label || null, code_id: r.contract_info.code_id || null } : { yes: false }; } catch (e) { return /404|not found|no such contract/i.test(String(e.message)) ? { yes: false } : null; } }   // {yes:false} = the chain said no; null = the read failed
 
 // JSON-RPC over POST (Helius / Solana)
 function rpc(url, method, params) {
@@ -89,7 +89,7 @@ async function pyroarHolders(t, nameOf) {
   const gateDeltaRaw = (() => { try { return (BigInt(String(info.total_supply)) - sigmaRaw).toString(); } catch (e) { return null; } })();
   // kind by the chain for the top N; names from the registry for everyone
   for (let i = 0; i < holders.length; i++) { const h = holders[i]; const nm = nameOf(h.address); h.label = nm ? nm.label : null; h.kind = nm ? nm.kind : null; h.role = nm ? nm.role : null; h.share_pct = total > 0 ? h.amount / total * 100 : null; h.rank = i + 1;
-    if (!h.kind) { if (i < TOP_CLASSIFY) { const c = await isContract(h.address); h.kind = c === true ? 'contract' : c === false ? 'wallet' : 'unclassified'; h.kind_source = c == null ? 'contract-info read failed' : 'chain: /cosmwasm/wasm/v1/contract'; } else { h.kind = 'unclassified'; h.kind_source = `only the top ${TOP_CLASSIFY} are asked; a wallet by all odds — unverified`; } } else h.kind_source = 'registry'; }
+    if (!h.kind) { if (i < TOP_CLASSIFY) { const c = await isContract(h.address); h.kind = c && c.yes ? 'contract' : c ? 'wallet' : 'unclassified'; h.kind_source = c == null ? 'contract-info read failed' : 'chain: /cosmwasm/wasm/v1/contract'; if (c && c.yes) { h.contract_label = c.label; h.code_id = c.code_id; if (!h.label && c.label) h.label = c.label; h.label_source = 'chain: contract_info.label'; } } else { h.kind = 'unclassified'; h.kind_source = `only the top ${TOP_CLASSIFY} are asked; a wallet by all odds — unverified`; } } else h.kind_source = 'registry'; }
   const by = (k) => holders.filter(h => h.kind === k);
   const kinds = {}; for (const k of ['roster', 'receiver', 'contract', 'trust', 'wallet', 'unclassified']) kinds[k] = { holders: by(k).length, amount: sum(by(k).map(h => h.amount)) || 0 };
   const nonZero = holders.filter(h => h.amount > 0);
@@ -100,7 +100,9 @@ async function pyroarHolders(t, nameOf) {
     holder_count: nonZero.length, account_count: holders.length, zero_balance_accounts: holders.length - nonZero.length,
     holders: holders, kinds,
     top10: holders.slice(0, 10).map(h => ({ rank: h.rank, address: h.address, label: h.label, kind: h.kind, amount: h.amount, share_pct: h.share_pct })),
-    concentration: { top1_pct: holders[0] ? holders[0].share_pct : null, top10_pct: sum(holders.slice(0, 10).map(h => h.share_pct)), top50_pct: sum(holders.slice(0, 50).map(h => h.share_pct)) },
+    // 1.0.2: the BURNERS are wallets — a contract holding pyROAR (a pool, a treasury) did not burn; the leaderboard's headline is the top wallet
+    top10_wallets: holders.filter(h => h.kind !== 'contract' && h.kind !== 'receiver').slice(0, 10).map(h => ({ rank: h.rank, address: h.address, label: h.label, kind: h.kind, amount: h.amount, share_pct: h.share_pct })),
+    concentration: { top1_pct: holders[0] ? holders[0].share_pct : null, top10_pct: sum(holders.slice(0, 10).map(h => h.share_pct)), top50_pct: sum(holders.slice(0, 50).map(h => h.share_pct)), top1_wallet_pct: (holders.find(h => h.kind !== 'contract' && h.kind !== 'receiver') || {}).share_pct || null, contracts_pct: total > 0 ? sum(by('contract').map(h => h.amount)) / total * 100 : null },
     supply_gate: { total_supply: total, sum_of_balances: sigma, delta: gateDeltaRaw != null ? Number(gateDeltaRaw) / Math.pow(10, dec) : (total != null && sigma != null ? total - sigma : null), delta_raw: gateDeltaRaw, exact: gateDeltaRaw != null, note: 'the contract\'s total_supply against the sum of every balance read; a non-zero Δ means an account the walk missed or a read that lied' },
   } };
 }
@@ -133,7 +135,7 @@ async function roar20Holders(t) {
   const gateDeltaRaw = (() => { try { return (BigInt(String(supply.value.amount)) - sigmaRaw).toString(); } catch (e) { return null; } })();
   return { product: {
     product: 'roar20/holders', engine: VERSION, tenant: TENANT, capturedAt: new Date().toISOString(), chain: 'solana',
-    token: { mint, decimals: dec, supply: total, supply_raw: supply.value.amount, note: t.roar20.supply_fixed_note || null },
+    token: { mint, decimals: dec, supply: total, supply_raw: supply.value.amount, minted: t.roar20.supply_minted || t.roar20.supply_fixed || null, note: 'mint authority revoked at create (no new tokens) — supply can still fall by burns; getTokenSupply is the live figure' },
     source: { accounts: 'Helius DAS getTokenAccounts by mint (1000 per page, zero balances skipped), folded to owners', supply: 'getTokenSupply', kinds: `owner account read (getMultipleAccounts) for the top ${TOP_CLASSIFY}: System-Program-owned or absent = wallet; else program-owned with the program id` },
     holder_count: holders.length, token_account_count: accounts.length,
     holders: holders.map(h => ({ rank: h.rank, owner: h.owner, label: h.label, amount: h.amount, share_pct: h.share_pct, accounts: h.accounts, frozen_accounts: h.frozen_accounts, kind: h.kind, owner_program: h.owner_program || null, kind_source: h.kind_source })),
