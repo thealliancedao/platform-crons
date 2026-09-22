@@ -235,8 +235,8 @@ const FRESHNESS_MAP = [
     // service per ally, TENANT=<ally>) publishes into thealliancedao/dao-originations/<ally>/positions/. Its heartbeat
     // carries status ok|failed + errors — the 1.0.7 fresh-but-failed rule applies unchanged.
     { product: 'ally-positions-liondao', kind: 'cron', repo: 'thealliancedao/dao-originations', path: 'lion-dao/positions/heartbeat.json', ts: ['capturedAt'], max_age_h: 6 },
-    // 1.0.11 (2026-09-22): the holder products (ally-positions/holders.js, daily): pyROAR ledger walked whole + ROAR20 owners via
-    // Helius; heartbeat carries status ok|ok_with_errors|failed + the errors — fresh-but-failed rule unchanged.
+    // 1.0.11 (2026-09-22): the holder products (ally-positions/holders.js — a duty of org-ally-positions-liondao since index.js 1.2.2,
+    // run when ≥20 h old): pyROAR ledger walked whole + ROAR20 owners via Helius; heartbeat carries status ok|ok_with_errors|failed.
     { product: 'ally-holders-liondao', kind: 'cron', repo: 'thealliancedao/dao-originations', path: 'lion-dao/holders-heartbeat.json', ts: ['capturedAt'], max_age_h: 30 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
