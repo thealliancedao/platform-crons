@@ -5,7 +5,7 @@
 'use strict';
 const fs = require('fs'); const path = require('path');
 const CORE = process.env.TLA_CORE_DIR; if (!CORE) { console.error('TLA_CORE_DIR required'); process.exit(1); }
-process.env.TENANT = 'liondao'; process.env.ARCHIVE_LCD = 'https://archive.mock'; process.env.FROM = '2024-09-01'; process.env.TO = '2024-09-05';
+process.env.TENANT = 'liondao'; process.env.ARCHIVE_LCD = 'https://archive.mock'; process.env.FROM = '2024-09-01'; process.env.TO = '2024-09-05'; process.env.RUN_MODE = 'manual'; process.env.RPS = '50';   // 50 rps in the mock so it finishes; the ceiling clamps it to 4 — proven below
 const J = (p) => JSON.parse(fs.readFileSync(p, 'utf8')); const T = J(path.join(CORE, 'docs/curated/tenants.json')).tenants.liondao;
 const GENESIS = Date.parse('2022-05-28T00:00:00Z'), BLOCK_MS = 6000, LATEST = 25000000, FLOOR = 8000000;   // heights below FLOOR are "pruned"
 const timeAt = (h) => new Date(GENESIS + h * BLOCK_MS).toISOString();
@@ -14,8 +14,8 @@ const burnedAt = (h) => h <= festivalStart ? 0 : h >= festivalEnd ? 109690675868
 const CORE_U = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/';
 const ok = (o) => ({ ok: true, status: 200, json: async () => o, text: async () => JSON.stringify(o) }); const bad = (code, msg) => ({ ok: false, status: code, json: async () => ({}), text: async () => msg });
 const b64q = (u) => { try { return JSON.parse(Buffer.from(u.split('/smart/')[1].split('?')[0], 'base64').toString()); } catch (e) { return null; } };
-const calls = [];
-global.fetch = async (url, o) => { url = String(url); calls.push(url); const H = o && o.headers && o.headers['x-cosmos-block-height'] ? Number(o.headers['x-cosmos-block-height']) : null;
+const calls = []; const stamps = []; const force = { status: null, times: 0 };
+global.fetch = async (url, o) => { url = String(url); calls.push(url); if (url.startsWith('https://archive.mock')) stamps.push(Date.now()); if (force.status && force.times > 0 && !url.startsWith(CORE_U)) { force.times--; return bad(force.status, 'forced'); } const H = o && o.headers && o.headers['x-cosmos-block-height'] ? Number(o.headers['x-cosmos-block-height']) : null;
   if (url.startsWith(CORE_U)) { const f = path.join(CORE, url.slice(CORE_U.length).split('?')[0]); return fs.existsSync(f) ? ok(J(f)) : bad(404, ''); }
   let m = url.match(/\/blocks\/(latest|\d+)$/); if (m) { const h = m[1] === 'latest' ? LATEST : Number(m[1]); if (h < FLOOR) return bad(500, `height ${h} is not available, lowest height is ${FLOOR}`); if (h > LATEST) return bad(500, 'height too high'); return ok({ block: { header: { height: String(h), time: timeAt(h) } } }); }
   if (H != null && H < FLOOR) return bad(500, `height ${H} is not available, lowest height is ${FLOOR}`);
@@ -29,7 +29,7 @@ global.fetch = async (url, o) => { url = String(url); calls.push(url); const H =
 const B = require('./backfill.js');
 let pass = 0, fail = 0; const ok2 = (m, c, x) => { if (c) { pass++; console.log('  ✓ ' + m); } else { fail++; console.log('  ✗ ' + m + (x !== undefined ? ' → ' + JSON.stringify(x).slice(0, 300) : '')); } };
 (async () => {
-  const res = await B.run({ fast: true });
+  const res = await B.run({ fast: true }); const firstStamps = stamps.slice();
   ok2('5 days read (2024-09-01 … 09-05), none skipped', res.rows.length === 5 && res.skipped.length === 0, res.skipped);
   const r0 = res.rows[0];
   ok2('the height is the LAST block of the UTC day: block_time ≤ 23:59:59.999 and the next block is past midnight', r0.block_time.startsWith('2024-09-01T23:59:5') && Date.parse(timeAt(r0.height + 1)) > Date.parse('2024-09-01T23:59:59.999Z'), [r0.height, r0.block_time, timeAt(r0.height + 1)]);
@@ -46,6 +46,29 @@ let pass = 0, fail = 0; const ok2 = (m, c, x) => { if (c) { pass++; console.log(
   process.env.FROM = '2023-01-01'; process.env.TO = '2023-01-02'; delete require.cache[require.resolve('./backfill.js')]; const B2 = require('./backfill.js');
   const res2 = await B2.run({ fast: true });
   ok2('a day below the archive\'s lowest height is SKIPPED with the node\'s own message — never interpolated, never written', res2.rows.length === 0 && res2.skipped.length === 2 && /does not serve height/.test(res2.skipped[0].reason) && /lowest height is/.test(res2.skipped[0].reason), res2.skipped);
+  console.log('— the archive is a courtesy: the guards');
+  ok2('RPS is CLAMPED to the ceiling 4 no matter what the env says (env asked 50)', B._limits.RPS === 4 && B._limits.MAX_REQUESTS === 5000 && B._limits.MAX_MINUTES === 60 && B._limits.MAX_CONSECUTIVE_FAILURES === 5, B._limits);
+  { const gaps = []; for (let i = 1; i < firstStamps.length; i++) gaps.push(firstStamps[i] - firstStamps[i - 1]); const tooFast = gaps.filter(g => g < 1000 / 4 - 30).length;
+    ok2('every archive request in the first run waited ≥ 1/RPS after the previous one (sequential, throttled): ' + firstStamps.length + ' requests, none faster than 250 ms', tooFast === 0 && firstStamps.length > 20, [firstStamps.length, tooFast, Math.min(...gaps)]); }
+  ok2('after the first day, the next day\'s height comes from the measured block rate in a narrow bracket: the 5-day run used ≤ 16 block reads per day on average (a full search alone is ~25 every day)', calls.filter(u => /\/blocks\/\d+$/.test(u)).length / 5 <= 16, calls.filter(u => /\/blocks\/\d+$/.test(u)).length / 5);
+  ok2('the run reports its budget: requests, minutes, avg rps ≤ 4, no stop', res.summary && res.summary.requests > 0 && res.summary.avg_rps <= 4.05 && res.summary.stopped === null && res.meta.sources.last_run === res.summary, res.summary);
+  // backoff on a 429: one forced refusal, then success — one retry, the day still read
+  const fresh = () => { delete require.cache[require.resolve('./backfill.js')]; return require('./backfill.js'); };
+  process.env.FROM = '2024-09-10'; process.env.TO = '2024-09-10'; { const B3 = fresh(); stamps.length = 0; force.status = 429; force.times = 1; const t0 = Date.now(); const r = await B3.run({ fast: true }); force.status = null;
+    ok2('one 429 → back off (≥ 5 s) and retry; the day is still read; retries = 1, consecutive failures reset to 0', r.rows.length === 1 && r.summary.retries === 1 && Date.now() - t0 >= 5000 && B3._budget.consecutiveFailures === 0 && r.summary.stopped === null, [r.rows.length, r.summary, Date.now() - t0]); }
+  // stop after MAX_CONSECUTIVE_FAILURES: the node refuses everything → the run ends, nothing invented, what was measured is merged
+  process.env.FROM = '2024-09-10'; process.env.TO = '2024-09-12'; process.env.MAX_CONSECUTIVE_FAILURES = '2'; { const B4 = fresh(); force.status = 503; force.times = 999; const t0 = Date.now(); const r = await B4.run({ fast: true }); force.status = null;
+    ok2('the node refuses (503 ×∞) → after 2 consecutive failures the run STOPS: 0 days read, every day skipped with the stop reason, no more than the retries a single call is allowed (never a storm)', r.rows.length === 0 && r.summary.stopped && /consecutive failures/.test(r.summary.stopped) && r.skipped.length === 3 && r.summary.requests <= 3 && r.skipped.every(x => /stopped|consecutive/.test(x.reason)), [r.summary, r.skipped.map(x => x.reason.slice(0, 60))]); }
+  delete process.env.MAX_CONSECUTIVE_FAILURES;
+  // hard cap on requests: the walk ends cleanly with partial rows
+  process.env.FROM = '2024-09-10'; process.env.TO = '2024-09-30'; process.env.MAX_REQUESTS = '60'; { const B5 = fresh(); const r = await B5.run({ fast: true });
+    ok2('MAX_REQUESTS 60 → the run stops cleanly mid-walk: some days read, the rest "not attempted", requests ≤ 60 (+ nothing), stopped says why', r.summary.stopped && /MAX_REQUESTS 60/.test(r.summary.stopped) && r.rows.length >= 1 && r.rows.length < 21 && r.summary.requests <= 61 && r.skipped.some(x => /not attempted/.test(x.reason)), [r.summary, r.rows.length]); }
+  delete process.env.MAX_REQUESTS;
+  // manual only
+  process.env.RUN_MODE = ''; { const B6 = fresh(); let err = null; try { await B6.run({ fast: true }); } catch (e) { err = e.message; }
+    ok2('RUN_MODE not "manual" → the run refuses to start (never scheduled, never a stray trigger)', /RUN_MODE must be "manual"/.test(String(err)), err); }
+  process.env.RUN_MODE = 'manual';
+  process.env.FROM = '2024-09-01'; process.env.TO = '2024-09-05'; process.env.ARCHIVE_LCD = 'https://archive.mock';
   ok2('no ARCHIVE_LCD → the run refuses', await (async () => { process.env.ARCHIVE_LCD = ''; delete require.cache[require.resolve('./backfill.js')]; try { await require('./backfill.js').run({ fast: true }); return false; } catch (e) { return /ARCHIVE_LCD is required/.test(e.message); } })());
   fs.mkdirSync('out', { recursive: true }); fs.writeFileSync('out/history-mock-daily.json', JSON.stringify(doc1, null, 1));
   console.log(`${pass} passed, ${fail} failed · out/history-mock-daily.json`); process.exit(fail ? 1 : 0);
