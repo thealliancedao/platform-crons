@@ -170,7 +170,7 @@ async function main(which) {
   const targets = { pyroar: 'burn', roar20: 'roar20' };
   const hb = { product: `${res.outRoot}/holders`, engine: VERSION, status: res.errors.length ? (Object.keys(res.products).length ? 'ok_with_errors' : 'failed') : 'ok', capturedAt: new Date().toISOString(), written: Object.keys(res.products).map(k => `${targets[k]}/holders.json`), errors: res.errors };
   for (const e of res.errors) console.error(`✗ ${e.product}: ${e.reason}`);
-  if (!GITHUB_TOKEN) { fs.mkdirSync('out', { recursive: true }); for (const [k, p] of Object.entries(res.products)) fs.writeFileSync(`out/${targets[k]}-holders.json`, JSON.stringify(p, null, 1)); fs.writeFileSync('out/holders-heartbeat.json', JSON.stringify(hb, null, 1)); console.log('⚠️  GITHUB_TOKEN not set — wrote out/'); if (hb.status === 'failed') process.exit(1); return; }
+  if (!GITHUB_TOKEN) { fs.mkdirSync('out', { recursive: true }); for (const [k, p] of Object.entries(res.products)) fs.writeFileSync(`out/${targets[k]}-holders.json`, JSON.stringify(p, null, 1)); fs.writeFileSync('out/holders-heartbeat.json', JSON.stringify(hb, null, 1)); console.log('⚠️  GITHUB_TOKEN not set — wrote out/'); if (hb.status === 'failed' && require.main === module) process.exit(1); return hb; }
   for (const [k, p] of Object.entries(res.products)) { const root = `${res.outRoot}/${targets[k]}`; const content = JSON.stringify(p, null, 1);
     console.log(`  ${root}/holders.json (${p.holder_count} holders, gate Δ ${p.supply_gate.delta}) → ${await publish(`${root}/holders.json`, content, `🦁 ${TENANT} ${p.product} ${p.capturedAt}`)}`);
     console.log(`  ${root}/daily/${d}.json → ${await publish(`${root}/daily/${d}.json`, content, `📸 ${TENANT} ${p.product} daily — ${d}`, true)}`); }

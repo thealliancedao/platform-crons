@@ -138,6 +138,10 @@ let pass = 0, fail = 0; const chk = (m, c, x) => { if (c) { pass++; console.log(
     withHb({ capturedAt: new Date(Date.now() - 25 * 3600e3).toISOString() }); chk('1.2.2 holdersDue: heartbeat 25 h old → due', (await P.holdersDue('lion-dao')).due === true);
     withHb({ capturedAt: new Date(Date.now() - 3 * 3600e3).toISOString() }); chk('1.2.2 holdersDue: heartbeat 3 h old → NOT due (the hourly job leaves the ledger alone)', (await P.holdersDue('lion-dao')).due === false);
     process.env.HOLDERS = 'off'; chk('1.2.2 HOLDERS=off → never due', (await P.holdersDue('lion-dao')).due === false); delete process.env.HOLDERS; global.fetch = save; }
+  // ---- 1.2.3: the duty as main() calls it, with the positions root: reached, root derived, run in-process, never throwing into the positions run
+  { const save = global.fetch; global.fetch = async (u) => String(u).includes('holders-heartbeat.json') ? nf : save(u); const logs = []; const cl = console.log; console.log = (...a) => { logs.push(a.join(' ')); cl(...a); };
+    delete process.env.GITHUB_TOKEN; process.env.HELIUS_API_KEY = ''; const hhb = await P.runHoldersIfDue('lion-dao/positions'); console.log = cl; global.fetch = save;
+    chk('1.2.3 runHoldersIfDue("<dao>/positions") derives the dao root, finds no heartbeat → runs holders in-process (this mock stubs no pyROAR contract, so both products report their reason) and returns its heartbeat — no "ctx is not defined"', logs.some(l => /holders \(no holders heartbeat yet\)/.test(l)) && !logs.some(l => /holders duty threw/.test(l)) && hhb && hhb.product === 'lion-dao/holders' && hhb.errors.some(e => /HELIUS_API_KEY/.test(e.reason)) && hhb.errors.some(e => /token_info/.test(e.reason)), [logs.filter(l => /holders/.test(l)).slice(0, 3), hhb && hhb.status]); }
   fs.mkdirSync('out', { recursive: true }); fs.writeFileSync('out/positions-mock-current.json', JSON.stringify(doc, null, 1));
   console.log(`\n${pass} passed, ${fail} failed · out/positions-mock-current.json`); process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
