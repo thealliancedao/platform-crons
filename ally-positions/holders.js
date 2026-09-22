@@ -2,8 +2,9 @@
 /**
  * ally-positions/holders.js — WHO HOLDS THE ALLY'S TOKENS, from the chains, one snapshot a day.
  *   Same folder as the positions engine (crons per ally, one engine); its own entry point so the hourly job stays lean.
- *   Render: org-ally-holders-<tenant> · daily · `TENANT=<slug> node holders.js` · env GITHUB_TOKEN (dao-originations Contents
- *   write), HELIUS_API_KEY (for the Solana token). Two products, each with its supply gate published:
+ *   1.0.1 (owner): runs INSIDE the hourly positions job (index.js) once the holder products are ≥ 20 h old or missing — no service
+ *   of its own; env HELIUS_API_KEY on org-ally-positions-<tenant>. Still runnable alone: `TENANT=<slug> node holders.js`.
+ *   Two products, each with its supply gate published:
  *
  *   1. pyROAR — the frozen burn ledger (tenants.json <tenant>.burn.pyroar_cw20): cw20 `all_accounts` (paged, the contract's
  *      own 30-per-page cap) + `balance` per account = the COMPLETE holder list = the burn-festival leaderboard (one pyROAR was
@@ -23,7 +24,7 @@
  *   its source; a series never rebuilds from a failed read (a failed product is not written — the previous snapshot stands).
  */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const https = require('https');
 const fs = require('fs');
 const E = require('../lib/capture-engine.js');
@@ -163,8 +164,8 @@ async function run(which = ['pyroar', 'roar20']) {
   return out;
 }
 
-async function main() {
-  const which = (process.env.DUTIES || 'pyroar,roar20').split(',').map(s => s.trim()).filter(Boolean);
+async function main(which) {
+  which = which || (process.env.DUTIES || 'pyroar,roar20').split(',').map(s => s.trim()).filter(Boolean);
   const res = await run(which); const d = day();
   const targets = { pyroar: 'burn', roar20: 'roar20' };
   const hb = { product: `${res.outRoot}/holders`, engine: VERSION, status: res.errors.length ? (Object.keys(res.products).length ? 'ok_with_errors' : 'failed') : 'ok', capturedAt: new Date().toISOString(), written: Object.keys(res.products).map(k => `${targets[k]}/holders.json`), errors: res.errors };
@@ -174,7 +175,8 @@ async function main() {
     console.log(`  ${root}/holders.json (${p.holder_count} holders, gate Δ ${p.supply_gate.delta}) → ${await publish(`${root}/holders.json`, content, `🦁 ${TENANT} ${p.product} ${p.capturedAt}`)}`);
     console.log(`  ${root}/daily/${d}.json → ${await publish(`${root}/daily/${d}.json`, content, `📸 ${TENANT} ${p.product} daily — ${d}`, true)}`); }
   console.log(`  heartbeat → ${await publish(`${res.outRoot}/holders-heartbeat.json`, JSON.stringify(hb, null, 1), `💓 ${TENANT} holders heartbeat`)}`);
-  if (hb.status === 'failed') process.exit(1);   // a failed product is not written; the previous snapshot stands, and Render shows the failure
+  if (hb.status === 'failed' && require.main === module) process.exit(1);   // a failed product is not written; the previous snapshot stands, and Render shows the failure
+  return hb;
 }
-module.exports = { VERSION, run, pyroarHolders, roar20Holders, namer, TOP_CLASSIFY };
+module.exports = { VERSION, run, main, pyroarHolders, roar20Holders, namer, TOP_CLASSIFY };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });

@@ -51,7 +51,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.2.0';   // 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
+const VERSION = '1.2.2';   // 1.2.2 (2026-09-22, owner): the holders duty runs inside this job once every ≥20 h (holdersDue) — no second service; env HELIUS_API_KEY here. 1.2.1 (2026-09-22, first live run): epoch dates as ISO (at_time ns); DROGO named via the registry. 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
 const C = require('../config/contracts.js');
 const COMPOUNDER_PREFIX = `factory/${C.COMPOUNDER.addr}/`;
 const CREDIA_PORTFOLIO = C.CREDIA.portfolio;
@@ -181,6 +181,7 @@ async function blockSeconds() { const a = await lcd('/cosmos/base/tendermint/v1b
 async function readPlRewards(ctx) {
   const st = ctx.tenant.staking || {}; const addr = st.pl_rewards_distributor; if (!addr) return { distributor: null, reason: 'tenants.json staking.pl_rewards_distributor not set' };
   const smartQ = async (q) => { const r = await lcd(`/cosmwasm/wasm/v1/contract/${addr}/smart/${Buffer.from(JSON.stringify(q)).toString('base64')}`); return r && r.data !== undefined ? r.data : null; };
+  const symOf = (dn) => { const r = ctx.resolve(dn); if (r && r.symbol) return r; const k = (ctx.cw20s || []).find(c => c.denom === dn); return k && k.symbol ? { symbol: k.symbol, decimals: k.decimals != null ? k.decimals : 6, symbol_source: 'tenants.json known_cw20s' } : r; };   // 1.2.1: a cw20 the catalog lacks but the registry names (DROGO)
   const list = await smartQ({ distributions: { limit: 50 } }); const dists = list && Array.isArray(list.distributions) ? list.distributions : null;
   if (!dists) return { distributor: addr, distributions: null, reason: 'distributions query failed (or not this contract\'s schema)', raw: list };
   const slug = (ctx.tenant.collections || [])[0]; const summ = slug ? ctx.nftSummaries[slug] : null; const staked = summ ? num(summ.daodao_staked_count) : null;
@@ -188,13 +189,15 @@ async function readPlRewards(ctx) {
   const YEAR = 31536000;
   const out = { distributor: addr, source: 'DAODAO rewards distributor: distributions + pending_rewards (raw kept)', staked_count: staked, staked_source: slug ? `nft-collections/${slug} summary daodao_staked_count` : null, block_seconds: bps, distributions: [], pending_by_wallet: {} };
   for (const d of dists) {
-    const dn = d.denom && (d.denom.native || d.denom.cw20) || null; const r = dn ? ctx.resolve(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6;
+    const dn = d.denom && (d.denom.native || d.denom.cw20) || null; const r = dn ? symOf(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6;
     const er = d.active_epoch && d.active_epoch.emission_rate || null; const lin = er && er.linear || null;
     let perYear = null, rateNote = null;
     if (lin && lin.amount != null && lin.duration) { const amt = num(lin.amount) / Math.pow(10, dec); if (lin.duration.time != null) { perYear = amt * YEAR / num(lin.duration.time); rateNote = `${amt} per ${lin.duration.time}s`; } else if (lin.duration.height != null) { if (bps) { perYear = amt * (YEAR / bps) / num(lin.duration.height); rateNote = `${amt} per ${lin.duration.height} blocks at ${bps.toFixed(2)}s/block (measured over 20k blocks)`; } else rateNote = 'duration in blocks and the block time could not be measured'; } }
     else if (er && er.paused !== undefined) rateNote = 'paused'; else if (er && er.immediate !== undefined) rateNote = 'immediate (one-off)';
     const pr = dn ? findPrice(dn, r.symbol, ctx) : null; const price = pr ? pr.price : null;
-    const row = { id: d.id, denom: dn, symbol: r.symbol, decimals: dec, emission_per_year: perYear, rate_note: rateNote, funded_amount: d.funded_amount != null ? num(d.funded_amount) / Math.pow(10, dec) : null, ends_at: d.active_epoch ? d.active_epoch.ends_at || null : null, started_at: d.active_epoch ? d.active_epoch.started_at || null : null, price_usd: price, price_source: pr ? `network-and-prices (${pr.source}, matched by ${pr.match})` : null,
+    // 1.2.1: the epoch's dates as ISO — the contract writes {at_time: <ns>} (this version) or {time|height}; a height stays a height
+    const when = (x) => { if (!x) return null; const ns = x.at_time != null ? x.at_time : x.time != null ? x.time : null; if (ns != null) { const n = num(ns); return n != null ? new Date(n > 1e14 ? n / 1e6 : n * 1000).toISOString() : null; } return x.at_height != null ? 'height ' + x.at_height : x.height != null ? 'height ' + x.height : null; };
+    const row = { id: d.id, denom: dn, symbol: r.symbol, decimals: dec, emission_per_year: perYear, rate_note: rateNote, funded_amount: d.funded_amount != null ? num(d.funded_amount) / Math.pow(10, dec) : null, ends_at: when(d.active_epoch && d.active_epoch.ends_at), started_at: when(d.active_epoch && d.active_epoch.started_at), continuous: lin ? !!lin.continuous : null, price_usd: price, price_source: pr ? `network-and-prices (${pr.source}, matched by ${pr.match})` : null,
       per_token_per_year: perYear != null && staked ? perYear / staked : null, per_token_usd_per_year: null, raw: d };
     row.per_token_usd_per_year = row.per_token_per_year != null && row.price_usd != null ? row.per_token_per_year * row.price_usd : null;
     out.distributions.push(row);
@@ -202,7 +205,7 @@ async function readPlRewards(ctx) {
   const usdPerToken = out.distributions.reduce((t, r) => r.per_token_usd_per_year != null ? (t == null ? 0 : t) + r.per_token_usd_per_year : t, null);
   const an = slug ? ctx.nftAnalytics[slug] : null; const floors = an && an.listings_by_marketplace ? Object.values(an.listings_by_marketplace).map(m => num(m.floor_usd)).filter(v => v != null && v > 0) : []; const floor = floors.length ? Math.min(...floors) : null;
   out.apr = { usd_per_token_per_year: usdPerToken, floor_usd: floor, apr_pct_at_floor: usdPerToken != null && floor ? usdPerToken / floor * 100 : null, floor_source: floor != null ? `nft-collections/${slug} nft-analytics listings_by_marketplace (lowest venue floor, USD at today's prices)` : 'no listing floor in nft-analytics', note: 'Σ over distributions of (rate per year ÷ staked count × price) ÷ floor; a distribution whose rate did not parse contributes nothing and says so on its row', unpriced: out.distributions.filter(r => r.per_token_per_year != null && r.price_usd == null).map(r => r.symbol || r.denom) };
-  for (const a of Object.keys(ctx.tenant.wallets)) { const p = await smartQ({ pending_rewards: { address: a, limit: 50 } }); if (!p || !Array.isArray(p.pending_rewards)) { out.pending_by_wallet[a] = null; continue; } out.pending_by_wallet[a] = p.pending_rewards.map(x => { const dn = x.denom && (x.denom.native || x.denom.cw20) || null; const r = dn ? ctx.resolve(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6; const amt = num(x.pending_rewards) != null ? num(x.pending_rewards) / Math.pow(10, dec) : null; const pr2 = dn ? findPrice(dn, r.symbol, ctx) : null; return { id: x.id, denom: dn, symbol: r.symbol, amount: amt, usd: amt != null && pr2 ? amt * pr2.price : null, raw: x }; }); }
+  for (const a of Object.keys(ctx.tenant.wallets)) { const p = await smartQ({ pending_rewards: { address: a, limit: 50 } }); if (!p || !Array.isArray(p.pending_rewards)) { out.pending_by_wallet[a] = null; continue; } out.pending_by_wallet[a] = p.pending_rewards.map(x => { const dn = x.denom && (x.denom.native || x.denom.cw20) || null; const r = dn ? symOf(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6; const amt = num(x.pending_rewards) != null ? num(x.pending_rewards) / Math.pow(10, dec) : null; const pr2 = dn ? findPrice(dn, r.symbol, ctx) : null; return { id: x.id, denom: dn, symbol: r.symbol, amount: amt, usd: amt != null && pr2 ? amt * pr2.price : null, raw: x }; }); }
   return out;
 }
 
@@ -345,6 +348,17 @@ function mergeSeries(existing, d, row, product) {
   return s;
 }
 async function readJson(filePath) { try { const ex = await gh('GET', `/repos/${GITHUB_REPO}/contents/${filePath}?ref=${GITHUB_BRANCH}`); return JSON.parse(Buffer.from(ex.content || '', 'base64').toString()); } catch (e) { if (e.status === 404) return null; throw e; } }
+// ---------------------------------------------------------------- 1.2.2: the holders duty, folded in (owner: one job per ally)
+//   After the hourly positions run, if <dao>/holders-heartbeat.json is missing or its capturedAt is ≥ HOLDERS_EVERY_H (20) hours
+//   old, run holders.js in-process (pyROAR ledger walk + ROAR20 owners). A failed holders run never fails the positions run.
+//   HOLDERS=off disables it. Heartbeat + products are the same files as before.
+async function holdersDue(outRoot) {
+  if (process.env.HOLDERS === 'off') return { due: false, why: 'HOLDERS=off' };
+  const everyH = Number(process.env.HOLDERS_EVERY_H) || 20;
+  const hb = await E.fetchJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${outRoot}/holders-heartbeat.json?t=${Date.now()}`, 'holders-heartbeat').catch(() => null);
+  if (!hb || !hb.capturedAt) return { due: true, why: 'no holders heartbeat yet' };
+  const ageH = (Date.now() - Date.parse(hb.capturedAt)) / 3600e3; return ageH >= everyH ? { due: true, why: `holders ${ageH.toFixed(1)} h old` } : { due: false, why: `holders ${ageH.toFixed(1)} h old (< ${everyH} h)` };
+}
 async function main() {
   const doc = await run();
   const content = JSON.stringify(doc, null, 1); const d = day();
@@ -356,6 +370,9 @@ async function main() {
   const series = mergeSeries(await readJson(`${root}/daily/index.json`), d, seriesRow(doc), root);
   console.log(`  daily/index.json (${series.day_count} days) → ${await publish(`${root}/daily/index.json`, JSON.stringify(series, null, 1), `📈 ${TENANT} positions series — ${d}`)}`);
   console.log(`  heartbeat → ${await publish(`${root}/heartbeat.json`, hb, `💓 ${TENANT} positions heartbeat`)}`);
+  // 1.2.2: the holders duty, when due — its own heartbeat, never this run's status
+  try { const due = await holdersDue(ctx.outRoot); if (due.due) { console.log(`🦁 holders (${due.why}) — walking the pyROAR ledger + ROAR20 owners…`); const H = require('./holders.js'); const hhb = await H.main(); console.log(`  holders → ${hhb.status}${hhb.errors.length ? ' · ' + hhb.errors.map(e => e.product + ': ' + e.reason).join(' · ') : ''}`); } else console.log(`  holders: not due (${due.why})`); }
+  catch (e) { console.error('  ✗ holders duty threw (positions run unaffected): ' + e.message); }
 }
-module.exports = { VERSION, run, loadContext, readPlRewards, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
+module.exports = { VERSION, run, loadContext, readPlRewards, holdersDue, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });
