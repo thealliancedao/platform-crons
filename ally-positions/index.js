@@ -51,7 +51,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.1.1';   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
+const VERSION = '1.2.0';   // 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
 const C = require('../config/contracts.js');
 const COMPOUNDER_PREFIX = `factory/${C.COMPOUNDER.addr}/`;
 const CREDIA_PORTFOLIO = C.CREDIA.portfolio;
@@ -173,6 +173,39 @@ function readNfts(wallet, ctx) {
   return any ? out : null;
 }
 
+// ---------------------------------------------------------------- 1.2.0: the pixeLions rewards distributor (DAODAO dao-rewards-distributor)
+//   tenants.json staking.pl_rewards_distributor — found 2026-09-22 by a claim tx. Query shapes per the DAO DAO contract (Distributions,
+//   PendingRewards, the distribution's active_epoch.emission_rate); every answer is kept raw beside what this reader parsed, so a
+//   schema drift shows as Coming with the raw on the row, never as a wrong number. APR = linear rate per year ÷ staked count, priced.
+async function blockSeconds() { const a = await lcd('/cosmos/base/tendermint/v1beta1/blocks/latest'); const h = a && a.block && num(a.block.header.height); if (!h) return null; const b = await lcd(`/cosmos/base/tendermint/v1beta1/blocks/${h - 20000}`); if (!b || !b.block) return null; return (Date.parse(a.block.header.time) - Date.parse(b.block.header.time)) / 1000 / 20000; }
+async function readPlRewards(ctx) {
+  const st = ctx.tenant.staking || {}; const addr = st.pl_rewards_distributor; if (!addr) return { distributor: null, reason: 'tenants.json staking.pl_rewards_distributor not set' };
+  const smartQ = async (q) => { const r = await lcd(`/cosmwasm/wasm/v1/contract/${addr}/smart/${Buffer.from(JSON.stringify(q)).toString('base64')}`); return r && r.data !== undefined ? r.data : null; };
+  const list = await smartQ({ distributions: { limit: 50 } }); const dists = list && Array.isArray(list.distributions) ? list.distributions : null;
+  if (!dists) return { distributor: addr, distributions: null, reason: 'distributions query failed (or not this contract\'s schema)', raw: list };
+  const slug = (ctx.tenant.collections || [])[0]; const summ = slug ? ctx.nftSummaries[slug] : null; const staked = summ ? num(summ.daodao_staked_count) : null;
+  const bps = await blockSeconds().catch(() => null);
+  const YEAR = 31536000;
+  const out = { distributor: addr, source: 'DAODAO rewards distributor: distributions + pending_rewards (raw kept)', staked_count: staked, staked_source: slug ? `nft-collections/${slug} summary daodao_staked_count` : null, block_seconds: bps, distributions: [], pending_by_wallet: {} };
+  for (const d of dists) {
+    const dn = d.denom && (d.denom.native || d.denom.cw20) || null; const r = dn ? ctx.resolve(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6;
+    const er = d.active_epoch && d.active_epoch.emission_rate || null; const lin = er && er.linear || null;
+    let perYear = null, rateNote = null;
+    if (lin && lin.amount != null && lin.duration) { const amt = num(lin.amount) / Math.pow(10, dec); if (lin.duration.time != null) { perYear = amt * YEAR / num(lin.duration.time); rateNote = `${amt} per ${lin.duration.time}s`; } else if (lin.duration.height != null) { if (bps) { perYear = amt * (YEAR / bps) / num(lin.duration.height); rateNote = `${amt} per ${lin.duration.height} blocks at ${bps.toFixed(2)}s/block (measured over 20k blocks)`; } else rateNote = 'duration in blocks and the block time could not be measured'; } }
+    else if (er && er.paused !== undefined) rateNote = 'paused'; else if (er && er.immediate !== undefined) rateNote = 'immediate (one-off)';
+    const pr = dn ? findPrice(dn, r.symbol, ctx) : null; const price = pr ? pr.price : null;
+    const row = { id: d.id, denom: dn, symbol: r.symbol, decimals: dec, emission_per_year: perYear, rate_note: rateNote, funded_amount: d.funded_amount != null ? num(d.funded_amount) / Math.pow(10, dec) : null, ends_at: d.active_epoch ? d.active_epoch.ends_at || null : null, started_at: d.active_epoch ? d.active_epoch.started_at || null : null, price_usd: price, price_source: pr ? `network-and-prices (${pr.source}, matched by ${pr.match})` : null,
+      per_token_per_year: perYear != null && staked ? perYear / staked : null, per_token_usd_per_year: null, raw: d };
+    row.per_token_usd_per_year = row.per_token_per_year != null && row.price_usd != null ? row.per_token_per_year * row.price_usd : null;
+    out.distributions.push(row);
+  }
+  const usdPerToken = out.distributions.reduce((t, r) => r.per_token_usd_per_year != null ? (t == null ? 0 : t) + r.per_token_usd_per_year : t, null);
+  const an = slug ? ctx.nftAnalytics[slug] : null; const floors = an && an.listings_by_marketplace ? Object.values(an.listings_by_marketplace).map(m => num(m.floor_usd)).filter(v => v != null && v > 0) : []; const floor = floors.length ? Math.min(...floors) : null;
+  out.apr = { usd_per_token_per_year: usdPerToken, floor_usd: floor, apr_pct_at_floor: usdPerToken != null && floor ? usdPerToken / floor * 100 : null, floor_source: floor != null ? `nft-collections/${slug} nft-analytics listings_by_marketplace (lowest venue floor, USD at today's prices)` : 'no listing floor in nft-analytics', note: 'Σ over distributions of (rate per year ÷ staked count × price) ÷ floor; a distribution whose rate did not parse contributes nothing and says so on its row', unpriced: out.distributions.filter(r => r.per_token_per_year != null && r.price_usd == null).map(r => r.symbol || r.denom) };
+  for (const a of Object.keys(ctx.tenant.wallets)) { const p = await smartQ({ pending_rewards: { address: a, limit: 50 } }); if (!p || !Array.isArray(p.pending_rewards)) { out.pending_by_wallet[a] = null; continue; } out.pending_by_wallet[a] = p.pending_rewards.map(x => { const dn = x.denom && (x.denom.native || x.denom.cw20) || null; const r = dn ? ctx.resolve(dn) : { symbol: null, decimals: 6 }; const dec = r.decimals != null ? r.decimals : 6; const amt = num(x.pending_rewards) != null ? num(x.pending_rewards) / Math.pow(10, dec) : null; const pr2 = dn ? findPrice(dn, r.symbol, ctx) : null; return { id: x.id, denom: dn, symbol: r.symbol, amount: amt, usd: amt != null && pr2 ? amt * pr2.price : null, raw: x }; }); }
+  return out;
+}
+
 // ---------------------------------------------------------------- roll-up
 function rollup(wallets, extras) {
   const byRole = {}; const parts = [];
@@ -258,7 +291,8 @@ async function loadContext() {
   ctx.validatorAccount = t.validator && t.validator.account || null;
   ctx.votionVaults = votionVaults;
   ctx.nftSummaries = {};
-  await Promise.all((t.collections || []).map(async (slug) => { ctx.nftSummaries[slug] = await E.fetchJson(NFTC + slug + '/snapshots/summary.json', 'nft-summary ' + slug).catch(() => null); }));
+  ctx.nftAnalytics = {};
+  await Promise.all((t.collections || []).map(async (slug) => { ctx.nftSummaries[slug] = await E.fetchJson(NFTC + slug + '/snapshots/summary.json', 'nft-summary ' + slug).catch(() => null); ctx.nftAnalytics[slug] = await E.fetchJson(NFTC + slug + '/snapshots/nft-analytics.json', 'nft-analytics ' + slug).catch(() => null); }));   // 1.2.0: analytics for the listing floor (APR denominator)
   ctx.tenant = t; ctx.tenantSlug = TENANT; ctx.outRoot = OUT_ROOT || ((t.daos || [])[0] || TENANT);
   ctx.gate0 = t.gate0_reference ? await E.fetchJson(CORE + t.gate0_reference, 'gate0-reference').catch(() => null) : null;
   ctx.gate0AsOf = t.gate0_reference_as_of || ((String(t.gate0_reference || '').match(/(\d{4}-\d{2}-\d{2})/) || [])[1]) || null;   // 1.1.0: the fixture is dated by its folder
@@ -281,11 +315,12 @@ async function run(opts = {}) {
   await E.parallelMap(Object.entries(t.wallets), async ([a, w]) => { wallets[a] = await captureWallet(a, w, ctx); console.log(`  ✓ ${w.label}`); }, 2);
   if (ctx.validatorAccount && !wallets[ctx.validatorAccount]) wallets[ctx.validatorAccount] = await captureWallet(ctx.validatorAccount, { label: 'validator account', role: 'validator', counts_as: 'validator' }, ctx);
   const validator = await readValidatorCommission(ctx).catch(() => null);
+  const pl_rewards = await readPlRewards(ctx).catch(e => ({ distributor: (ctx.tenant.staking || {}).pl_rewards_distributor || null, reason: 'reader threw: ' + e.message }));   // 1.2.0
   const roll = rollup(wallets, { validator });
   const fixture = opts.fixture || ctx.gate0 || null;
   const doc = { schemaVersion: 1, product: `${ctx.outRoot}/positions`, engine: VERSION, tenant: TENANT, capturedAt: new Date().toISOString(), startedAt,
     prices: { luna_usd: ctx.lunaPriceUsd, source: 'network-and-prices', captured_at: ctx.networkPrices && ctx.networkPrices.capturedAt || null },
-    validator, wallets, rollup: roll, reconciliation: reconcile(wallets, fixture, opts.referenceAsOf || ctx.gate0AsOf || null),
+    validator, pl_rewards, wallets, rollup: roll, reconciliation: reconcile(wallets, fixture, opts.referenceAsOf || ctx.gate0AsOf || null),
     sources: { credia_markets_as_of: ctx.crediaAsOf || null, credia_markets: ctx.crediaMarkets ? ctx.crediaMarkets.length : null, feed_denoms_indexed: ctx.priceByDenom ? ctx.priceByDenom.size : null, known_cw20s: (t.known_cw20s || []).length },
     errors: Object.values(wallets).flatMap(w => (w.portfolio && w.portfolio._errors || []).map(e => ({ wallet: w.label, error: e }))) };
   return doc;
@@ -322,5 +357,5 @@ async function main() {
   console.log(`  daily/index.json (${series.day_count} days) → ${await publish(`${root}/daily/index.json`, JSON.stringify(series, null, 1), `📈 ${TENANT} positions series — ${d}`)}`);
   console.log(`  heartbeat → ${await publish(`${root}/heartbeat.json`, hb, `💓 ${TENANT} positions heartbeat`)}`);
 }
-module.exports = { VERSION, run, loadContext, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
+module.exports = { VERSION, run, loadContext, readPlRewards, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });
