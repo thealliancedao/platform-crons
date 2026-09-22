@@ -29,7 +29,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.10';   // 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.0.11';   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -235,6 +235,9 @@ const FRESHNESS_MAP = [
     // service per ally, TENANT=<ally>) publishes into thealliancedao/dao-originations/<ally>/positions/. Its heartbeat
     // carries status ok|failed + errors — the 1.0.7 fresh-but-failed rule applies unchanged.
     { product: 'ally-positions-liondao', kind: 'cron', repo: 'thealliancedao/dao-originations', path: 'lion-dao/positions/heartbeat.json', ts: ['capturedAt'], max_age_h: 6 },
+    // 1.0.11 (2026-09-22): the holder products (ally-positions/holders.js, daily): pyROAR ledger walked whole + ROAR20 owners via
+    // Helius; heartbeat carries status ok|ok_with_errors|failed + the errors — fresh-but-failed rule unchanged.
+    { product: 'ally-holders-liondao', kind: 'cron', repo: 'thealliancedao/dao-originations', path: 'lion-dao/holders-heartbeat.json', ts: ['capturedAt'], max_age_h: 30 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
 async function invHeartbeatFreshness(reader, now) {

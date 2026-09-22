@@ -77,7 +77,8 @@ function healthyRepo() {
         'tla-voting/distributions/heartbeat.json': H('2026-07-13T00:00:00Z'),
         'adao/snapshots/heartbeat.json': H('2026-07-16T11:00:00Z'),      // 1.0.6: nft-collections paths
         'pixel-lions/snapshots/heartbeat.json': H('2026-07-16T11:15:00Z'),   // 1.0.9: org-nft-inventory-liondao
-        'lion-dao/positions/heartbeat.json':    { product: 'lion-dao/positions', engine: '1.0.2', status: 'ok', capturedAt: '2026-07-16T11:20:00Z', wallets: 5, known_usd: 188105.31, errors: 0 },   // 1.0.10: org-ally-positions-liondao (real heartbeat shape, 2026-09-21)
+        'lion-dao/positions/heartbeat.json':    { product: 'lion-dao/positions', engine: '1.0.2', status: 'ok', capturedAt: '2026-07-16T11:20:00Z', wallets: 5, known_usd: 188105.31, errors: 0 },
+        'lion-dao/holders-heartbeat.json':      { product: 'lion-dao/holders', engine: '1.0.0', status: 'ok', capturedAt: '2026-07-16T03:40:00Z', written: ['burn/holders.json', 'roar20/holders.json'], errors: [] },   // 1.0.11 shape   // 1.0.10: org-ally-positions-liondao (real heartbeat shape, 2026-09-21)
         // 1.0.9 INV8 fixture: two collections; a two-month aDAO ledger where #1 was listed then delisted, #2 listed on bbl and
         // still open, #3 listed on atrium and sold; #4 listed then transferred (closed). The inventory agrees: only #2 listed.
         'docs/curated/tenants.json': { tenants: { adao: { collections: ['adao'] }, liondao: { collections: ['pixel-lions'] } } },
@@ -292,6 +293,14 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       const out2 = await M.run();
       const inv2 = out2.invariants.heartbeat_freshness; const row2 = inv2.measured.all.find(r => r.product === 'ally-positions-liondao');
       check('R9 ally-positions-liondao fresh-but-failed → FAILED + raised', inv2.status === 'violation' && row2 && row2.status === 'FAILED' && row2.hb_status === 'failed' && inv2.measured.stale.length === 1 && inv2.measured.stale[0].product === 'ally-positions-liondao', row2); }
+    // 1.0.11: the daily holders cron is a row of its own (30 h window), judged on its heartbeat; a `failed` status (no product written) is FAILED
+    check('R10 ally-holders-liondao row present in FRESHNESS_MAP (daily, dao-originations)', M.FRESHNESS_MAP.some(r => r.product === 'ally-holders-liondao' && r.repo === 'thealliancedao/dao-originations' && r.path === 'lion-dao/holders-heartbeat.json' && r.max_age_h === 30));
+    { REPO = fixNotTla(healthyRepo()); WRITES = {}; REPO_HITS = {};
+      const out = await M.run(); const row = out.invariants.heartbeat_freshness.measured.find(r => r.product === 'ally-holders-liondao');
+      check('R10 ally-holders-liondao judged fresh from capturedAt (26 h old, inside 30)', row && row.status === 'fresh' && row.hb_status === 'ok', row);
+      REPO['lion-dao/holders-heartbeat.json'] = { product: 'lion-dao/holders', engine: '1.0.0', status: 'failed', capturedAt: '2026-07-16T03:40:00Z', written: [], errors: [{ product: 'burn/holders', reason: 'all_accounts read failed on page 3' }] };
+      const out2 = await M.run(); const inv2 = out2.invariants.heartbeat_freshness; const row2 = inv2.measured.all.find(r => r.product === 'ally-holders-liondao');
+      check('R10 ally-holders-liondao fresh-but-failed → FAILED + raised', inv2.status === 'violation' && row2 && row2.status === 'FAILED' && row2.hb_status === 'failed' && inv2.measured.stale.some(r => r.product === 'ally-holders-liondao'), row2); }
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);
