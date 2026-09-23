@@ -24,7 +24,7 @@
  *   its source; a series never rebuilds from a failed read (a failed product is not written — the previous snapshot stands).
  */
 'use strict';
-const VERSION = '1.0.2';   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
+const VERSION = '1.1.0';   // 1.1.0 (2026-09-23, owner): duty `roar` — the whale tracker (staked · liquid · ampROAR · TLA-amp LP ≈ · plain LP · total per wallet)   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
 const https = require('https');
 const fs = require('fs');
 const E = require('../lib/capture-engine.js');
@@ -147,6 +147,63 @@ async function roar20Holders(t) {
   } };
 }
 
+// ---------------------------------------------------------------- 3. ROAR whales — where every wallet's ROAR is (owner, 2026-09-23)
+//   Per wallet, six columns, six sources: staked (staking module `list_stakers`, walked whole) · liquid ROAR (cw20 `all_accounts`
+//   walked whole + `balance`) · liquid ampROAR (bank `denom_owners` of the hub's factory denom, walked whole, converted to ROAR at
+//   the hub's `state.exchange_rate`) · ROAR in TLA-amplified LP (member-data/participants: each member's ROAR-pool positions,
+//   ≈ ROAR = position USD × the pool's ROAR share ÷ ROAR price — a derivation, labeled) · ROAR in plain LP (each registered pair's
+//   `pool` + `pair` → LP token; LP token holders walked; ROAR = share × the pool's ROAR) · total. A source that fails leaves its
+//   column null for EVERY wallet with the reason on the product — never a zero. Gate: Σ staked vs the module's total, Σ liquid vs
+//   the cw20's total_supply less the contracts' own balances is NOT a gate (contracts hold ROAR too) — instead Σ(liquid) is published
+//   beside total_supply and the difference named.
+async function roarWhales(t, nameOf) {
+  const st = t.staking || {}; const cw20 = st.roar_cw20; if (!cw20) return { product: null, reason: 'staking.roar_cw20 not set' };
+  const smartOn = (c) => async (q) => { const r = await lcd(`/cosmwasm/wasm/v1/contract/${c}/smart/${b64(q)}`); return r && r.data !== undefined ? r.data : null; };
+  const info = await smartOn(cw20)({ token_info: {} }); if (!info) return { product: null, reason: 'ROAR token_info read failed' };
+  const dec = num(info.decimals) != null ? num(info.decimals) : 6; const H = (raw) => { const n = num(raw); return n == null ? null : n / Math.pow(10, dec); };
+  const W = new Map(); const at = (a) => { let w = W.get(a); if (!w) { w = { address: a, staked: null, liquid: null, amp: null, amp_units: null, lp_amp: null, lp_plain: null }; W.set(a, w); } return w; };
+  const cols = {};   // column → { ok, source, reason, sum }
+  // --- staked: list_stakers walked whole
+  if (st.roar_staking) { const q = smartOn(st.roar_staking); const stakers = []; let start = null, pages = 0, fail = null;
+    for (;;) { const r = await q({ list_stakers: Object.assign({ limit: 30 }, start ? { start_after: start } : {}) }); if (!r || !Array.isArray(r.stakers)) { fail = `list_stakers page ${pages + 1} failed`; break; } pages++; r.stakers.forEach(x => stakers.push(x)); if (r.stakers.length < 30) break; start = r.stakers[r.stakers.length - 1].address; if (pages > 2000) { fail = 'list_stakers exceeded 2000 pages'; break; } }
+    if (fail) cols.staked = { ok: false, reason: fail, source: 'staking module list_stakers' }; else { stakers.forEach(x => { at(x.address).staked = H(x.balance); }); const tot = await q({ total_staked_at_height: {} }); let sr = 0n; stakers.forEach(x => { try { sr += BigInt(String(x.balance)); } catch (e) { } }); const dr = tot && tot.total != null ? (() => { try { return (BigInt(String(tot.total)) - sr).toString(); } catch (e) { return null; } })() : null; cols.staked = { ok: true, source: 'staking module list_stakers (walked whole)', sum: stakers.reduce((a, x) => a + (H(x.balance) || 0), 0), module_total: tot && tot.total != null ? H(tot.total) : null, gate_delta_raw: dr, gate_delta: dr != null ? Number(dr) / Math.pow(10, dec) : null, exact: dr != null }; } }
+  else cols.staked = { ok: false, reason: 'staking.roar_staking not set' };
+  // --- liquid ROAR: the cw20 walked whole
+  { const q = smartOn(cw20); const accts = []; let start = null, pages = 0, fail = null;
+    for (;;) { const r = await q({ all_accounts: Object.assign({ limit: 30 }, start ? { start_after: start } : {}) }); if (!r || !Array.isArray(r.accounts)) { fail = `all_accounts page ${pages + 1} failed`; break; } pages++; r.accounts.forEach(a => accts.push(a)); if (r.accounts.length < 30) break; start = r.accounts[r.accounts.length - 1]; if (pages > 4000) { fail = 'all_accounts exceeded 4000 pages'; break; } }
+    if (fail) cols.liquid = { ok: false, reason: fail, source: 'cw20 all_accounts + balance' }; else { let failed = 0, sum = 0; for (let i = 0; i < accts.length; i++) { const r = await q({ balance: { address: accts[i] } }); if (!r || r.balance === undefined) { failed++; continue; } const v = H(r.balance); if (v > 0) { at(accts[i]).liquid = v; sum += v; } if (i % 25 === 24) await sleep(120); } cols.liquid = failed ? { ok: false, reason: `${failed} of ${accts.length} balance reads failed — a partial column is not a column` } : { ok: true, source: 'cw20 all_accounts (walked whole) + balance', accounts: accts.length, sum, total_supply: H(info.total_supply) }; if (cols.liquid.ok) { for (const w of W.values()) if (w.liquid == null) w.liquid = 0; } } }
+  // --- liquid ampROAR: bank denom_owners, converted at the hub's exchange rate
+  if (st.amproar_denom && st.amproar_hub) { const hs = await smartOn(st.amproar_hub)({ state: {} }); const xr = hs && hs.exchange_rate != null ? Number(hs.exchange_rate) : null; const owners = []; let key = null, pages = 0, fail = null;
+    for (;;) { const r = await lcd(`/cosmos/bank/v1beta1/denom_owners/${encodeURIComponent(st.amproar_denom)}?pagination.limit=1000` + (key ? `&pagination.key=${encodeURIComponent(key)}` : '')); if (!r || !Array.isArray(r.denom_owners)) { fail = `denom_owners page ${pages + 1} failed`; break; } pages++; r.denom_owners.forEach(o => owners.push(o)); key = r.pagination && r.pagination.next_key; if (!key) break; if (pages > 200) { fail = 'denom_owners exceeded 200 pages'; break; } }
+    if (fail) cols.amp = { ok: false, reason: fail, source: 'bank denom_owners' }; else if (xr == null) cols.amp = { ok: false, reason: 'hub state.exchange_rate not read — ampROAR cannot be expressed in ROAR', source: 'bank denom_owners + hub state' }; else { let sum = 0; owners.forEach(o => { const u = H(o.balance && o.balance.amount); if (u > 0) { const w = at(o.address); w.amp_units = u; w.amp = u * xr; sum += w.amp; } }); for (const w of W.values()) if (w.amp == null) { w.amp = 0; w.amp_units = 0; } cols.amp = { ok: true, source: `bank denom_owners of ${st.amproar_denom.split('/').pop()} (walked whole) × hub exchange_rate ${xr}`, owners: owners.length, exchange_rate: xr, sum }; } }
+  else cols.amp = { ok: false, reason: 'staking.amproar_denom / amproar_hub not set' };
+  // --- ROAR in TLA-amplified LP: participants product (≈, labeled)
+  { const parts = await E.fetchJson(CORE + 'member-data/participants/current.json', 'participants').catch(() => null); const nap = await E.fetchJson(CORE + 'network-and-prices/current.json', 'nap').catch(() => null); const px = nap && nap.token_prices && nap.token_prices.ROAR ? num(nap.token_prices.ROAR.final_price_usd) : null;
+    if (!parts || !Array.isArray(parts.members)) cols.lp_amp = { ok: false, reason: 'member-data/participants not read', source: 'participants' }; else if (px == null) cols.lp_amp = { ok: false, reason: 'ROAR price not in network-and-prices', source: 'participants ÷ price' }; else { let sum = 0, n = 0; parts.members.forEach(m => { const rows = (m.lp_positions || []).filter(l => /ROAR/.test(String(l.pool_name || ''))); if (!rows.length) return; const usd = rows.reduce((a, l) => a + (num(l.estimated_position_usd) || 0), 0); const roar = usd * 0.5 / px; const w = at(m.wallet); w.lp_amp = roar; sum += roar; n++; }); for (const w of W.values()) if (w.lp_amp == null) w.lp_amp = 0; cols.lp_amp = { ok: true, source: `member-data/participants: ROAR-pool positions, ≈ ROAR = USD × ½ ÷ ROAR ${px} (a derivation: half of each two-sided pool is ROAR by value)`, members: n, sum, derived: true }; } }
+  // --- ROAR in plain LP: each registered pair's LP token holders × the pool's ROAR
+  { const pairs = Array.isArray(t.roar_pools) ? t.roar_pools : []; let any = false, fails = []; let sum = 0; const detail = [];
+    for (const p of pairs) { const q = smartOn(p.address); const pool = await q({ pool: {} }); const pair = await q({ pair: {} }); const lpTok = pair && (pair.liquidity_token || (pair.liquidity_token_addr)); if (!pool || !Array.isArray(pool.assets) || !lpTok) { fails.push(`${p.label}: pool/pair read failed`); continue; }
+      const roarAsset = pool.assets.find(a => a.info && a.info.token && a.info.token.contract_addr === cw20); const poolRoar = roarAsset ? H(roarAsset.amount) : null; const total = num(pool.total_share); if (poolRoar == null || !total) { fails.push(`${p.label}: no ROAR asset or total_share`); continue; }
+      const lq = smartOn(lpTok); const accts = []; let start = null, pages = 0, fail = null; for (;;) { const r = await lq({ all_accounts: Object.assign({ limit: 30 }, start ? { start_after: start } : {}) }); if (!r || !Array.isArray(r.accounts)) { fail = 'LP all_accounts failed'; break; } pages++; r.accounts.forEach(a => accts.push(a)); if (r.accounts.length < 30) break; start = r.accounts[r.accounts.length - 1]; if (pages > 500) { fail = 'LP walk exceeded 500 pages'; break; } }
+      if (fail) { fails.push(`${p.label}: ${fail}`); continue; } let failed = 0, psum = 0; for (const a of accts) { const r = await lq({ balance: { address: a } }); if (!r || r.balance === undefined) { failed++; continue; } const sh = num(r.balance); if (sh > 0) { const roar = poolRoar * sh / total; const w = at(a); w.lp_plain = (w.lp_plain || 0) + roar; psum += roar; } } if (failed) { fails.push(`${p.label}: ${failed} LP balance reads failed`); continue; } any = true; sum += psum; detail.push({ pair: p.label, address: p.address, lp_token: lpTok, pool_roar: poolRoar, holders: accts.length, roar_attributed: psum }); }
+    if (!pairs.length) cols.lp_plain = { ok: false, reason: 'no roar_pools registered' }; else if (!any) cols.lp_plain = { ok: false, reason: fails.join(' · '), source: 'pair LP tokens' }; else { for (const w of W.values()) if (w.lp_plain == null) w.lp_plain = 0; cols.lp_plain = { ok: true, source: 'each pair: pool + pair (LP token), LP holders walked whole × the pool\'s ROAR', pairs: detail, sum, partial: fails.length ? fails : null }; } }
+  // --- fold, name, rank
+  const rows = [...W.values()].map(w => { const parts = ['staked', 'liquid', 'amp', 'lp_amp', 'lp_plain'].map(k => w[k]); const known = parts.filter(v => v != null); w.total = known.length ? known.reduce((a, b) => a + b, 0) : null; const nm = nameOf(w.address); w.label = nm ? nm.label : null; w.kind = nm ? nm.kind : null; return w; }).filter(w => w.total != null && w.total >= (t.whales && t.whales.min_total_roar || 0)).sort((a, b) => b.total - a.total);
+  rows.forEach((w, i) => { w.rank = i + 1; });
+  const TOPC = 40; for (let i = 0; i < rows.length; i++) { const w = rows[i]; if (w.kind) { w.kind_source = 'registry'; continue; } if (i < TOPC) { const c = await isContract(w.address); w.kind = c && c.yes ? 'contract' : c ? 'wallet' : 'unclassified'; w.kind_source = c == null ? 'contract-info read failed' : 'chain: /cosmwasm/wasm/v1/contract'; if (c && c.yes && c.label) { w.label = w.label || c.label; w.contract_label = c.label; } } else { w.kind = 'unclassified'; w.kind_source = `only the top ${TOPC} are asked; a wallet by all odds — unverified`; } }
+  const totalSupply = H(info.total_supply); const all = [...W.values()]; const sumCol = (k) => all.reduce((a, w) => a + (w[k] || 0), 0);
+  return { product: {
+    product: 'roar/holders', engine: VERSION, tenant: TENANT, capturedAt: new Date().toISOString(), chain: 'phoenix-1',
+    token: { cw20, symbol: info.symbol || 'ROAR', decimals: dec, total_supply: totalSupply },
+    columns: cols, min_total_roar: t.whales && t.whales.min_total_roar || 0,
+    holder_count: rows.length, wallets_seen: all.length, holders: rows,
+    top25: rows.slice(0, 25).map(w => ({ rank: w.rank, address: w.address, label: w.label, kind: w.kind, staked: w.staked, liquid: w.liquid, amp: w.amp, lp_amp: w.lp_amp, lp_plain: w.lp_plain, total: w.total })),
+    sums: { staked: sumCol('staked'), liquid: sumCol('liquid'), amp: sumCol('amp'), lp_amp: sumCol('lp_amp'), lp_plain: sumCol('lp_plain'), total: all.reduce((a, w) => a + (w.total || 0), 0), note: 'over every wallet seen, before the min_total_roar floor that trims the table' },
+    concentration: { top1_pct: rows[0] && totalSupply ? rows[0].total / totalSupply * 100 : null, top10_pct: totalSupply ? rows.slice(0, 10).reduce((a, w) => a + w.total, 0) / totalSupply * 100 : null, top25_pct: totalSupply ? rows.slice(0, 25).reduce((a, w) => a + w.total, 0) / totalSupply * 100 : null, of: 'total_supply' },
+    notes: ['a wallet\'s ampROAR is shown in ROAR at the hub\'s exchange rate; its units are kept (amp_units)', 'ROAR in TLA-amplified LP is a derivation (½ of position USD ÷ price) — labeled ≈ on the page', 'contracts (pools, the hub, DAO cores) hold ROAR too and rank here by what they hold; the kind column says which is which'],
+  } };
+}
+
 // ---------------------------------------------------------------- publish
 function gh(method, apiPath, body) { return new Promise((resolve, reject) => { const req = https.request({ hostname: 'api.github.com', path: apiPath, method, headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'User-Agent': 'ally-holders', 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' } }, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => { if (res.statusCode >= 200 && res.statusCode < 300) resolve(d ? JSON.parse(d) : {}); else if (res.statusCode === 404) resolve(null); else reject(new Error(`GitHub ${method} ${apiPath}: ${res.statusCode} ${d.slice(0, 200)}`)); }); }); req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end(); }); }
 async function publish(filePath, content, message, writeOnce) {
@@ -156,20 +213,21 @@ async function publish(filePath, content, message, writeOnce) {
   return r && r.content ? r.content.sha.slice(0, 7) : 'ok';
 }
 
-async function run(which = ['pyroar', 'roar20']) {
+async function run(which = ['pyroar', 'roar20', 'roar']) {
   const [tenantsDoc, trusted] = await Promise.all([E.fetchJson(CORE + 'docs/curated/tenants.json', 'tenants'), E.fetchJson(CORE + 'docs/curated/trusted-addresses.json', 'trust-register').catch(() => null)]);
   const t = tenantsDoc.tenants && tenantsDoc.tenants[TENANT]; if (!t) throw new Error(`tenant ${TENANT} not in tenants.json`);
   const outRoot = OUT_ROOT || ((t.daos || [])[0] || TENANT); const nameOf = namer(t, trusted);
   const out = { outRoot, products: {}, errors: [] };
   if (which.includes('pyroar')) { const r = await pyroarHolders(t, nameOf); if (r.product) out.products.pyroar = r.product; else out.errors.push({ product: 'burn/holders', reason: r.reason }); }
   if (which.includes('roar20')) { const r = await roar20Holders(t); if (r.product) out.products.roar20 = r.product; else out.errors.push({ product: 'roar20/holders', reason: r.reason }); }
+  if (which.includes('roar')) { const r = await roarWhales(t, nameOf); if (r.product) out.products.roar = r.product; else out.errors.push({ product: 'roar/holders', reason: r.reason }); }
   return out;
 }
 
 async function main(which) {
-  which = which || (process.env.DUTIES || 'pyroar,roar20').split(',').map(s => s.trim()).filter(Boolean);
+  which = which || (process.env.DUTIES || 'pyroar,roar20,roar').split(',').map(s => s.trim()).filter(Boolean);
   const res = await run(which); const d = day();
-  const targets = { pyroar: 'burn', roar20: 'roar20' };
+  const targets = { pyroar: 'burn', roar20: 'roar20', roar: 'roar' };
   const hb = { product: `${res.outRoot}/holders`, engine: VERSION, status: res.errors.length ? (Object.keys(res.products).length ? 'ok_with_errors' : 'failed') : 'ok', capturedAt: new Date().toISOString(), written: Object.keys(res.products).map(k => `${targets[k]}/holders.json`), errors: res.errors };
   for (const e of res.errors) console.error(`✗ ${e.product}: ${e.reason}`);
   if (!GITHUB_TOKEN) { fs.mkdirSync('out', { recursive: true }); for (const [k, p] of Object.entries(res.products)) fs.writeFileSync(`out/${targets[k]}-holders.json`, JSON.stringify(p, null, 1)); fs.writeFileSync('out/holders-heartbeat.json', JSON.stringify(hb, null, 1)); console.log('⚠️  GITHUB_TOKEN not set — wrote out/'); if (hb.status === 'failed' && require.main === module) process.exit(1); return hb; }
@@ -180,5 +238,5 @@ async function main(which) {
   if (hb.status === 'failed' && require.main === module) process.exit(1);   // a failed product is not written; the previous snapshot stands, and Render shows the failure
   return hb;
 }
-module.exports = { VERSION, run, main, pyroarHolders, roar20Holders, namer, TOP_CLASSIFY };
+module.exports = { VERSION, run, main, pyroarHolders, roar20Holders, roarWhales, namer, TOP_CLASSIFY };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });
