@@ -24,7 +24,8 @@
  *   its source; a series never rebuilds from a failed read (a failed product is not written — the previous snapshot stands).
  */
 'use strict';
-const VERSION = '1.1.0';   // 1.1.0 (2026-09-23, owner): duty `roar` — the whale tracker (staked · liquid · ampROAR · TLA-amp LP ≈ · plain LP · total per wallet)   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
+const VERSION = '1.1.1';   // 1.1.1 (2026-09-25): fix — the publish log read p.supply_gate.delta, which roar/holders does not have (it is gated per column, not by one supply sum): the throw came AFTER burn + roar20 were written and BEFORE roar/holders.json and the heartbeat, so the heartbeat never moved and every hourly run walked again; the log line reads the gate only when a product has one, and one product's publish failing no longer stops the rest or the heartbeat
+//   // 1.1.0 (2026-09-23, owner): duty `roar` — the whale tracker (staked · liquid · ampROAR · TLA-amp LP ≈ · plain LP · total per wallet)   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
 const https = require('https');
 const fs = require('fs');
 const E = require('../lib/capture-engine.js');
@@ -232,8 +233,11 @@ async function main(which) {
   for (const e of res.errors) console.error(`✗ ${e.product}: ${e.reason}`);
   if (!GITHUB_TOKEN) { fs.mkdirSync('out', { recursive: true }); for (const [k, p] of Object.entries(res.products)) fs.writeFileSync(`out/${targets[k]}-holders.json`, JSON.stringify(p, null, 1)); fs.writeFileSync('out/holders-heartbeat.json', JSON.stringify(hb, null, 1)); console.log('⚠️  GITHUB_TOKEN not set — wrote out/'); if (hb.status === 'failed' && require.main === module) process.exit(1); return hb; }
   for (const [k, p] of Object.entries(res.products)) { const root = `${res.outRoot}/${targets[k]}`; const content = JSON.stringify(p, null, 1);
-    console.log(`  ${root}/holders.json (${p.holder_count} holders, gate Δ ${p.supply_gate.delta}) → ${await publish(`${root}/holders.json`, content, `🦁 ${TENANT} ${p.product} ${p.capturedAt}`)}`);
-    console.log(`  ${root}/daily/${d}.json → ${await publish(`${root}/daily/${d}.json`, content, `📸 ${TENANT} ${p.product} daily — ${d}`, true)}`); }
+    const gate = p.supply_gate ? `gate Δ ${p.supply_gate.delta}` : `${Object.values(p.columns || {}).filter(c => c && c.ok).length}/${Object.keys(p.columns || {}).length} columns read`;   // 1.1.1
+    try {
+      console.log(`  ${root}/holders.json (${p.holder_count} holders, ${gate}) → ${await publish(`${root}/holders.json`, content, `🦁 ${TENANT} ${p.product} ${p.capturedAt}`)}`);
+      console.log(`  ${root}/daily/${d}.json → ${await publish(`${root}/daily/${d}.json`, content, `📸 ${TENANT} ${p.product} daily — ${d}`, true)}`);
+    } catch (e) { console.error(`✗ publish ${root}/holders.json: ${e.message}`); hb.errors.push({ product: `${targets[k]}/holders`, reason: 'publish failed: ' + e.message }); hb.written = hb.written.filter(w => w !== `${targets[k]}/holders.json`); hb.status = 'ok_with_errors'; } }
   console.log(`  heartbeat → ${await publish(`${res.outRoot}/holders-heartbeat.json`, JSON.stringify(hb, null, 1), `💓 ${TENANT} holders heartbeat`)}`);
   if (hb.status === 'failed' && require.main === module) process.exit(1);   // a failed product is not written; the previous snapshot stands, and Render shows the failure
   return hb;
