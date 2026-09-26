@@ -1,5 +1,12 @@
 // =============================================================================
-// NFT Inventory Cron — Rev D.2
+// NFT Inventory Cron — Rev D.3
+// Rev D.3 (2026-09-26, owner: Burning Lions into the fold) — A COLLECTION WITHOUT A STAKING MODULE OR A RARITY MAP. Burning Lions
+//   (7 one-of-ones, no DAODAO module, no rarity) was refused at load ("manifest names no DAO core / DAODAO staking module").
+//   Now: no staking module → Phase 5 (DAODAO stakers) and the pending-claims duty are skipped, said once, and the claims block is
+//   the empty fold (count 0, reconciled) — every other phase (ownership, listings on the manifest's venues, floor history,
+//   sales, days on market) runs as for any collection. No rarity map (`rarity: null`) → analytics and compact-bundle are skipped
+//   (both would otherwise fall back to aDAO's rarity/traits and publish a wrong join); market-history still runs. A manifest WITH
+//   a staking module behaves exactly as D.2 (aDAO, Pixel Lions: byte-identical paths).
 // Rev D.2 (2026-09-19) — BBL COMPLETENESS FROM CW721 OWNERSHIP. Measured on both collections: `auction_by_contract` returns the
 //   `limit` largest token-id strings and its cursor never advances (aDAO 30/43, PL 30/72 — warlock silently carried the rest,
 //   the inverse #745 was invisible). The sweep now asks a bigger page, tries both cursors and warns once when stuck; every BBL-held
@@ -1119,6 +1126,7 @@ async function fetchMarketplaces(bblOwnedTokenIds) {   // D.2: the token ids the
 // (Rev D.1) DAODAO_INDEXER_URL is bound by applyCollection() — the module of the collection's own DAO.
 
 async function fetchDaodaoStakers() {
+    if (!DAODAO_STAKING_CONTRACT) { console.log('👥 Phase 5: no DAODAO staking module in this collection\'s manifest — skipped'); return []; }   // D.3
     console.log('👥 Phase 5: fetching DAODAO stakers (via daodao.zone indexer)...');
     try {
         const data = await fetchJson(DAODAO_INDEXER_URL, 'daodao-indexer-topStakers');
@@ -2294,6 +2302,7 @@ async function sweepNftClaims(addresses) {
     return { found, queried, failed };
 }
 async function computePendingClaims(custodyCount, priorState, knownAddresses) {
+    if (!DAODAO_STAKING_CONTRACT) return applyPendingEvents(priorState, [], [], { custodyCount: 0, totalPower: 0, tipHeight: priorState.lastScannedHeight, scanFailed: false });   // D.3: nothing can be pending without a staking module
     const powerRes  = await queryContractSafe(DAODAO_STAKING_CONTRACT, { total_power_at_height: {} }, 'daodao total_power');
     const totalPower = powerRes?.power  != null ? Number(powerRes.power)  : null;
     const tipHeight  = powerRes?.height != null ? Number(powerRes.height) : priorState.lastScannedHeight;
@@ -2849,6 +2858,7 @@ async function captureSnapshot() {
 // Disable with NFT_ANALYTICS=0; force on every run with NFT_ANALYTICS=always.
 // =============================================================================
 // D.1: a named collection's manifest is read once per run and applied before any phase; the aDAO default needs no read.
+let NO_RARITY = false;   // D.3
 async function loadCollectionConfig() {
     if (IS_DEFAULT_COLLECTION) return COL;
     const base = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
@@ -2856,14 +2866,15 @@ async function loadCollectionConfig() {
     const venues = await tryFetchJson(`${base}venues.json?cb=${Date.now()}`, 'venues.json');
     if (!cj || !cj.nft_contract) throw new Error(`${COLLECTION}/collection.json missing or has no nft_contract — refusing to run`);
     const cfg = configFromManifest(cj, venues);
-    if (!cfg.DAODAO_STAKING_CONTRACT || !cfg.DAO_MAIN_WALLET) throw new Error(`${COLLECTION}: manifest names no DAO core / DAODAO staking module — refusing to run`);
+    if (!cfg.DAODAO_STAKING_CONTRACT) console.log(`🧭 ${COLLECTION}: no DAODAO staking module in the manifest — staking phases skipped (D.3)`);   // D.3: was a refusal
+    if (!cj.rarity) { NO_RARITY = true; console.log(`🧭 ${COLLECTION}: no rarity map in the manifest — analytics + compact-bundle skipped (D.3)`); }
     applyCollection(cfg);
     // the sub-modules (analytics · market-history · compact-bundle) read the same manifest through the env, unless pinned
     if (!process.env.RARITY_URL && cj.rarity && cj.rarity.file) process.env.RARITY_URL = `${base}${cj.rarity.file}`;
     if (!process.env.METADATA_URL && cj.metadata_file && /\.json$/.test(cj.metadata_file)) process.env.METADATA_URL = `${base}${cj.metadata_file}`;
     if (!process.env.COLLECTION_TRAITS && Array.isArray(cj.traits)) process.env.COLLECTION_TRAITS = cj.traits.map(t => t.name).join(',');
     if (!process.env.COLLECTION_SUPPLY && cfg.supply) process.env.COLLECTION_SUPPLY = String(cfg.supply);
-    console.log(`🧭 collection ${cfg.slug} (${cfg.label}) · contract ${cfg.NFT_CONTRACT.slice(0, 14)}… · DAODAO ${cfg.DAODAO_STAKING_CONTRACT.slice(0, 14)}… · enterprise ${cfg.ENTERPRISE_NFT_STAKING ? 'yes' : 'no'} · backing ${cfg.BACKING_CW20 ? 'yes' : 'no'} · venues ${cfg.VENUES.join('/')} · supply ${cfg.supply}`);
+    console.log(`🧭 collection ${cfg.slug} (${cfg.label}) · contract ${cfg.NFT_CONTRACT.slice(0, 14)}… · DAODAO ${cfg.DAODAO_STAKING_CONTRACT ? cfg.DAODAO_STAKING_CONTRACT.slice(0, 14) + '…' : 'none'} · enterprise ${cfg.ENTERPRISE_NFT_STAKING ? 'yes' : 'no'} · backing ${cfg.BACKING_CW20 ? 'yes' : 'no'} · venues ${cfg.VENUES.join('/')} · supply ${cfg.supply}`);
     return cfg;
 }
 async function runWithAnalytics() {
@@ -2875,6 +2886,11 @@ async function runWithAnalytics() {
     const shouldRun = mode === 'always' || runMode === 'warm' || runMode === 'full';
     if (!shouldRun) {
         console.log(`(analytics skipped — runMode=${runMode || 'hot'}; runs on warm/full or NFT_ANALYTICS=always)`);
+        return result;
+    }
+    if (NO_RARITY) {   // D.3: market-history only — analytics and compact-bundle need a rarity map (they would fall back to aDAO's)
+        try { console.log('\n=== market-history (same job; no rarity map → analytics + compact-bundle skipped) ==='); await require('./market-history.js').main(); console.log('=== market-history done ==='); }
+        catch (e) { console.error('market-history failed (isolated, inventory unaffected):', e.message); process.exitCode = 1; }
         return result;
     }
     try {
