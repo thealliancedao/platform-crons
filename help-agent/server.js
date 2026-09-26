@@ -1,5 +1,11 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.15.0 (2026-09-26, owner: "make sure the chat bot can answer questions on anything in the Lion DAO ecosystem"): a LION DAO
+//   DATA MAP in the rules (rule 15: which product answers ROAR supply / burns / whales, pyROAR and the festival, ROAR20, the
+//   treasury, TLA positions, the validator, trends, pixeLions and Burning Lions) + the Lion DAO knowledge doc in the corpus;
+//   read_product's `key` reaches the rows of holder files (holders[] by address/owner), proposals{} by id, days[] by date, and a
+//   large OBJECT file is compacted field by field (head/tail of every long array) instead of cut mid-JSON — header counts like
+//   holder_count survive; source_url names the repo the file really came from; the NFT tools list burning-lions.
 // v1.14.0 (2026-09-20, D.1): NFT ROUTES — two tools on the nft-flows shards: nft_wallet (an address's whole history on a
 //   collection: holdings now by state, past holdings with P&L two ways, counts, events — from <slug>/ledger/by-wallet/) and
 //   nft_token (a token's journey — from <slug>/ledger/by-token/); collections from the tenant registry; the shard rule is
@@ -106,6 +112,7 @@ const CORPUS_SOURCES = [
   ['spec-activity-feed',`${CORE}/docs/pending-changes/SPEC-activity-feed.md`],
   ['spec-help-agent',   `${CORE}/docs/pending-changes/SPEC-site-help-agent.md`],
   ['build-queue',       `${CORE}/docs/pending-changes/CHANGES_PENDING.md`],
+  ['lion-dao',          `${CORE}/docs/ecosystem-knowledge/LION-DAO.md`],   // v1.15.0: the Lion DAO ecosystem — ROAR, pyROAR and the festival, ROAR20, pixeLions, Burning Lions, where each number lives
 ];
 const LIVE_HEADS = [
   ['system-health',     `${CORE}/system-health/current.json`],
@@ -252,7 +259,30 @@ Hard rules, in priority order:
    - NAMES: an address's registered name comes from the DAO registries / trusted catalog already in the
      corpus; never invent one. Write addresses in full.
    - Rarity: aDAO has grades + rank; pixeLions is BBL's statistical rank only ("Rank N · top X%", ties
-     share a rank) — never say "Rarity —" for a lion.`;
+     share a rank) — never say "Rarity —" for a lion. Burning Lions are 1/1s: no rank; traits Name + Animated.
+15. LION DAO DATA MAP (v1.15.0) — the ally Lion DAO (tenant liondao; the <lion-dao> knowledge block in the corpus has the story
+   and the mechanics). read_product paths and what each answers — pass "key" for one row of a big file:
+   - dao-originations/lion-dao/positions/current.json → the DAO's wallets NOW: balances, TLA (staked / compounder / locks /
+     pending), Credia, Votion, validator commission, known_usd. key = a wallet address for one wallet.
+   - dao-originations/lion-dao/positions/daily/index.json → the DAO's value by day (known_usd, by_section, by_wallet).
+   - dao-originations/lion-dao/roar/holders.json → every ROAR wallet: staked, liquid, amp, LP, total, rank, label (key = address).
+     Contracts that hold ROAR FOR others (staking, LP pairs) are never ranked as whales.
+   - dao-originations/lion-dao/burn/holders.json → the frozen pyROAR ledger (key = address). A pyROAR balance is NOT the ROAR a
+     wallet burned: a burner got pyROAR 1:1 for their own burn AND every ROAR staker got a share for Lion DAO's treasury burns
+     (the 10× match, the 4B opening burn).
+   - dao-originations/lion-dao/roar20/holders.json (key = owner) · roar20/market.json (price, market cap, liquidity, source) ·
+     roar20/market-history.json (hourly). ROAR20 trades in a Raydium AMM v4 pool; its price is read from that pool on chain.
+   - dao-originations/lion-dao/history/daily.json → per day since 2023-09: roar_supply (drops = burns), roar_staked,
+     pyroar_supply, pixelions_staked, validator {rank, tokens_luna, commission_rate} (key = YYYY-MM-DD for one day).
+   - dao-originations/lion-dao/history/markets.json → per day since 2026-09-26: ROAR / pyROAR / ROAR20 prices, holder counts,
+     Burning Lions minted + holders (key = YYYY-MM-DD).
+   - dao-originations/lion-dao/governance/proposals.json (key = proposal id) · governance/members.csv.
+   - nft-collections/pixel-lions/… and nft-collections/burning-lions/… → collection.json, snapshots/summary.json,
+     snapshots/floor-history.json, snapshots/nfts.json (Burning Lions: 7 tokens — read it whole), metadata/metadata.json
+     (Burning Lions: names + image files; pixeLions' is huge — use nft_token instead).
+   - docs/curated/tenants.json → the registry: every Lion DAO contract (ROAR cw20, staking, pyROAR, pairs, validator, the
+     Burning Lions contract, the ROAR20 mint) — quote addresses from it, never from memory.
+   Say where a number came from (the product and its capturedAt); a product that has not run yet is "not captured yet", not zero.`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
@@ -405,7 +435,7 @@ const PRODUCT_PREFIXES = ['dao-originations/','member-data/','nfts/','nft-collec
 const CHAIN_TOOLS = [
   { name: 'read_product', /* input.key: pool/token name for surgical extraction from big keyed files (apr-history, pool-status-history, token-catalog…) — ALWAYS use key for per-pool questions */
     description: 'Fetch a data file from the public tla-core repo (the same files the site renders). Use for questions needing actual records: e.g. nfts/adao/transfers/2026/08.json for NFT transfer/stake/unstake events, nfts/adao/flows/2026/08.json for sales/listings, tla-voting/events/locks/2026/08.json for lock events, member-data/positions/current.json, lp-grades/snapshots/current.json, tla-voting/bribe-state/runway.json. Monthly streams use {yyyy}/{mm}.json. The REPO-CATALOG in your corpus maps everything.',
-    input_schema: { type: 'object', properties: { path: { type: 'string', description: 'repo-relative path, e.g. nfts/adao/transfers/2026/08.json' } }, required: ['path'] } },
+    input_schema: { type: 'object', properties: { path: { type: 'string', description: 'repo-relative path, e.g. nfts/adao/transfers/2026/08.json or dao-originations/lion-dao/roar/holders.json' }, key: { type: 'string', description: 'optional: one row of a big file — an address (holders, wallets), a proposal id, a day (YYYY-MM-DD), a pool/token name' } }, required: ['path'] } },
   { name: 'get_transaction',
     description: 'Fetch one Terra (phoenix-1) transaction by hash from the public LCD node. Use when the visitor gives a tx hash.',
     input_schema: { type: 'object', properties: { hash: { type: 'string', description: '64-char hex tx hash' } }, required: ['hash'] } },
@@ -414,10 +444,10 @@ const CHAIN_TOOLS = [
     input_schema: { type: 'object', properties: { messages_json: { type: 'string', description: 'the raw JSON (array of messages) pasted by the visitor' } }, required: ['messages_json'] } },
   { name: 'nft_wallet',   // v1.14.0
     description: 'An address\'s WHOLE NFT history on one collection from the nft-flows by-wallet product: holdings now (per token: liquid / listed:<venue> / staked / staked_enterprise / unstaking / locked, since when, what it was acquired by and for), PAST holdings (closed positions with what closed them and P&L two ways: USD at each end, LUNA-terms when both ends were LUNA), counts (bought, sold, minted, listings, stakes…), first/last seen, and the events themselves. Use for "what does terra1… hold", "what did this wallet hold before / sell / buy / mint", "is this address still in the DAO", "how many lions did X flip". Collections: adao, pixel-lions, tla-locks (locks by lock id). Omit collection to read every live collection.',
-    input_schema: { type: 'object', properties: { address: { type: 'string', description: 'terra1… address' }, collection: { type: 'string', description: 'slug: adao | pixel-lions | tla-locks (omit = all)' } }, required: ['address'] } },
+    input_schema: { type: 'object', properties: { address: { type: 'string', description: 'terra1… address' }, collection: { type: 'string', description: 'slug: adao | pixel-lions | burning-lions | tla-locks (omit = all)' } }, required: ['address'] } },
   { name: 'nft_token',   // v1.14.0
     description: 'One token\'s whole on-chain journey from the nft-flows by-token product: every ledger record of that token (mint, mint_purchase with the mint price, transfers, listings with prices, sales with price/USD/buyer/seller, stakes/unstakes/claims, breaks, locks), plus a summary (hand changes, listings, sales, last custody event). Use for "what happened to #1234", "who minted / sold / owns pixeLion #7", "how many times did #500 change hands".',
-    input_schema: { type: 'object', properties: { collection: { type: 'string', description: 'slug: adao | pixel-lions | tla-locks' }, token_id: { type: 'string', description: 'token / lock id' } }, required: ['collection', 'token_id'] } },
+    input_schema: { type: 'object', properties: { collection: { type: 'string', description: 'slug: adao | pixel-lions | burning-lions | tla-locks' }, token_id: { type: 'string', description: 'token / lock id' } }, required: ['collection', 'token_id'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -737,6 +767,7 @@ async function runTool(name, input) {
                 : p.startsWith('nft-collections/') ? `${NFTC_REPO}/${p.slice('nft-collections/'.length)}`
                 : `${CORE}/${p}`;
       if (!url) return { error: 'dao-originations: only adao / lion-dao / pixel-lions are readable' };
+      const srcUrl = url.replace('https://raw.githubusercontent.com/thealliancedao/', 'https://github.com/thealliancedao/').replace(/\/main\//, '/blob/main/');   // v1.15.0: the repo the file really came from
       const r = await fetch(url, { headers: { 'User-Agent': 'tla-help-agent' } });
       if (!r.ok) return { error: 'not found (' + r.status + ') — check the path against REPO-CATALOG' };
       let t = await r.text();
@@ -747,12 +778,17 @@ async function runTool(name, input) {
         try {
           const j = JSON.parse(t);
           const kl = key.toLowerCase();
-          const hit = (arr) => arr.find(x => String(x.name || x.symbol || x.canonical || '').toLowerCase() === kl)
-                   || arr.find(x => String(x.name || x.symbol || x.denom || '').toLowerCase().includes(kl));
+          const hit = (arr) => arr.find(x => x && [x.address, x.owner, x.wallet, x.id, x.day, x.date].some(v => v != null && String(v).toLowerCase() === kl))   // v1.15.0: holder / proposal / day rows
+                   || arr.find(x => x && String(x.name || x.symbol || x.canonical || '').toLowerCase() === kl)
+                   || arr.find(x => x && String(x.name || x.symbol || x.denom || '').toLowerCase().includes(kl));
           let found = null, where = null;
-          for (const field of ['pools', 'tokens', 'epochs', 'entries', 'vaults', 'members', 'wallets']) {   // v1.14.0: wallets (by-wallet shards); tokens[<id>] already lifts a by-token block
+          for (const field of ['pools', 'tokens', 'epochs', 'entries', 'vaults', 'members', 'wallets', 'holders', 'proposals', 'days', 'rows', 'points', 'records', 'tenants']) {   // v1.15.0: holders / proposals / days / rows / points / records   // v1.14.0: wallets (by-wallet shards); tokens[<id>] already lifts a by-token block
             if (Array.isArray(j[field])) { const h = hit(j[field]); if (h) { found = h; where = field; break; } }
             if (j[field] && typeof j[field] === 'object' && j[field][key]) { found = j[field][key]; where = field; break; }
+            if (j[field] && typeof j[field] === 'object' && !Array.isArray(j[field])) {   // v1.15.0: a map whose keys carry a prefix ("a31") or whose entries carry the id — "31" finds a31
+              const digits = kl.replace(/\D/g, ''); const ks = Object.keys(j[field]);
+              const k2 = ks.find(k => k.toLowerCase() === kl) || (digits ? ks.find(k => k.replace(/\D/g, '') === digits) : null);
+              if (k2) { found = j[field][k2]; where = field + '.' + k2; break; } }
           }
           if (!found && j[key]) { found = j[key]; where = 'root'; }
           if (found) {
@@ -761,7 +797,7 @@ async function runTool(name, input) {
             else if (Array.isArray(found) && JSON.stringify(found).length > 13000) found = { _truncated: true, total: found.length, first: found.slice(0, 6), last: found.slice(-30) };
             return { path: p, extracted_key: key, from: where,
               meta: { epochs: j.epochs, generatedAt: j.generatedAt || (j.meta && j.meta.generated_at) },
-              source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p,
+              source_url: srcUrl,
               content: JSON.stringify(found).slice(0, 13000) };
           }
           const names = [];
@@ -773,10 +809,16 @@ async function runTool(name, input) {
         // arrays: keep shape + head/tail so recent events survive truncation
         try { const j = JSON.parse(t);
           if (Array.isArray(j)) t = JSON.stringify({ _truncated: true, total: j.length, first: j.slice(0, 8), last: j.slice(-30) });
+          else if (j && typeof j === 'object') {   // v1.15.0: an OBJECT file keeps every header field; long arrays / maps shrink to head + tail
+            const small = (v, n) => Array.isArray(v) && v.length > n ? { _truncated: true, total: v.length, first: v.slice(0, Math.ceil(n / 2)), last: v.slice(-Math.floor(n / 2)), hint: 'pass key=<address | id | day> for one row' }
+              : (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > n) ? (() => { const ks = Object.keys(v); const o = { _truncated: true, total_keys: ks.length, hint: 'pass key=<one of these keys> for one entry' }; ks.slice(0, Math.ceil(n / 2)).concat(ks.slice(-Math.floor(n / 2))).forEach(k => { o[k] = v[k]; }); return o; })() : v;
+            let n = 20, out = null; for (let pass = 0; pass < 4; pass++) { const c = {}; for (const k of Object.keys(j)) c[k] = small(j[k], n); out = JSON.stringify(c); if (out.length <= 14000) break; n = Math.max(2, Math.floor(n / 2)); }
+            t = out.length > 14000 ? out.slice(0, 14000) + '…[truncated]' : out;
+          }
           else t = t.slice(0, 14000) + '…[truncated]';
         } catch (e) { t = t.slice(0, 14000) + '…[truncated]'; }
       }
-      return { path: p, source_url: 'https://github.com/thealliancedao/tla-core/blob/main/' + p, content: t };
+      return { path: p, source_url: srcUrl, content: t };
     } catch (e) { return { error: 'fetch failed: ' + e.message }; }
   }
   if (name === 'nft_wallet' || name === 'nft_token') return nftTool(name, input);   // v1.14.0
