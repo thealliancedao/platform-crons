@@ -20,7 +20,7 @@
  * The registry holds the literals (tenants.json); this file names no address.
  * ============================================================================= */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';   // 1.0.1 (owner's first run: the public node had pruned all seven missing days — 7 day-searches every hour for nothing): probe the NEWEST missing day first; if the node cannot serve it, the older ones are not tried (they are older still) — they wait for the archive Action
 const E = require('../lib/capture-engine.js');
 const MAX_DAYS = Math.max(1, Math.min(14, Number(process.env.HISTORY_MAX_DAYS || 7)));
 const KEEP_DAYS = 3 * 366;
@@ -49,7 +49,10 @@ async function chainSeries(o) {
   if (!process.env.ARCHIVE_LCD) process.env.ARCHIVE_LCD = E.TERRA_LCD_PRIMARY;
   const B = require('./backfill.js');
   let rows = [], skipped = [];
-  if (todo.length) { const res = await B.run({ allowNonManual: true, days: todo }); rows = res.rows.filter(r => Object.values(r.reads || {}).some(v => v === 'ok')); skipped = res.skipped.concat(res.rows.filter(r => !rows.includes(r)).map(r => ({ day: r.day, reason: 'every read failed at height ' + r.height }))); }
+  const okRows = (res) => res.rows.filter(r => Object.values(r.reads || {}).some(v => v === 'ok'));
+  if (todo.length) { const probe = await B.run({ allowNonManual: true, days: [todo[todo.length - 1]] }); rows = okRows(probe);
+    if (!rows.length) skipped = [{ day: todo.length > 1 ? todo[0] + ' … ' + todo[todo.length - 1] : todo[0], reason: 'the public node does not serve state at those heights (pruned) — the archive backfill Action fills them: FROM=' + todo[0] + ' TO=' + todo[todo.length - 1] }];
+    else if (todo.length > 1) { const res = await B.run({ allowNonManual: true, days: todo.slice(0, -1) }); const more = okRows(res); rows = more.concat(rows); skipped = res.skipped.concat(res.rows.filter(r => !more.includes(r)).map(r => ({ day: r.day, reason: 'every read failed at height ' + r.height }))); } }
   const gotYesterday = rows.some(r => r.day === yesterday) || last === yesterday;
   // the fallback: the day's LAST hourly run writes today's row from the latest state when the public node cannot serve heights
   if (!gotYesterday && hourUtc === 23) {
