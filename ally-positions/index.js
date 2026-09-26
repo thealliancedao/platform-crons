@@ -51,7 +51,8 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.2.3';   // 1.2.3: fix — main() has no ctx; the holders root comes from doc.product. 1.2.2 (2026-09-22, owner): the holders duty runs inside this job once every ≥20 h (holdersDue) — no second service; env HELIUS_API_KEY here. 1.2.1 (2026-09-22, first live run): epoch dates as ISO (at_time ns); DROGO named via the registry. 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
+const VERSION = '1.3.0';   // 1.3.0 (2026-09-26, owner: "what do we need to get the ROAR20 price pulled in?"): every hourly run also captures ROAR20's market server-side (roar20-market.js: DexScreener → GeckoTerminal → Jupiter) into <dao>/roar20/market.json + an hourly market-history.json; ROAR20_MARKET=off disables it; a failure never fails the positions run.
+//   // 1.2.3: fix — main() has no ctx; the holders root comes from doc.product. 1.2.2 (2026-09-22, owner): the holders duty runs inside this job once every ≥20 h (holdersDue) — no second service; env HELIUS_API_KEY here. 1.2.1 (2026-09-22, first live run): epoch dates as ISO (at_time ns); DROGO named via the registry. 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
 const C = require('../config/contracts.js');
 const COMPOUNDER_PREFIX = `factory/${C.COMPOUNDER.addr}/`;
 const CREDIA_PORTFOLIO = C.CREDIA.portfolio;
@@ -364,6 +365,13 @@ async function runHoldersIfDue(root) {
   try { const due = await holdersDue(root.replace(/\/positions$/, '')); if (due.due) { console.log(`🦁 holders (${due.why}) — walking the pyROAR ledger + ROAR20 owners…`); const H = require('./holders.js'); const hhb = await H.main(); console.log(`  holders → ${hhb.status}${hhb.errors.length ? ' · ' + hhb.errors.map(e => e.product + ': ' + e.reason).join(' · ') : ''}`); return hhb; } console.log(`  holders: not due (${due.why})`); return null; }
   catch (e) { console.error('  ✗ holders duty threw (positions run unaffected): ' + e.message); return null; }
 }
+// 1.3.0: ROAR20's market, every run (tenants.json <tenant>.roar20 — a tenant without one skips)
+async function runRoar20Market(root) {
+  if (process.env.ROAR20_MARKET === 'off') return null;
+  try { const tenantsDoc = await E.fetchJson(CORE + 'docs/curated/tenants.json', 'tenants'); const t = tenantsDoc.tenants && tenantsDoc.tenants[TENANT]; if (!t || !t.roar20) return null;
+    const M = require('./roar20-market.js'); return await M.run({ tenant: t, tenantSlug: TENANT, outRoot: root.replace(/\/positions$/, ''), publish, readJson, log: (m) => console.log(m) }); }
+  catch (e) { console.error('  ✗ roar20 market threw (positions run unaffected): ' + e.message); return null; }
+}
 async function main() {
   const doc = await run();
   const content = JSON.stringify(doc, null, 1); const d = day();
@@ -375,8 +383,9 @@ async function main() {
   const series = mergeSeries(await readJson(`${root}/daily/index.json`), d, seriesRow(doc), root);
   console.log(`  daily/index.json (${series.day_count} days) → ${await publish(`${root}/daily/index.json`, JSON.stringify(series, null, 1), `📈 ${TENANT} positions series — ${d}`)}`);
   console.log(`  heartbeat → ${await publish(`${root}/heartbeat.json`, hb, `💓 ${TENANT} positions heartbeat`)}`);
+  await runRoar20Market(root);   // 1.3.0 — before the holders walk, so a long walk never delays the price
   await runHoldersIfDue(root);   // 1.2.3
 
 }
-module.exports = { VERSION, run, main, runHoldersIfDue, loadContext, readPlRewards, holdersDue, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
+module.exports = { VERSION, run, main, runHoldersIfDue, runRoar20Market, loadContext, readPlRewards, holdersDue, captureWallet, readBalances, readDelegations, readValidatorCommission, readVotion, readNfts, readCredia, rollup, reconcile, priceRow, findPrice, receiptKind, assetDenom, SECTION_MAP, seriesRow, mergeSeries };
 if (require.main === module) main().catch(e => { console.error('✗', e); process.exit(1); });
