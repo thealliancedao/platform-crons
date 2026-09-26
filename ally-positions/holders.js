@@ -24,7 +24,8 @@
  *   its source; a series never rebuilds from a failed read (a failed product is not written — the previous snapshot stands).
  */
 'use strict';
-const VERSION = '1.2.0';   // 1.2.0 (2026-09-25, first real whale run): (a) ampROAR owners — the path-style denom_owners/{denom} fails on a factory denom (its slashes), so the walk falls back to denom_owners_by_query?denom=; (b) CUSTODY — the staking contract, the ampROAR hub, the pairs and the LP incentives contract hold ROAR FOR OTHERS (the stakers, the amp holders, the LP holders), so ranking them beside wallets counted the same ROAR twice (top 10 = 124% of supply). They are flagged `custody` with the reason, left out of the ranking, the sums and the concentration, and published beside them in `custody`.
+const VERSION = '1.3.0';   // 1.3.0 (2026-09-26, first full run read): a CONTRACT is never ranked beside wallets unless it is an owner — a DAO core, a treasury, a multisig. Staking contracts (ve3-asset-staking held 92B ROAR of LP for TLA stakers — counted again under each member's TLA-amp LP), rewards distributors, bridge escrows, hubs and the token contract itself hold ROAR for others and move to custody, each with its reason.
+//   // 1.2.0 (2026-09-25, first real whale run): (a) ampROAR owners — the path-style denom_owners/{denom} fails on a factory denom (its slashes), so the walk falls back to denom_owners_by_query?denom=; (b) CUSTODY — the staking contract, the ampROAR hub, the pairs and the LP incentives contract hold ROAR FOR OTHERS (the stakers, the amp holders, the LP holders), so ranking them beside wallets counted the same ROAR twice (top 10 = 124% of supply). They are flagged `custody` with the reason, left out of the ranking, the sums and the concentration, and published beside them in `custody`.
 // 1.1.1:   // 1.1.1 (2026-09-25): fix — the publish log read p.supply_gate.delta, which roar/holders does not have (it is gated per column, not by one supply sum): the throw came AFTER burn + roar20 were written and BEFORE roar/holders.json and the heartbeat, so the heartbeat never moved and every hourly run walked again; the log line reads the gate only when a product has one, and one product's publish failing no longer stops the rest or the heartbeat
 //   // 1.1.0 (2026-09-23, owner): duty `roar` — the whale tracker (staked · liquid · ampROAR · TLA-amp LP ≈ · plain LP · total per wallet)   // 1.0.2: contract labels from the chain on pyROAR contract holders; top10_wallets (burners) beside top10
 const https = require('https');
@@ -216,6 +217,16 @@ async function roarWhales(t, nameOf) {
     const lab = String(w.contract_label || w.label || '');
     if (w.kind === 'contract' && /pair/i.test(lab)) return 'a pool pair (chain label "' + lab + '") — its ROAR belongs to its LP holders; not a registered pair, so its LP holders are not walked (add it to tenants.json roar_pools)';
     if (w.kind === 'contract' && /incentive|generator/i.test(lab)) return 'an LP incentives contract (chain label "' + lab + '") — it holds LP staked by others (TLA vaults and farmers); the TLA-amp LP column attributes the TLA share';
+    // 1.3.0: every other contract is custody unless it is an OWNER (a DAO core, a treasury, a multisig)
+    if (w.kind === 'contract' && !/core|treasury|multisig|msig|dao\b/i.test(lab)) {
+      if (/asset-staking|ve3/i.test(lab)) return 'TLA asset staking (chain label "' + lab + '") — the LP TLA stakers deposited; the TLA-amp LP column attributes each member\'s share';
+      if (/staking/i.test(lab)) return 'a staking contract (chain label "' + lab + '") — holds ROAR for the stakers of another DAO or vault (not walked)';
+      if (/distributor|reward/i.test(lab)) return 'a rewards distributor (chain label "' + lab + '") — ROAR waiting to be paid out to stakers';
+      if (/ics20|bridge/i.test(lab)) return 'a bridge escrow (chain label "' + lab + '") — ROAR sent to another chain; it belongs to whoever holds it there';
+      if (/hub/i.test(lab)) return 'a liquid-staking hub (chain label "' + lab + '") — holds for its own token\'s holders';
+      if (st.roar_cw20 && w.address === st.roar_cw20) return 'the ROAR token contract itself — ROAR sent to it by mistake; no one can move it';
+      return 'a contract (chain label "' + (lab || 'unlabeled') + '") — not an owner; what it holds belongs to its users';
+    }
     return null;
   };
   const custody = []; const ranked = [];
