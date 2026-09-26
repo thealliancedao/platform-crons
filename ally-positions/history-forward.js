@@ -20,7 +20,7 @@
  * The registry holds the literals (tenants.json); this file names no address.
  * ============================================================================= */
 'use strict';
-const VERSION = '1.0.1';   // 1.0.1 (owner's first run: the public node had pruned all seven missing days — 7 day-searches every hour for nothing): probe the NEWEST missing day first; if the node cannot serve it, the older ones are not tried (they are older still) — they wait for the archive Action
+const VERSION = '1.0.2';   // 1.0.2: Burning Lions holders = distinct REAL owners from the collection inventory (a lion listed on BBL belongs to its seller — owner_of names BBL's contract, which counted three sellers as one holder); owner_of stays the fallback. 1.0.1:   // 1.0.1 (owner's first run: the public node had pruned all seven missing days — 7 day-searches every hour for nothing): probe the NEWEST missing day first; if the node cannot serve it, the older ones are not tried (they are older still) — they wait for the archive Action
 const E = require('../lib/capture-engine.js');
 const MAX_DAYS = Math.max(1, Math.min(14, Number(process.env.HISTORY_MAX_DAYS || 7)));
 const KEEP_DAYS = 3 * 366;
@@ -98,7 +98,9 @@ async function marketSeries(o) {
   if (bl.contract) { const nt = await smart(bl.contract, { num_tokens: {} }); set('bl_minted', nt ? num(nt.count) : null, 'cw721 num_tokens', 'the cw721 did not answer');
     const at = await smart(bl.contract, { all_tokens: { limit: 30 } }); const ids = at && Array.isArray(at.tokens) ? at.tokens : [];
     const owners = []; for (const id of ids) { const ow = await smart(bl.contract, { owner_of: { token_id: id } }); owners.push(ow ? ow.owner : null); }
-    set('bl_holders', ids.length && owners.every(Boolean) ? new Set(owners).size : null, 'cw721 owner_of per token', ids.length ? 'owner_of did not answer for every lion' : 'all_tokens did not answer'); }
+    const inv = await E.fetchJson(NFTC + 'burning-lions/snapshots/nfts.json?t=' + Date.now(), 'burning-lions nfts').catch(() => null); const recs = inv && Array.isArray(inv.records) ? inv.records : null;
+    if (recs && recs.length) set('bl_holders', new Set(recs.map(r => r.real_owner || r.owner).filter(Boolean)).size, 'collection inventory (real owner per token) @ ' + String(inv.capturedAt || '').slice(0, 16));
+    else set('bl_holders', ids.length && owners.every(Boolean) ? new Set(owners).size : null, 'cw721 owner_of per token (a listed lion counts as its marketplace)', ids.length ? 'owner_of did not answer for every lion' : 'all_tokens did not answer'); }
   // pixeLions floor lives in its own daily product (nft-collections/pixel-lions/snapshots/floor-history.json) — referenced, not copied
   const path = `${o.outRoot}/history/markets.json`; const ex = await o.readJson(path).catch(() => null);
   const days = Object.assign({}, ex && ex.days ? ex.days : {}); days[row.day] = row;
