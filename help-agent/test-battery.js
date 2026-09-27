@@ -1,7 +1,7 @@
 // =============================================================================
 // help-agent/test-battery.js — verification battery against the LIVE service
 // -----------------------------------------------------------------------------
-// Runs 10 graded questions through the deployed agent's real /ask endpoint and
+// Runs 12 graded questions through the deployed agent's real /ask endpoint and
 // grades each answer against independently computed ground truth. The same 10
 // questions + graders also exist as a browser harness (the session artifact)
 // that runs the agent's exact brain replica; THIS file proves the deployed
@@ -136,6 +136,24 @@ const TESTS = [
       if (path && period) return ['pass', 'right product, right latest period'];
       if (path) return ['review', 'right product — verify the latest period stated matches the file'];
       return ['review', 'check the product path it named'];
+    } },
+  // v1.16.0 — the Vote Market tool (structural: the tool's numbers move every round; the grader checks the shape of the answer)
+  { id: 'T11', tag: 'Vote Market · where $ does the most',
+    q: "If I put $50 of bribes into TLA this round, where would it do the most?",
+    truth: 'vote_market overview ($50, impact): a ranked list with $/wk of emissions bought and the APR change, marked as an estimate, linking /vote-market.html. No winding-down (USDC.nbl) pool recommended.',
+    grade: (t) => {
+      const est = /estimate|if (everything|every other)[^.]{0,40}(same|stays)/i.test(t), link = /vote-market\.html/i.test(t), wk = /\/\s?wk|per week|a week/i.test(t);
+      if (/USDC\.nbl[^.]{0,60}(best|top|recommend)/i.test(t)) return ['fail', 'recommended a winding-down pool'];
+      if (est && link && wk) return ['pass', 'ranked by emissions bought, marked an estimate, simulator linked'];
+      return ['review', 'expect a ranked list with $/wk, the estimate caveat and the simulator link'];
+    } },
+  { id: 'T12', tag: 'Vote Market · a $100 bribe for a wallet',
+    q: "I'm terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw. What happens if I bribe LUNA-ROAR with $100 — how much comes back to me and what does it really cost?",
+    truth: 'vote_market simulate: You pay $100, comes back $0 unless the wallet votes LUNA-ROAR (it did not at battery date), elsewhere ± from Votion moving, real cost ≈ $93–100; Votion re-votes/holds per vault; APR before → after. MOVING DATA.',
+    grade: (t) => {
+      const cost = /real cost|actually cost|net cost/i.test(t), back = /comes? back|back to (you|your votes)|you('d| would) (get|collect)/i.test(t), votion = /votion/i.test(t), est = /estimate/i.test(t);
+      if (cost && back && votion && est) return ['pass', 'breakdown + Votion reaction + estimate caveat'];
+      return ['review', 'expect You pay / comes back / real cost, Votion\'s reaction and the estimate caveat'];
     } },
 ];
 

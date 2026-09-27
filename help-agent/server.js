@@ -1,5 +1,11 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.16.0 (2026-09-27, owner: "make sure we get this tool and its functionality added to the bot"): THE VOTE MARKET — tool
+//   vote_market runs the site's own engine (aDAO-links-site lib/vote-market.js, fetched + cached 1 h; model 10 min, live pots when
+//   the incentive manager answers) so the bot's bribe/vote answers are the TLA Stats tile's, the simulator's and the app's numbers:
+//   overview (where $X does the most, by lens/bucket), simulate (a bribe and/or moved votes → Votion per vault, what comes back,
+//   real cost, APR, flows), best_split (a wallet's or a typed VP), votion_moves, pool. Rule 16 = when to use it and how to say it
+//   (always an estimate; link the simulator with ?pool=&bribe=). Logic in lib/vote-market-tool.js; gate gate-vote-market-tool.mjs.
 // v1.15.1 (2026-09-26): the question log flushes every 2 minutes (or 10 questions) and on shutdown — a redeploy no longer loses the
 //   questions still waiting in the batch.
 // v1.15.0 (2026-09-26, owner: "make sure the chat bot can answer questions on anything in the Lion DAO ecosystem"): a LION DAO
@@ -38,7 +44,8 @@
 // =============================================================================
 'use strict';
 const http = require('http');
-const NFT = require('./lib/nft-tools.js');   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
+const NFT = require('./lib/nft-tools.js');
+const VMT = require('./lib/vote-market-tool.js');   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
@@ -284,7 +291,24 @@ Hard rules, in priority order:
      (Burning Lions: names + image files; pixeLions' is huge — use nft_token instead).
    - docs/curated/tenants.json → the registry: every Lion DAO contract (ROAR cw20, staking, pyROAR, pairs, validator, the
      Burning Lions contract, the ROAR20 mint) — quote addresses from it, never from memory.
-   Say where a number came from (the product and its capturedAt); a product that has not run yet is "not captured yet", not zero.`;
+   Say where a number came from (the product and its capturedAt); a product that has not run yet is "not captured yet", not zero.
+16. VOTE MARKET (v1.16.0) — bribes, Votion and "how should I vote" questions go through the vote_market tool, never mental math:
+   - "Where should I bribe / where does $X do the most?" → overview (usd, bucket, lens). "What does $X on <pool> do?" → simulate
+     (pool, bribe_usd, wallet if given). "How should I split my votes / vote for the best rewards?" → best_split (wallet or vp).
+     "What will Votion do?" → votion_moves. "Is <pool> funded / what does a vote cost there?" → pool. "What if I move my votes
+     to <pool>?" → simulate with pct (and from).
+   - EVERY number is an ESTIMATE on this round's pots and today's votes if everything else stays the same — say so once, plainly.
+   - How it works, in the tool's words: a voter's payout = pot × your votes ÷ (the pool's votes + yours), paid only when the pool
+     holds ≥ 1% of its bucket's votes; emissions split among the active pools by vote share; Votion's two vaults (ampLUNA /
+     arbLUNA max) re-vote a bucket only when the gain > $0.05 AND the split shifts > 5% (fitted on its own history), casting
+     ~2.6 h before the Sunday deadline — a pot funded after that is too late for Votion this round.
+   - The bribe breakdown: You pay − Comes back to your votes (only if the wallet votes that pool) ± elsewhere (Votion's votes
+     leaving or diluting the wallet's other pools) = the real cost this round. Its LPs get the emissions bought per week.
+   - Pools holding an asset being wound down (e.g. USDC.nbl / Noble USDC → USDC.inj) are never recommended; say so and name
+     the replacement when the tool returns winding_down.
+   - Link the simulator the tool returns (https://thealliancedao.com/vote-market.html?pool=…&bribe=…, ?view=best for the split)
+     so the visitor can try it; the same tool is in the app's Vote Market tab and on TLA Stats. Never tell anyone what they MUST
+     vote — lay out the estimate and the trade-off.`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
@@ -450,6 +474,9 @@ const CHAIN_TOOLS = [
   { name: 'nft_token',   // v1.14.0
     description: 'One token\'s whole on-chain journey from the nft-flows by-token product: every ledger record of that token (mint, mint_purchase with the mint price, transfers, listings with prices, sales with price/USD/buyer/seller, stakes/unstakes/claims, breaks, locks), plus a summary (hand changes, listings, sales, last custody event). Use for "what happened to #1234", "who minted / sold / owns pixeLion #7", "how many times did #500 change hands".',
     input_schema: { type: 'object', properties: { collection: { type: 'string', description: 'slug: adao | pixel-lions | burning-lions | tla-locks' }, token_id: { type: 'string', description: 'token / lock id' } }, required: ['collection', 'token_id'] } },
+  { name: 'vote_market',   // v1.16.0
+    description: 'The TLA Vote Market simulator — the SAME engine as TLA Stats\' Vote Market tile, /vote-market.html and the app. Use for ANY bribe / voting-strategy question: where $X of bribe does the most (action overview, lens impact|underdogs|liquidity|volume|pd|leaving|mine, bucket all|stable|project|bluechip|single), what a bribe on a pool does (action simulate: pool, bribe_usd, optional wallet, pct of the wallet\'s votes to move there and from which pool) — Votion\'s reaction per vault, what comes back to the wallet, the real cost, the APR next epoch; the best split of a wallet\'s VP (action best_split: wallet or vp); Votion\'s own next move if nothing changes (action votion_moves); one pool\'s pot / votes / $ per 1M VP / what it takes (action pool). Pools by name (LUNA-EURe) — an ambiguous name returns candidates to choose from.',
+    input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['overview', 'simulate', 'best_split', 'votion_moves', 'pool'] }, usd: { type: 'number', description: 'overview: the $ to add (default 50)' }, lens: { type: 'string', description: 'overview: impact (default) | underdogs | liquidity | volume | pd | leaving | mine' }, bucket: { type: 'string', description: 'all | stable | project | bluechip | single (also disambiguates a pool name)' }, pool: { type: 'string', description: 'pool name (e.g. LUNA-ROAR) or its bucket|gauge key' }, bribe_usd: { type: 'number' }, wallet: { type: 'string', description: 'terra1… — read only; its votes and LP from the participants product' }, vp: { type: 'number', description: 'a typed VP when there is no wallet (default 1,000,000)' }, pct: { type: 'number', description: 'simulate: % of the wallet\'s votes in that bucket to move to the pool (0-100)' }, from: { type: 'string', description: 'simulate: move from this pool (default all of the wallet\'s pools in the bucket)' }, limit: { type: 'integer' }, untested: { type: 'boolean', description: 'overview impact: include pools Votion has not been offered yet' } }, required: ['action'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -824,6 +851,7 @@ async function runTool(name, input) {
     } catch (e) { return { error: 'fetch failed: ' + e.message }; }
   }
   if (name === 'nft_wallet' || name === 'nft_token') return nftTool(name, input);   // v1.14.0
+  if (name === 'vote_market') return VMT.run(input);   // v1.16.0
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };

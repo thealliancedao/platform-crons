@@ -1,5 +1,11 @@
 # help-agent — the site's grounded Q&A service (v1)
 
+> **v1.16.0 (2026-09-27)** — tool `vote_market`: the TLA Vote Market simulator on the site's OWN engine (`aDAO-links-site/lib/vote-market.js`,
+> fetched from the site repo, cached 1 h; model 10 min; live pots when the incentive manager answers). Actions overview / simulate /
+> best_split / votion_moves / pool — the same numbers as TLA Stats' tile, /vote-market.html and the app. Rule 16 says when and how.
+> Logic `lib/vote-market-tool.js`; gate `gate-vote-market-tool.mjs` (`TLA_CORE_DIR=… SITE_DIR=… node gate-vote-market-tool.mjs`, 18/18).
+> Battery +T11/T12. No new env vars; the service needs outbound HTTPS to raw.githubusercontent.com (already true) and the Terra LCD.
+
 > **v1.14.0 (2026-09-20, D.1)** — NFT routes: tools `nft_wallet` (an address's whole history on a collection — holdings now
 > by state, past holdings with P&L two ways, counts, events; from `nft-collections/<slug>/ledger/by-wallet/`) and `nft_token`
 > (a token's journey from `ledger/by-token/`); collections from `tla-core/docs/curated/tenants.json` (+ `NFT_EXTRA_COLLECTIONS`,
