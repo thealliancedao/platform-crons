@@ -51,7 +51,7 @@ const path = require('path');
 const E = require('../lib/capture-engine.js');
 const { buildResolver } = require('../lib/denom-symbol.js');
 
-const VERSION = '1.4.1';   // 1.4.1 (2026-09-27): history-forward 1.1.0 — every run keeps TODAY's daily row current (a missed 23:xx run no longer loses a day) · 1.4.0 (2026-09-26, owner: "do we have things capturing data so we can power trends?"): history-forward.js — every run keeps history/daily.json going (closed days read at height on the public node; latest-state fallback at 23:xx UTC) and rewrites today's row of history/markets.json (ROAR / pyROAR / ROAR20 prices, holder counts, Burning Lions minted + holders); HISTORY_FORWARD=off disables it; a failure never fails the positions run. 1.3.0 (2026-09-26, owner: "what do we need to get the ROAR20 price pulled in?"): every hourly run also captures ROAR20's market server-side (roar20-market.js: DexScreener → GeckoTerminal → Jupiter) into <dao>/roar20/market.json + an hourly market-history.json; ROAR20_MARKET=off disables it; a failure never fails the positions run.
+const VERSION = '1.5.0';   // 1.5.0 (2026-09-27): Credia from the Portfolio contract's real shape (supplied / borrowed / health factors) — the ampLP collateral and the debt side are now read; receipts kept as the cross-check · 1.4.1 (2026-09-27): history-forward 1.1.0 — every run keeps TODAY's daily row current (a missed 23:xx run no longer loses a day) · 1.4.0 (2026-09-26, owner: "do we have things capturing data so we can power trends?"): history-forward.js — every run keeps history/daily.json going (closed days read at height on the public node; latest-state fallback at 23:xx UTC) and rewrites today's row of history/markets.json (ROAR / pyROAR / ROAR20 prices, holder counts, Burning Lions minted + holders); HISTORY_FORWARD=off disables it; a failure never fails the positions run. 1.3.0 (2026-09-26, owner: "what do we need to get the ROAR20 price pulled in?"): every hourly run also captures ROAR20's market server-side (roar20-market.js: DexScreener → GeckoTerminal → Jupiter) into <dao>/roar20/market.json + an hourly market-history.json; ROAR20_MARKET=off disables it; a failure never fails the positions run.
 //   // 1.2.3: fix — main() has no ctx; the holders root comes from doc.product. 1.2.2 (2026-09-22, owner): the holders duty runs inside this job once every ≥20 h (holdersDue) — no second service; env HELIUS_API_KEY here. 1.2.1 (2026-09-22, first live run): epoch dates as ISO (at_time ns); DROGO named via the registry. 1.2.0 (2026-09-22): pl_rewards — the pixeLions DAODAO rewards distributor (found by a claim tx): distributions with their emission rates (raw kept), APR as arithmetic on rate ÷ staked count × price ÷ floor, pending per roster wallet. 1.1.1:   // 1.1.1 (2026-09-22): daily/index.json — the DAILY SERIES the pages chart (one row per archived day: known, liabilities, by section, by wallet, VP, prices, commission, the gate-#0 delta); write-once per day, never-shrink
 const C = require('../config/contracts.js');
 const COMPOUNDER_PREFIX = `factory/${C.COMPOUNDER.addr}/`;
@@ -128,19 +128,40 @@ async function readCredia(wallet, ctx) {
     const hit = findPrice(m.denom, m.symbol, ctx);
     collateral.push({ market: m.denom, symbol: m.symbol, vproxy: m.vproxy, vamount_raw: bal.balance, supply_index: m.supply_index, amount_human: human, price_usd: hit ? hit.price : null, price_source: hit ? hit.source : null, price_key: hit ? hit.key : null, credia_oracle_price_usd: m.credia_price_usd, usd_value: hit ? human * hit.price : null, unpriced_reason: hit ? null : (m.symbol ? 'symbol_not_in_price_feed' : 'not_in_token_catalog'), basis: 'receipt balance × market supply_index (real = vamount × index), priced by our feed' });
   }, 4);
-  // debt — the Portfolio contract's per-user view; shape kept raw, parsed tolerantly (supplies/borrows arrays with a vamount)
-  let debt = null, debtError = null, raw = null;
+  // 1.5.0 (2026-09-27): the Portfolio contract answers {supplied[], borrowed[], totals, health factors} (captured raw on main since
+  // 1.1.0: `supplied` / `borrowed` — the reader looked for `supplies` / `borrows`, so every wallet said "shape unknown" and the debt
+  // side was never read). The contract's own view is now the PRIMARY Credia read: it lists every supplied asset — including the
+  // ampLP collateral the vproxy receipt walk above never sees (Ryan 2026-09-27: $1,860 LUNA-ampLUNA ampLP, the whole phoenix gap) —
+  // valued by Credia's own oracle (the venue's contract is the source), plus the borrow side and the health factors a loan planner
+  // needs. The receipt walk stays as `collateral_receipts` (a cross-check, never added in). Old shape → the 1.1.0 path, unchanged.
+  let debt = null, debtError = null, raw = null, health = null, supplied = null;
   const pf = await E.queryContract(CREDIA_PORTFOLIO, { portfolio: { address: wallet } });
+  const decOf = (d) => { const m = markets.find(x => x.denom === d); if (m) return { dec: m.decimals, sym: m.symbol }; const r = ctx.resolve ? ctx.resolve(d) : null; return r && r.symbol ? { dec: r.decimals, sym: r.symbol } : null; };
+  const rowOf = (x, kind) => { const d = assetDenom(x.info || x.asset_info || x.asset || x); const k = decOf(d); const amt = x.amount != null ? String(x.amount) : null;
+    return { market: d, symbol: k ? k.sym : (/\/amplp$/.test(d || '') ? 'ampLP (TLA compounder receipt)' : null), amount_raw: amt, vamount_raw: x.vamount != null ? String(x.vamount) : null, amount_human: k && amt != null ? Number(amt) / Math.pow(10, k.dec) : null,
+      usd_value: num(x.value), collateral: kind === 'supplied' ? x.collateral !== false : undefined, lt_value_usd: num(x.lt_value), ltv_value_usd: num(x.ltv_value), price_source: 'credia portfolio contract (its oracle)' }; };
   if (pf === null) debtError = 'portfolio query failed';
   else {
-    raw = pf; const borrows = pf.borrows || pf.borrow || pf.portfolio_borrow || (pf.portfolio && (pf.portfolio.borrows || pf.portfolio.borrow)) || null;
-    if (!Array.isArray(borrows)) debtError = 'portfolio response has no borrows array (shape unknown — raw kept)';
-    else debt = borrows.map((b) => { const d = assetDenom(b.asset_info || b.info || b.asset || b); const m = markets.find(x => x.denom === d); const vam = num(b.vamount != null ? b.vamount : (b.amount != null ? b.amount : b.virtual_amount)); const real = vam != null && m ? vam * m.borrow_index : null; const human = real != null && m ? real / Math.pow(10, m.decimals) : null; const hit = m ? findPrice(m.denom, m.symbol, ctx) : null; return { market: d, symbol: m ? m.symbol : null, vamount_raw: b.vamount != null ? String(b.vamount) : null, borrow_index: m ? m.borrow_index : null, amount_human: human, price_usd: hit ? hit.price : null, usd_value: hit && human != null ? human * hit.price : null, unpriced_reason: hit ? null : (m ? 'symbol_not_in_price_feed' : 'market_not_in_credia_snapshot') }; }).filter(x => x.amount_human == null || x.amount_human > 0);
+    raw = pf;
+    const sup = pf.supplied || pf.supplies || null, bor = pf.borrowed || pf.borrows || pf.borrow || pf.portfolio_borrow || (pf.portfolio && (pf.portfolio.borrows || pf.portfolio.borrow)) || null;
+    if (Array.isArray(sup) && (pf.total_supplied_value != null || sup.some(x => x.value != null))) {
+      supplied = sup.map(x => rowOf(x, 'supplied'));
+      debt = Array.isArray(bor) ? bor.map(x => rowOf(x, 'borrowed')) : [];
+      health = { lt_health_factor: num(pf.lt_health_factor), ltv_health_factor: num(pf.ltv_health_factor), total_supplied_usd: num(pf.total_supplied_value), total_collateral_usd: num(pf.total_collateral_value),
+        total_lt_usd: num(pf.total_lt_value), total_ltv_usd: num(pf.total_ltv_value), total_borrowed_usd: num(pf.total_borrowed_value), max_liquidation_usd: pf.max_liquidation_usd != null ? num(pf.max_liquidation_usd) : null,
+        unhealthy_prices: Array.isArray(pf.unhealthy_prices) ? pf.unhealthy_prices : [], emode: pf.emode != null ? pf.emode : (pf.emode_group != null ? pf.emode_group : null),
+        note: 'Credia\'s own view: a health factor under 1 is liquidatable; lt = liquidation threshold, ltv = borrow limit; values in USD at Credia\'s oracle' };
+    } else if (!Array.isArray(bor)) debtError = 'portfolio response has neither supplied/borrowed nor borrows (shape unknown — raw kept)';
+    else debt = bor.map((b) => { const d = assetDenom(b.asset_info || b.info || b.asset || b); const m = markets.find(x => x.denom === d); const vam = num(b.vamount != null ? b.vamount : (b.amount != null ? b.amount : b.virtual_amount)); const real = vam != null && m ? vam * (m.borrow_index || 1) : null; const human = real != null && m ? real / Math.pow(10, m.decimals) : null; const hit = findPrice(d, m && m.symbol, ctx); return { market: d, symbol: m ? m.symbol : null, vamount_raw: b.vamount != null ? String(b.vamount) : null, amount_human: human, price_usd: hit ? hit.price : null, usd_value: human != null && hit ? human * hit.price : null }; });
   }
   const cUsd = sum(collateral.map(c => c.usd_value)); const cErr = collateral.some(c => c.error);
-  const collateral_usd = collateral.length === 0 ? 0 : (cErr && cUsd == null ? null : cUsd);
-  const debt_usd = debt === null ? null : (debt.length === 0 ? 0 : sum(debt.map(d => d.usd_value)));
-  return { collateral, debt, collateral_usd, debt_usd, net_usd: collateral_usd != null && debt_usd != null ? collateral_usd - debt_usd : null, debt_error: debtError, portfolio_raw: raw, source: `dex-data/credia markets + vproxy balances + ${CREDIA_PORTFOLIO.slice(0, 16)}… portfolio{address}`, note: 'collateral is an asset (counted in known_usd), debt a liability (liabilities_usd); net only when both read' };
+  const receipts_usd = collateral.length === 0 ? 0 : (cErr && cUsd == null ? null : cUsd);
+  const collateral_usd = supplied ? (health.total_supplied_usd != null ? health.total_supplied_usd : sum(supplied.map(x => x.usd_value))) : receipts_usd;
+  const debt_usd = debt === null ? null : (supplied && health.total_borrowed_usd != null ? health.total_borrowed_usd : (debt.length === 0 ? 0 : sum(debt.map(d => d.usd_value))));
+  return { collateral: supplied || collateral, collateral_receipts: supplied ? collateral : undefined, receipts_usd: supplied ? receipts_usd : undefined, debt, health, collateral_usd, debt_usd,
+    net_usd: collateral_usd != null && debt_usd != null ? collateral_usd - debt_usd : null, debt_error: debtError, portfolio_raw: raw,
+    basis: supplied ? 'portfolio contract (supplied + borrowed, Credia oracle); receipts = cross-check' : 'vproxy receipts × supply_index at the feed price (1.1.0 path)',
+    source: `dex-data/credia markets + vproxy balances + ${CREDIA_PORTFOLIO.slice(0, 12)}… portfolio{address}` };
 }
 async function readDelegations(wallet, ctx) {
   const [dl, rw] = await Promise.all([lcd(`/cosmos/staking/v1beta1/delegations/${wallet}?pagination.limit=100`, 'delegations'), lcd(`/cosmos/distribution/v1beta1/delegators/${wallet}/rewards`, 'rewards')]);

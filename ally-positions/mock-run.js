@@ -21,6 +21,7 @@ const ryanAddr = Object.keys(T.wallets).find(a => /Ryan/.test(T.wallets[a].label
 // a Credia wBTC receipt (vproxy from the real dex-data/credia snapshot) and a Portfolio{address} response (SHAPE — docs name
 // PortfolioResponse.supplies; borrows assumed alongside with vamount; the live run keeps the raw answer either way)
 const credia = J(path.join(CORE, 'dex-data/credia/snapshots/current.json'));
+const CREDIA_PF = J(path.join(CORE, 'docs/fixtures/2026-09-27/credia-portfolio-ryan.json')).response;   // 1.5.0
 const wbtcMarket = credia.pools.find(p => p.assets[0].denom.startsWith('ibc/88386'));
 const WBTC_VPROXY = wbtcMarket.raw.vproxy_addr;
 const PYROAR = (T.known_cw20s || []).find(k => k.symbol === 'pyROAR');
@@ -51,7 +52,10 @@ global.fetch = async (url) => { url = String(url); calls.push(url);
       if (PYROAR && c === PYROAR.denom && a === treasury) return ok({ data: { balance: '6240000000000' } });
       if (c === WBTC_VPROXY && a === ryanAddr) return ok({ data: { balance: '4142667' } });   // Ryan's wBTC.creda.a receipt (8 dec) = the vamount
       return ok({ data: { balance: '0' } }); }
-    if (q && q.portfolio) { const a = q.portfolio.address; if (a === ryanAddr) return ok({ data: { address: a, emode_group: null, supplies: [{ asset_info: { native: 'ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB' }, vamount: '4142667', collateral: true }], borrows: [{ asset_info: { native: 'uluna' }, vamount: '1000000000' }] } }); return ok({ data: { address: a, emode_group: null, supplies: [], borrows: [] } }); }
+    // 1.5.0: the REAL Portfolio shape (captured raw, docs/fixtures/2026-09-27/credia-portfolio-ryan.json) + one borrow row in the same
+    // row shape (no captured wallet borrows yet) so the debt side is exercised; every other wallet: the real empty answer
+    if (q && q.portfolio) { const a = q.portfolio.address; if (a === ryanAddr) { const r = JSON.parse(JSON.stringify(CREDIA_PF)); r.address = a; r.borrowed = [{ info: { native: 'uluna' }, vamount: '1000000000', amount: '1003000000', value: '53.96' }]; r.total_borrowed_value = '53.96'; r.lt_health_factor = '126.1'; r.ltv_health_factor = '122.4'; return ok({ data: r }); }
+      return ok({ data: { address: a, supplied: [], borrowed: [], total_supplied_value: '0', total_collateral_value: '0', total_lt_value: '0', total_ltv_value: '0', total_borrowed_value: '0', lt_health_factor: '100', ltv_health_factor: '100', unhealthy_prices: [], max_liquidation_usd: null, emode: null } }); }
     return ok({ data: null }); }
   return nf;
 };
@@ -94,9 +98,10 @@ let pass = 0, fail = 0; const chk = (m, c, x) => { if (c) { pass++; console.log(
   const py = tre.balances.find(b => PYROAR && b.denom === PYROAR.denom);
   chk('1.1.0 known_cw20s: pyROAR on the treasury read from tenants.json (6.24M, symbol_source labeled, unpriced by design)', py && py.symbol === 'pyROAR' && py.amount_human === 6240000 && /tenants/.test(py.symbol_source) && py.usd_value === null, py);
   const cr = ryan.credia;
-  chk('1.1.0 Credia collateral from the receipt: 4,142,667 vamount × supply_index → ' + (cr && cr.collateral[0] && cr.collateral[0].amount_human.toFixed(6)) + ' wBTC.atom, priced by denom (WBTC) ≈ $' + (cr && cr.collateral_usd && cr.collateral_usd.toFixed(0)), cr && cr.collateral.length === 1 && Math.abs(cr.collateral[0].amount_human - 0.04142667 * wbtcMarket.raw.state.supply_index) < 1e-9 && cr.collateral[0].price_key === 'WBTC' && cr.collateral_usd > 3000 && cr.collateral[0].credia_oracle_price_usd > 0, cr && cr.collateral);
-  chk('1.1.0 Credia debt from portfolio{address}: 1,000 LUNA vamount × borrow_index, priced; net = collateral − debt; raw kept', cr && cr.debt.length === 1 && cr.debt[0].symbol === 'LUNA' && cr.debt[0].amount_human > 1000 && cr.debt_usd > 0 && Math.abs(cr.net_usd - (cr.collateral_usd - cr.debt_usd)) < 1e-9 && cr.portfolio_raw && cr.debt_error === null, cr && cr.debt);
-  chk('1.1.0 Credia on a wallet with nothing: collateral 0 / debt 0 (a successful empty read is 0, never null)', tre.credia && tre.credia.collateral_usd === 0 && tre.credia.debt_usd === 0 && tre.credia.net_usd === 0, tre.credia);
+  chk('1.5.0 Credia collateral from the Portfolio contract: ' + (cr && cr.collateral.length) + ' supplied rows = $' + (cr && cr.collateral_usd && cr.collateral_usd.toFixed(2)) + ' (total_supplied_value ' + CREDIA_PF.total_supplied_value + '), incl. the ampLP collateral the receipt walk missed', cr && cr.collateral.length === CREDIA_PF.supplied.length && Math.abs(cr.collateral_usd - Number(CREDIA_PF.total_supplied_value)) < 1e-6 && cr.collateral.some(c => /amplp$/.test(c.market) && Math.abs(c.usd_value - 1860.02) < 0.01) && cr.basis.startsWith('portfolio contract'), cr && cr.collateral);
+  chk('1.5.0 the receipt walk stays as the cross-check (wBTC.creda.a × supply_index), never added in', cr && cr.collateral_receipts && cr.collateral_receipts.length === 1 && Math.abs(cr.collateral_receipts[0].amount_human - 0.04142667 * wbtcMarket.raw.state.supply_index) < 1e-9 && cr.receipts_usd > 0 && cr.receipts_usd < cr.collateral_usd, cr && cr.collateral_receipts);
+  chk('1.5.0 debt from `borrowed` ($53.96 LUNA), health factors read (lt 126.1 / ltv 122.4), net = supplied − borrowed', cr && cr.debt.length === 1 && cr.debt[0].symbol === 'LUNA' && cr.debt_usd === 53.96 && cr.health && cr.health.lt_health_factor === 126.1 && cr.health.ltv_health_factor === 122.4 && Math.abs(cr.net_usd - (cr.collateral_usd - 53.96)) < 1e-9 && cr.debt_error === null, cr && [cr.debt, cr.health]);
+  chk('1.5.0 on a wallet with nothing: supplied 0 / borrowed 0 / net 0 (a successful empty read is 0, never null)', tre.credia && tre.credia.collateral_usd === 0 && tre.credia.debt_usd === 0 && tre.credia.net_usd === 0 && tre.credia.health && tre.credia.health.lt_health_factor === 100, tre.credia);
   const wbr = ryan.balances.find(b => b.denom === WBTC_VPROXY);
   chk('1.1.0 the Credia receipt (wBTC.creda.a) in balances is LABELED credia_receipt and NOT priced (valued in credia)', !wbr || (wbr.held_as === 'credia_receipt' && wbr.usd_value === null), wbr);
   chk('1.1.0 totals: known_usd includes Credia collateral, liabilities_usd carries the debt separately, receipts counted apart from unpriced', Math.abs(ryan.totals.known_usd - (ryan.totals.balances_usd + ryan.totals.tla_usd + (ryan.totals.delegations_usd || 0) + ryan.totals.credia_collateral_usd)) < 1e-6 && ryan.totals.liabilities_usd === ryan.totals.credia_debt_usd && ryan.totals.receipt_rows >= 1 && doc.rollup.dao.credia_collateral_usd === ryan.totals.credia_collateral_usd, ryan.totals);
