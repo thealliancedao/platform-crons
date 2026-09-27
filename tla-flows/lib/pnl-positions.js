@@ -312,7 +312,7 @@ function walletOutput(book, ctx, address) {
     let dispute = null;
     if (ctx.check && value) { dispute = ctx.check(address, p.pool, p.mech, value.usd); }
     if (dispute) { (book.disputed = book.disputed || new Set()).add(key); }
-    positions[key] = { pool: p.pool, mechanism: p.mech, disputed: dispute || undefined, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
+    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
       realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd) },
