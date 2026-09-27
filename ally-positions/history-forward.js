@@ -10,8 +10,8 @@
  *      roar_supply, roar_staked, pixelions_staked, validator). For every CLOSED UTC day after the file's last_day (at most
  *      MAX_DAYS per run), backfill.js's own readDay / heightAtEndOfDay / merge run against the PUBLIC node — the state at the
  *      last block of that day. A height the public node has pruned is skipped with its reason (the manual archive Action fills
- *      those: FROM=<day> TO=<day>). And if YESTERDAY could not be read at height, the last run of a day (23:xx UTC) writes
- *      today's row from the latest state instead, labeled `method: latest_state_at_capture` — so the series never silently stops.
+ *      those: FROM=<day> TO=<day>). 1.1.0: EVERY run also writes TODAY's row from the latest state (provisional, method
+ *      latest_state_at_capture, replaced by each later run) — so a day exists from its first hour and no single missed run loses it.
  *   2. MARKET SERIES → <dao>/history/markets.json (new): one row per UTC day, rewritten by every hourly run (the last run of the
  *      day is what stays): ROAR price + 24h (network-and-prices, the TLA pool), pyROAR price (the registered pyROAR pair, live,
  *      × ROAR), ROAR20 price / volume / market cap (the roar20 market capture this run made), holder counts (the published
@@ -20,7 +20,7 @@
  * The registry holds the literals (tenants.json); this file names no address.
  * ============================================================================= */
 'use strict';
-const VERSION = '1.0.2';   // 1.0.2: Burning Lions holders = distinct REAL owners from the collection inventory (a lion listed on BBL belongs to its seller — owner_of names BBL's contract, which counted three sellers as one holder); owner_of stays the fallback. 1.0.1:   // 1.0.1 (owner's first run: the public node had pruned all seven missing days — 7 day-searches every hour for nothing): probe the NEWEST missing day first; if the node cannot serve it, the older ones are not tried (they are older still) — they wait for the archive Action
+const VERSION = '1.1.0';   // 1.1.0: every run keeps TODAY's daily row current from the latest state (provisional, replaced each run; upgraded at height when the node serves it) — one missed 23:xx run no longer loses a day · 1.0.2: Burning Lions holders = distinct REAL owners from the collection inventory (a lion listed on BBL belongs to its seller — owner_of names BBL's contract, which counted three sellers as one holder); owner_of stays the fallback. 1.0.1:   // 1.0.1 (owner's first run: the public node had pruned all seven missing days — 7 day-searches every hour for nothing): probe the NEWEST missing day first; if the node cannot serve it, the older ones are not tried (they are older still) — they wait for the archive Action
 const E = require('../lib/capture-engine.js');
 const MAX_DAYS = Math.max(1, Math.min(14, Number(process.env.HISTORY_MAX_DAYS || 7)));
 const KEEP_DAYS = 3 * 366;
@@ -39,33 +39,43 @@ const denomOf = (info) => info && (info.token ? info.token.contract_addr : info.
 
 // ---------------------------------------------------------------- 1. chain series (backfill.js's reads, against the public node)
 async function chainSeries(o) {
+  // 1.1.0 (owner 2026-09-27: "why do we keep needing to do this — is this not a render job to keep current?"): the public node
+  // rarely serves yesterday at height, and the old fallback wrote a row only on the 23:xx UTC run — one missed run = a lost day
+  // (2026-09-26 was lost that way). Now EVERY run keeps TODAY's row current from the latest state (provisional: true,
+  // method latest_state_at_capture) — the day is written from its first run, and the last run of the day is what stays. Closed
+  // days are still tried at height (the true end-of-day state); a provisional row from the last 2 days is upgraded when the node
+  // serves it. A provisional row is this job's own and is REPLACED (never merged never-shrink); an at-height or archive row never is.
   const path = `${o.outRoot}/history/daily.json`; const log = o.log;
   const existing = await o.readJson(path).catch(() => null);
-  const last = existing && existing.last_day; const yesterday = day(Date.now() - 864e5);
-  const want = []; if (last) { for (let d = new Date(last + 'T00:00:00Z'); ; ) { d.setUTCDate(d.getUTCDate() + 1); const s = d.toISOString().slice(0, 10); if (s > yesterday) break; want.push(s); } } else want.push(yesterday);
-  const todo = want.slice(-MAX_DAYS); const hourUtc = new Date().getUTCHours();
-  if (!todo.length && !(hourUtc === 23 && last !== day(Date.now()))) { log(`  history daily: up to date (last day ${last})`); return null; }
-  // backfill.js reads ARCHIVE_LCD at require time — point it at the public node for this in-process use (never an archive on Render)
-  if (!process.env.ARCHIVE_LCD) process.env.ARCHIVE_LCD = E.TERRA_LCD_PRIMARY;
+  const days = (existing && Array.isArray(existing.days)) ? existing.days : [];
+  const today = day(Date.now()), yesterday = day(Date.now() - 864e5), recent = day(Date.now() - 2 * 864e5);
+  const final = days.filter(r => !r.provisional && r.day < today); const lastFinal = final.length ? final[final.length - 1].day : null;
+  const want = []; if (lastFinal) { for (let d = new Date(lastFinal + 'T00:00:00Z'); ; ) { d.setUTCDate(d.getUTCDate() + 1); const s = d.toISOString().slice(0, 10); if (s > yesterday) break; want.push(s); } } else want.push(yesterday);
+  // closed days to try at height: missing ones, and provisional ones no older than 2 days (older provisional rows wait for the archive)
+  const have = new Map(days.map(r => [r.day, r]));
+  const todo = want.filter(d => !have.has(d) || (have.get(d).provisional && d >= recent)).slice(-MAX_DAYS);
+  if (!process.env.ARCHIVE_LCD) process.env.ARCHIVE_LCD = E.TERRA_LCD_PRIMARY;   // backfill.js reads it at require time — the public node here
   const B = require('./backfill.js');
   let rows = [], skipped = [];
   const okRows = (res) => res.rows.filter(r => Object.values(r.reads || {}).some(v => v === 'ok'));
-  if (todo.length) { const probe = await B.run({ allowNonManual: true, days: [todo[todo.length - 1]] }); rows = okRows(probe);
-    if (!rows.length) skipped = [{ day: todo.length > 1 ? todo[0] + ' … ' + todo[todo.length - 1] : todo[0], reason: 'the public node does not serve state at those heights (pruned) — the archive backfill Action fills them: FROM=' + todo[0] + ' TO=' + todo[todo.length - 1] }];
-    else if (todo.length > 1) { const res = await B.run({ allowNonManual: true, days: todo.slice(0, -1) }); const more = okRows(res); rows = more.concat(rows); skipped = res.skipped.concat(res.rows.filter(r => !more.includes(r)).map(r => ({ day: r.day, reason: 'every read failed at height ' + r.height }))); } }
-  const gotYesterday = rows.some(r => r.day === yesterday) || last === yesterday;
-  // the fallback: the day's LAST hourly run writes today's row from the latest state when the public node cannot serve heights
-  if (!gotYesterday && hourUtc === 23) {
-    const t = o.tenant; const latest = await E.fetchJson(`${E.TERRA_LCD_PRIMARY}/cosmos/base/tendermint/v1beta1/blocks/latest`, 'latest block').catch(() => null);
+  if (todo.length) { try { const res = await B.run({ allowNonManual: true, days: todo }); rows = okRows(res); skipped = res.skipped.concat(res.rows.filter(r => !rows.includes(r)).map(r => ({ day: r.day, reason: 'no field read at height' })));
+    } catch (e) { skipped = todo.map(d => ({ day: d, reason: 'at-height read failed: ' + e.message })); } }
+  for (const s of skipped) { const kept = have.get(s.day); log(`  history daily: ${s.day} not served at height (${s.reason})${kept && kept.provisional ? ' — its provisional row stays' : kept ? '' : ' — MISSING: run the archive backfill Action FROM=' + s.day + ' TO=' + s.day}`); }
+  // today's row from the latest state, every run
+  try { const latest = await E.fetchJson(`${E.TERRA_LCD_PRIMARY}/cosmos/base/tendermint/v1beta1/blocks/latest`, 'latest block').catch(() => null);
     const h = latest && latest.block ? { height: num(latest.block.header.height), time: latest.block.header.time } : { height: null, time: new Date().toISOString() };
-    try { const row = await B.readDay(day(Date.now()), h, t); row.method = 'latest_state_at_capture'; row.method_note = 'the public node did not serve the previous days at height; this is the state at the 23:xx UTC run — the archive Action can replace it with the end-of-day read'; rows.push(row); }
-    catch (e) { skipped.push({ day: day(Date.now()), reason: 'latest-state fallback failed: ' + e.message }); }
-  }
-  for (const s of skipped) log(`  history daily: skipped ${s.day} — ${s.reason}`);
-  if (!rows.length) { log('  history daily: nothing measured this run' + (skipped.length ? ' (the public node likely pruned those heights — run the archive backfill Action for them)' : '')); return null; }
-  const meta = { product: `${o.outRoot}/history/daily`, sources: { forward: { engine: 'history-forward ' + VERSION, node: E.TERRA_LCD_PRIMARY, method: 'state at the last block of each closed UTC day, read hourly by the positions job; latest-state fallback at 23:xx UTC when heights are pruned' } } };
-  const doc = B.merge(existing, rows, meta);
-  log(`  history daily: +${rows.map(r => r.day + (r.method ? ' (latest state)' : '')).join(', ')} → ${doc.day_count} days, last ${doc.last_day} → ${await o.publish(path, JSON.stringify(doc, null, 1), `📜 ${o.tenantSlug} history ${doc.last_day}`)}`);
+    const row = await B.readDay(today, h, o.tenant);
+    if (Object.values(row.reads || {}).some(v => v === 'ok')) { row.provisional = true; row.method = 'latest_state_at_capture'; row.captured_at = new Date().toISOString(); row.method_note = 'today so far — rewritten by every hourly run; the last run of the day stays unless the state at the day\'s last block (or the archive) replaces it'; rows.push(row); }
+    else log('  history daily: today\'s latest-state read failed on every field');
+  } catch (e) { log('  history daily: today\'s latest-state read failed: ' + e.message); }
+  if (!rows.length) { log('  history daily: nothing measured this run'); return null; }
+  // replace this job's own provisional rows for the days measured now; everything else merges never-shrink as before
+  const newDays = new Set(rows.map(r => r.day));
+  const base = existing ? Object.assign({}, existing, { days: days.filter(r => !(r.provisional && newDays.has(r.day))) }) : null;
+  const meta = { product: `${o.outRoot}/history/daily`, sources: { forward: { engine: 'history-forward ' + VERSION, node: E.TERRA_LCD_PRIMARY, method: 'closed UTC days at their last block when the node serves them; today (and any closed day the node will not serve) = the latest state, rewritten every hourly run and marked provisional' } } };
+  const doc = B.merge(base, rows, meta);
+  const at = rows.filter(r => !r.provisional).map(r => r.day), pv = rows.filter(r => r.provisional).map(r => r.day);
+  log(`  history daily: ${at.length ? 'at height ' + at.join(', ') + ' · ' : ''}${pv.length ? 'today (latest state) ' + pv.join(', ') + ' · ' : ''}${doc.day_count} days, last ${doc.last_day} → ${await o.publish(path, JSON.stringify(doc, null, 1), `📜 ${o.tenantSlug} history ${doc.last_day}`)}`);
   return doc;
 }
 
