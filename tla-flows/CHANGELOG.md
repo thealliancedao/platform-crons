@@ -1,5 +1,28 @@
 # tla-flows — changelog
 
+## 3.5.0 — 2026-09-27 — build-pnl v3: positions, round trips, attribution, value curve (Milestone A step 3 (ii))
+
+- New `lib/pnl-positions.js` 1.0.0, driven by `pnl.js` 1.2.0 (the weekly duty, same slot). Per wallet × pool × mechanism:
+  lots at deposit (provided legs = measured; else units × measured rate × the epoch's pair basket = derived), FIFO trips at
+  withdraw (partial lots proportional; refund legs measured), `market_usd` + `lp_usd` = Δ exactly, in USD and LUNA;
+  non-amp ⇄ amp migrations carry their basis (a segment, not an exit); LUNA claims split to pools (by open value when a claim
+  lists several); bribe income from tla-voting `claim_bribes`; a value curve at every state-history epoch plus a "now" point.
+- Rate curves are measured from the txs themselves (60k samples: provide/withdraw_liq shares↔LP, bond/unbond amplp↔LP) plus
+  the participants "now" read. The sampler's compounder `total_lp/total_amplp` is NOT the redemption rate (0.95 and falling
+  where users are paid 1.16 and rising) — used only where no tx sampled a key (none today).
+- Referees: a position worth more than 2× its whole gauge, or > 50 % off the hourly participants read, is DISPUTED — listed
+  with both figures, left out of every total (21 today, mostly the xASTRO single gauge — decimals question queued). An LP trip
+  returning > 5× or < 0.1× is SUSPECT, labeled, left out of totals (7).
+- Catalog identity from `effective` first (was `discovered` only): unpriced fee legs 35,254 → 8,027; Phase A/B counts, claims
+  and claimed yield unchanged on every wallet (differential).
+- Ledger docs gain `v3` (trip rows by `trip_cols`, curve pools by index); rollup rows gain `v3` totals; heartbeat gains the
+  DAO v3 totals. Output 33 MB (was 14).
+- Gate `mock-run-pnl-v3.js` 17/17: Phase A/B differential, hand-computed FIFO + migration, attribution identity on 13,129
+  trips, units == on-chain shares on 141/148 positions, value within 2 % median of participants, totals add up, curve "now" ==
+  open value on 724 wallets, deterministic, one build under a 200 MB heap. mock-run-pnl.js 9/9 (now at 400 MB — it holds
+  several builds).
+
+
 ## 3.4.3 — 2026-09-17 — NFT aux records carry denom_symbol from the shared resolver
 
 - `index.js` stamps `denom_symbol` / `denom_decimals` on every sale / bid / list record via lib/denom-symbol.js (token-catalog

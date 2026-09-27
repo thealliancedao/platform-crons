@@ -9,7 +9,10 @@
 //      ledger/index.json + rollup.json (the three that carry builtAt) and 0 wallet files; with one wallet drifted
 //      on main, exactly that wallet is rewritten too
 //   R4 fatal throws (PnlFatal), never exits
-// Usage: TLA_CORE_DIR=<checkout> OLD_SCRIPT=<path to build-pnl.js> node --max-old-space-size=200 mock-run-pnl.js
+// Usage: TLA_CORE_DIR=<checkout> OLD_SCRIPT=<path to build-pnl.js> node --max-old-space-size=400 mock-run-pnl.js
+// 3.5.0 (2026-09-27): this gate holds several builds at once, so it runs at 400 MB; the ONE-build Render heap check (200 MB) is
+// mock-run-pnl-v3.js V10. The R1 differential vs the retired Action no longer applies (v3 adds fields) — mock-run-pnl-v3.js V1
+// is the Phase A/B differential now (BASE_PNL = the pre-v3 pnl.js).
 // 1.1.1 (2026-09-15): RUN WITH THE HEAP CAP — Render's instance has ~256 MB. 1.1.0 held every event month (273 MB) and
 // died there on every run from Mon 2026-09-14 03:30 (the epoch-203 rollup never built); 1.1.1 folds a month at a time
 // (peak ~90 MB on the same months) and its 769 output files are byte-identical to 1.1.0 minus builtAt/builder.

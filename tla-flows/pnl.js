@@ -46,8 +46,9 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.1.1';   // 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.2.0';   // 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
+const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
 
 const PRICE_FALLBACK_DAYS = 3; // nearest prior day, method stated in spec
@@ -60,8 +61,10 @@ async function loadTokenMap(src) {
     const map = new Map();
     for (const t of cat.tokens || []) {
         const denom = t.denom;
-        const sym = t.discovered?.symbol || null;
-        const dec = Number.isFinite(t.discovered?.decimals) ? t.discovered.decimals : null;
+        // 1.2.0: catalog identity from `effective` first (the catalog's stated downstream contract), then `discovered` —
+        // 1.1.x read `discovered` only, so tokens named only in the effective layer (ATOM, SWTH, …) were unknown and unpriced
+        const sym = t.effective?.symbol || t.discovered?.symbol || null;
+        const dec = Number.isFinite(t.effective?.decimals) ? t.effective.decimals : (Number.isFinite(t.discovered?.decimals) ? t.discovered.decimals : null);
         if (denom && sym) map.set(denom, { symbol: sym, decimals: dec ?? 6 });
     }
     if (!map.has('uluna')) fail('token catalog missing uluna — refusing to guess');
@@ -255,7 +258,39 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
     const readMonth = async (ym) => { const events = await src.readJson(`tla-flows/events/${ym}.json`); if (!Array.isArray(events)) fail(`tla-flows/events/${ym}.json is not an event array`); return events; };
     const eachMonth = async function* () { for (const ym of monthKeys) yield await readMonth(ym); };
     // pass 1 — implied prices (fold per month)
-    { let obs = new Map(); for await (const events of eachMonth()) obs = buildImpliedPricesFold(obs, [events], tokenMap, prices, meta); prices.implied = finishImpliedPrices(obs, meta); }
+    // pass 1 also folds the v3 RATE SAMPLES and finds the non-amp ⇄ amp MIGRATIONS (same tx, same wallet, same pool, withdraw
+    // under one mechanism + deposit under the other) — a segment boundary, never a realized exit
+    const rates = PP.newRates(); const migrations = new Set(); const v3meta = { rate_samples: { events: 0, state_history: 0, participants_now: 0 }, migrations: 0 };
+    { let obs = new Map(); for await (const events of eachMonth()) { obs = buildImpliedPricesFold(obs, [events], tokenMap, prices, meta);
+        const byTx = new Map();
+        for (const e of events) { v3meta.rate_samples.events += PP.rateSamplesFromEvent(rates, e);
+          if (!e.retracted && e.user && e.pool && (e.type === 'deposit' || e.type === 'withdraw')) { const k = `${e.txhash}|${e.pool}|${e.user}`; (byTx.get(k) || byTx.set(k, new Set()).get(k)).add(`${e.type}:${PP.mechOf(e.mechanism)}`); } }
+        for (const [k, set] of byTx) { const w = [...set].filter(x => x.startsWith('withdraw:')).map(x => x.split(':')[1]), d = [...set].filter(x => x.startsWith('deposit:')).map(x => x.split(':')[1]); if (w.length && d.length && w.some(m => d.some(n => n !== m))) { const [tx, pool] = k.split('|'); migrations.add(`${tx}|${pool}`); } }
+      } prices.implied = finishImpliedPrices(obs, meta); }
+    v3meta.migrations = migrations.size;
+    // pool state + compounder rates from dex-data/state-history (every complete epoch), the hourly participants "now" sample
+    const pools = PP.newPools(); let shIndex = null;
+    try { shIndex = await src.readJson('dex-data/state-history/index.json'); } catch { shIndex = null; }
+    for (const row of (shIndex && shIndex.epochs) || []) { if (!row.complete) continue; let rec = null; try { rec = await src.readJson(`dex-data/state-history/epochs/${row.epoch}.json`); } catch { rec = null; } if (!rec) continue; PP.addEpochState(pools, rec); v3meta.rate_samples.state_history += PP.rateSamplesFromEpoch(rates, rec); }
+    PP.finishPools(pools, ((shIndex && shIndex.singles) || []).map(x => x.key));
+    try { const part = await src.readJson('member-data/participants/current.json'); v3meta.rate_samples.participants_now = PP.rateSamplesFromParticipants(rates, part); v3meta.participants_as_of = part.capturedAt || null; } catch { v3meta.participants_as_of = null; }
+    PP.finishRates(rates); v3meta.rate_samples.dropped = rates.dropped; v3meta.rate_samples.state_history_superseded_by_redemptions = rates.state_history_superseded; v3meta.rate_keys = rates.s.size; v3meta.state_history_epochs = pools.epochs.length; v3meta.as_of_epoch = pools.latest ? pools.latest.epoch : null;
+    const symDec = (d) => tokenMap.get(PP.norm(d)) || null; const v3pm = { price_fallback_legs: 0, implied_price_legs: 0 }; v3meta.pricing = v3pm;
+    const ctx = { rates, pools,
+      symbolOf: (d) => { const t = symDec(d); return t ? t.symbol : null; },
+      amountDisplay: (d, raw) => { const t = symDec(d); return t ? Number(raw) / 10 ** t.decimals : null; },
+      priceUsd: (d, day) => { const t = symDec(d); if (!t) return null; const p = priceAt(prices, t.symbol, day, v3pm); return p ? p.usd : null; },
+      lunaUsd: (day) => { const p = priceAt(prices, 'LUNA', day, v3pm); return p ? p.usd : null; } };   // own counters — Phase A's pricing_meta stays Phase A's
+    // dispute referees (1.2.0): the gauge totals now (tla-snapshot) and the hourly participants valuation per wallet × pool × mechanism
+    { const ceil = new Map(), ref = new Map();
+      try { const snap = await src.readJson('member-data/tla-snapshot/current.json'); for (const pl of snap.pools || []) if (pl.gauge_pool_id && Number(pl.staked_in_tla_usd) > 0) ceil.set(pl.gauge_pool_id, Math.max(ceil.get(pl.gauge_pool_id) || 0, Number(pl.staked_in_tla_usd))); } catch { /* no ceiling — the check degrades to participants only */ }
+      try { const part = await src.readJson('member-data/participants/current.json'); for (const m of part.members || []) for (const l of m.lp_positions || []) { const k = `${m.wallet}|${l.pool_gauge_id}|${l.is_amplified ? 'amplified' : 'non_amplified'}`; if (Number.isFinite(Number(l.estimated_position_usd))) ref.set(k, (ref.get(k) || 0) + Number(l.estimated_position_usd)); } } catch { /* none */ }
+      ctx.check = (wallet, pool, mech, usd) => {
+        const c = ceil.get(pool); if (c != null && usd > Math.max(2 * c, 1000)) return { reason: 'ceiling', ours_usd: Math.round(usd * 100) / 100, gauge_total_usd: Math.round(c * 100) / 100 };
+        if (wallet) { const r = ref.get(`${wallet}|${pool}|${mech}`); if (r != null && Math.abs(usd - r) > Math.max(50, 0.5 * Math.max(usd, r))) return { reason: 'participants', ours_usd: Math.round(usd * 100) / 100, participants_usd: Math.round(r * 100) / 100 }; }
+        return null; };
+      v3meta.referees = { gauge_ceilings: ceil.size, participant_positions: ref.size }; }
+    const books = new Map(); const BOOK = (a) => books.get(a) || books.set(a, PP.newBook()).get(a);
     meta.months_read = [...monthKeys];
 
     const resolveTok = (denom) => {
@@ -286,8 +321,11 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         return 0;
     };
 
-    for await (const events of eachMonth()) {   // pass 2 — wallet ledger, one month resident at a time
+    for await (const events0 of eachMonth()) {   // pass 2 — wallet ledger, one month resident at a time
+        // 1.2.0: stable order — height, then within a tx a withdraw before a deposit (a migration's exit precedes its entry)
+        const events = events0.map((e, i) => [e, i]).sort((a, b) => (a[0].height - b[0].height) || (a[0].txhash === b[0].txhash ? ((a[0].type === 'withdraw' ? 0 : 1) - (b[0].type === 'withdraw' ? 0 : 1)) : 0) || (a[1] - b[1])).map(x => x[0]);
         for (const e of events) {
+            if (!e.retracted && e.user) { if (e.type === 'claim') PP.applyClaim(BOOK(e.user), ctx, e); else PP.applyEvent(BOOK(e.user), ctx, e, migrations); }
             meta.events_read++;
             const type = e.type;
             if (!(type in meta.by_type)) continue;
@@ -396,6 +434,16 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         }
     }
 
+    // pass 3 (1.2.0) — bribe income: tla-voting/events/rewards claim_bribes (coins per token), one month resident at a time
+    v3meta.bribe_claims = 0; v3meta.bribe_months = [];
+    try {
+        const vix = await src.readJson('tla-voting/events/index.json'); const mp = (vix.streams && vix.streams.rewards && vix.streams.rewards.months_present) || {};
+        for (const [y, ms] of Object.entries(mp).sort()) for (const m of [...ms].sort()) { const arr = await src.readJson(`tla-voting/events/rewards/${y}/${m}.json`); v3meta.bribe_months.push(`${y}/${m}`);
+            for (const r of Array.isArray(arr) ? arr : []) if (r.type === 'claim_bribes' && r.wallet) { PP.applyBribe(BOOK(r.wallet), ctx, r); v3meta.bribe_claims++; } }
+    } catch (e) { v3meta.bribe_error = String(e.message || e); }
+    // v3 per-wallet output (positions, trips, attribution, value curve)
+    const v3 = new Map(); for (const [a, b] of books) v3.set(a, PP.walletOutput(b, ctx, a));
+
     // ── Assemble rollup (sorted, deterministic) ─────────────────────────────
     const sortObj = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
     const walletRows = [...wallets.entries()]
@@ -429,8 +477,10 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
                 unvalued_price_events: w.claimed_yield.unvalued_price_events,
             },
             by_pool: sortObj(w.by_pool),
+            v3: v3.has(address) ? v3.get(address).totals : undefined,
         }));
 
+    const bribeOnly = [...v3.keys()].filter(a => !wallets.has(a)).sort();   // voters with bribe income but no LP flow event
     const totals = {
         wallets: walletRows.length,
         fees_usd_at_event: walletRows.reduce((s, r) => s + r.fees_usd_at_event, 0),
@@ -438,6 +488,9 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         claims_recorded: walletRows.reduce((s, r) => s + r.claims.count, 0),
         claimed_yield_usd_at_event: walletRows.reduce((s, r) => s + r.claimed_yield.usd_at_event, 0),
         claimed_yield_luna: walletRows.reduce((s, r) => s + r.claimed_yield.luna_display, 0),
+        v3: (() => { const T = { positions_disputed: 0, open_value_usd: 0, open_cost_usd: 0, realized_delta_usd: 0, market_usd: 0, lp_usd: 0, claims_usd: 0, bribes_usd: 0, net_usd: 0, trips_valued: 0, trips_blank: 0 };
+          for (const [, o] of v3) { const t = o.totals; T.open_value_usd += t.open.value_usd; T.open_cost_usd += t.open.cost_usd; T.realized_delta_usd += t.realized.delta_usd; T.market_usd += t.realized.market_usd; T.lp_usd += t.realized.lp_usd; T.claims_usd += t.rewards.claims_usd; T.bribes_usd += t.rewards.bribes_usd; T.net_usd += t.net_usd; T.trips_valued += t.realized.trips_valued; T.trips_blank += t.realized.trips_blank; T.trips_suspect = (T.trips_suspect || 0) + (t.realized.trips_suspect || 0); T.positions_disputed += t.positions_disputed || 0; }
+          for (const k of Object.keys(T)) if (!/trips|disputed/.test(k)) T[k] = Math.round(T[k] * 100) / 100; T.wallets = v3.size; T.bribe_only_wallets = bribeOnly.length; return T; })(),
     };
 
     // ── Honesty assertions (abort — never publish inconsistent data) ────────
@@ -465,6 +518,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
             implied_prices: 'gap tokens (e.g. CAPA/SOLID CoinGecko hole, ampROAR) valued from OUR OWN captured swap executions — daily median of implied prices where the counter-asset has a quote; a labeled derived tier, never applied to WHALE-class (unpriced by doctrine)',
             claims: 'v2 claim arrays valued as LUNA at claim-day price — reward denom evidenced by the vault claim callback census (guarded at build: any non-LUNA vault denom disables valuation rather than mispricing); v1-era claims stay unmeasured until the E2 re-derive',
             lp_amounts: 'recorded raw per unit, unvalued in Phase A',
+            v3: 'lib/pnl-positions.js ' + PP.VERSION + ' — positions per pool × mechanism in contract units (shares / amplp); LOTS at deposit valued from the provided legs (M) or units × measured rate × pair basket (D); TRIPS at withdraw FIFO, proportional, valued from refund legs (M) or derived (D); market_usd = entry basket at exit prices − in, lp_usd = out − entry basket at exit prices (IL + fees + take rate + compounding); non-amp ⇄ amp migrations carry basis (segment, not an exit); open value at the latest state-history epoch; claims split by open value when a claim lists several pools; bribes from tla-voting claim_bribes; net = realized Δ + unrealized + claims + bribes, in USD and LUNA',
         },
         sources: {
             events_index_counts: index.by_type || null,
@@ -476,6 +530,8 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
             price_history_months: prices.months,
             known_gaps: index.known_gaps || [],
             fcd_walker_boundary_height: fcdEndHeight,
+            v3: v3meta,
+            bribe_only_wallets: bribeOnly,
         },
         pricing_meta: {
             price_fallback_legs: meta.price_fallback_legs,
@@ -497,6 +553,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         events_read: meta.events_read,
         fees_usd_at_event: totals.fees_usd_at_event,
         zap_input_usd_at_event: totals.zap_input_usd_at_event,
+        v3: totals.v3,
     });
 
     // ── v2 LEDGER write-out (SPEC-portfolio-epoch-ledger) ───────────────────
@@ -539,9 +596,10 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
                 buckets: 'every captured flow event bucketed by TLA epoch (docs/epoch_1-300_date.json start_times)',
                 units: 'LP-unit deltas per pool per unit (amplp/shares segregated — no historical exchange rates exist to convert honestly)',
                 usd_legs: 'identical Tier-M figures as rollup.json (same valuation calls), epoch-bucketed: zap-in, swap fees, claimed LUNA yield at claim-day price',
-                value_curve: 'NOT present — no pool state exists before dex-data (2026-06-26); the archive state sampler upgrades this tier in place',
+                value_curve: 'v3 (1.2.0): v3.value_curve — open units at every complete state-history epoch boundary (E97+) → LP (measured rate) → that epoch\'s pair basket → USD at that day\'s price, and LUNA; pools not sampled or unpriced are listed in `missing` (the total is then a lower bound)',
             },
             epoch_span: [eKeys[0], eKeys[eKeys.length - 1]],
+            v3: v3.get(address),
             pre_calendar_events: pre || undefined,
             negative_unit_flags: negFlags.length ? negFlags.sort() : undefined,
             cumulative_units_at_head: sortObj2(cum),
@@ -560,6 +618,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         out.files.set(`${LEDGER_DIR}/${address}.json`, doc);
         ledgerFiles++;
     }
+    for (const address of bribeOnly) { out.files.set(`${LEDGER_DIR}/${address}.json`, { schemaVersion: 1, spec: 'docs/pending-changes/SPEC-portfolio-epoch-ledger.md', address, note: 'bribe income only — no LP flow event captured for this wallet', v3: v3.get(address) }); ledgerFiles++; }
     out.files.set(`${LEDGER_DIR}/index.json`, {
         schemaVersion: 1,
         spec: 'docs/pending-changes/SPEC-portfolio-epoch-ledger.md',
