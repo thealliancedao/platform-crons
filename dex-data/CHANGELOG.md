@@ -1,3 +1,20 @@
+## dex-data 1.5.0 — 2026-09-27 — LST ratios anchored on the chain (Milestone A step 3 (i))
+
+- New `lib/ratio-anchor.js` 1.0.0 — ONE rule for the LST ratio series, two callers: the one-time tla-core Action
+  `ratio-reanchor` (history) and state-history 1.2.0 (forward). Anchors = each complete epoch's `lst_hubs` chain read at its
+  height_time; a day = log-linear between the two bracketing reads at 12:00 UTC (tier `chain_anchored`, `anchors:[eA,eB]`);
+  `chain_exact` rows never change; repairs labeled in place (`repair.was` write-once); idempotent.
+- Why: price-history/ratios' `interpolated` rows ran ampLUNA +10.6 % / bLUNA +4.9 % high in 2024 (every LST USD row built on
+  them too) — the cost basis for Milestone A inherits it. Validation: the chain reads agree with the 2026-05-13+ chain_exact
+  archive within 0.08 % (ampLUNA) / 0.31 % (arbLUNA) / 0.09 % (bLUNA) / 0.00 % (ampCAPA).
+- state-history 1.2.0: after a new complete epoch, writes the days since the previous complete epoch into
+  price-history/ratios (ratios only — the LST USD rows are token-catalog's measured `tla` prices). Isolated (a failure never
+  fails the sample); `RATIO_FORWARD=0` turns it off. The series had been frozen since 2026-07-16.
+- Gate: `mock-run-ratio-anchor.js` (real tla-core checkout, heap-capped 200 MB) 10/10 — anchors, chain vs archive, the error
+  is real, every day between its reads, labels, untouched rows, USD = base × ratio, idempotent, forward = history for the
+  newest week, forward writes ratios only. (mock-run-state-history.js is stale on main — its epoch-203 scenario is complete
+  in the checkout now; unchanged here.)
+
 ## dex-data 1.4.3 — 2026-09-20 — eris-apr: a fresh LUNA price (owner's APR audit vs Eris)
 
 - Finding: every eris-apr product since 08-02 says `luna_price_source: token-catalog/tla (fallback)` — the adapters have never
