@@ -273,6 +273,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
     try { shIndex = await src.readJson('dex-data/state-history/index.json'); } catch { shIndex = null; }
     for (const row of (shIndex && shIndex.epochs) || []) { if (!row.complete) continue; let rec = null; try { rec = await src.readJson(`dex-data/state-history/epochs/${row.epoch}.json`); } catch { rec = null; } if (!rec) continue; PP.addEpochState(pools, rec); v3meta.rate_samples.state_history += PP.rateSamplesFromEpoch(rates, rec); }
     PP.finishPools(pools, ((shIndex && shIndex.singles) || []).map(x => x.key));
+    pools.names = new Map(); for (const x of [...((shIndex && shIndex.pairs) || []), ...((shIndex && shIndex.singles) || [])]) if (x && x.key && x.name) pools.names.set(x.key, x.name);   // names are data: the sampler's index names every pool it saw
     try { const part = await src.readJson('member-data/participants/current.json'); v3meta.rate_samples.participants_now = PP.rateSamplesFromParticipants(rates, part); v3meta.participants_as_of = part.capturedAt || null; } catch { v3meta.participants_as_of = null; }
     PP.finishRates(rates); v3meta.rate_samples.dropped = rates.dropped; v3meta.rate_samples.state_history_superseded_by_redemptions = rates.state_history_superseded; v3meta.rate_keys = rates.s.size; v3meta.state_history_epochs = pools.epochs.length; v3meta.as_of_epoch = pools.latest ? pools.latest.epoch : null;
     const symDec = (d) => tokenMap.get(PP.norm(d)) || null; const v3pm = { price_fallback_legs: 0, implied_price_legs: 0 }; v3meta.pricing = v3pm;
