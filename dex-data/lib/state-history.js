@@ -298,8 +298,22 @@ async function sampleHeight(archive, targets, h, opts = {}) {
 
 
 
+// ── LST ratio days from the two newest complete epochs (1.2.0) ───────────────
+async function writeForwardRatios({ readJson, writeJson, readEpoch, epochs, now }) {
+  const RA = require('./ratio-anchor');
+  if (epochs.length < 2) return { days: 0, months: [], from: null, to: null };
+  const cur = await readEpoch(epochs[epochs.length - 1]), prev = await readEpoch(epochs[epochs.length - 2]);
+  const anchors = RA.anchorsFrom([prev, cur]);
+  const months = new Set(); for (const h of Object.keys(anchors)) for (const d of RA.spanDays(anchors[h])) months.add(RA.monthKey(d));
+  const ratioMonths = new Map(); for (const k of months) ratioMonths.set(k, (await readJson(`price-history/ratios/${k}.json`)) || { meta: { module: 'price-history', format_version: 1, note: 'daily LST ratios' }, days: {} });
+  const r = RA.reanchor({ ratioMonths, priceMonths: null, anchors, opts: { by: RA.VERSION + ' (dex-data state-history forward)', at: now().toISOString(), usd: false, preAnchor: false } });
+  let days = 0; for (const h of Object.values(r.report)) days += h.added + h.repaired;
+  for (const k of r.changedRatio) { const doc = ratioMonths.get(k); doc.meta.updated_at = now().toISOString(); await writeJson(`price-history/ratios/${k}.json`, doc); }
+  const allDays = [...months].sort(); return { days, months: [...r.changedRatio].sort(), from: prev.epoch, to: cur.epoch, span: allDays };
+}
+
 // ── The duty (was sample.js) ────────────────────────────────────────────────
-const VERSION = 'dex-state-history-1.1.2';   // 1.1.2 (2026-09-14): public mode samples LIVE at the first run after the boundary (pruned public nodes cannot serve the past), labeled sample_mode/boundary_height/delta_sec; 1.1.1 (2026-09-14): month-at-a-time corpus fold (heap OOM fix); 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
+const VERSION = 'dex-state-history-1.2.0';   // 1.2.0 (2026-09-27): each new complete epoch writes the LST ratio days since the previous one into price-history/ratios (chain_anchored, lib/ratio-anchor.js — one rule with the tla-core ratio-reanchor Action); price-history/ratios was frozen at 2026-07-16 · 1.1.2 1.1.2 (2026-09-14): public mode samples LIVE at the first run after the boundary (pruned public nodes cannot serve the past), labeled sample_mode/boundary_height/delta_sec; 1.1.1 (2026-09-14): month-at-a-time corpus fold (heap OOM fix); 1.1.0: folded into dex-data (API reads/writes, no git); 1.0.0 was the Action
 const OUT = 'dex-data/state-history';
 async function runStateHistory({ readJson, writeJson, fetchJson, env = process.env, now = () => new Date(), archiveFactory = makeArchive, publicGet = httpGet }) {
   const t0 = Date.now(); const out = { status: 'skipped', sampled: 0, skipped: 0, incomplete: [], reason: null };
@@ -380,6 +394,14 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
     cursor.last_attempted = ep; cursor.incomplete = [...incomplete].sort((a, b) => a - b); cursor.updatedAt = now().toISOString();
     await writeJson(`${OUT}/cursor.json`, cursor);
   }
+  // 1.2.0 (2026-09-27): the LST RATIO SERIES rides the sample — each newly complete epoch writes the days since the previous
+  // complete epoch into price-history/ratios (tier chain_anchored, log-linear between the two chain reads; lib/ratio-anchor.js —
+  // the same rule the one-time tla-core `ratio-reanchor` Action applied to history). Ratios only: the LST USD rows are the
+  // token-catalog cron's (measured `tla` prices). Isolated — a failure here never fails the sample.
+  if (out.sampled > 0 && env.RATIO_FORWARD !== '0') {
+    try { out.ratios = await writeForwardRatios({ readJson, writeJson, readEpoch, epochs: [...have].sort((a, b) => a - b), now }); log(`  ratios: ${out.ratios.days} day-rows over ${out.ratios.months.length} month file(s) (${out.ratios.from}→${out.ratios.to})`); }
+    catch (e) { log(`  ✗ ratios forward failed (isolated): ${e.message}`); out.ratios = { error: e.message }; }
+  }
   // index: coverage from the epoch files we know (existing index rows + what this run wrote/confirmed)
   const rows = new Map((index && index.epochs || []).map(e => [e.epoch, e]));
   for (const ep of [...have, ...incomplete]) { if (rows.has(ep) && rows.get(ep).complete === have.has(ep)) continue; const r = await readEpoch(ep); if (!r) continue;
@@ -395,4 +417,4 @@ async function runStateHistory({ readJson, writeJson, fetchJson, env = process.e
   return out;
 }
 
-module.exports = { VERSION, OUT, ArchiveFatal, COMPOUNDER, DAO_MAIN, STAKING, LST_HUBS, sleep, ms, num, mask, log, fail, httpGet, classify, makeArchive, buildCorpus, newCorpus, foldMonth, finishCorpus, buildTargets, resolveHeight, sampleHeight, assetKey, runStateHistory };
+module.exports = { writeForwardRatios, VERSION, OUT, ArchiveFatal, COMPOUNDER, DAO_MAIN, STAKING, LST_HUBS, sleep, ms, num, mask, log, fail, httpGet, classify, makeArchive, buildCorpus, newCorpus, foldMonth, finishCorpus, buildTargets, resolveHeight, sampleHeight, assetKey, runStateHistory };
