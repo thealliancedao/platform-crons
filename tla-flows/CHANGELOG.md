@@ -1,5 +1,20 @@
 # tla-flows — changelog
 
+## 3.5.1 — 2026-09-27 — the weekly P&L publishes as ONE commit; pool names in the ledger
+
+- New `lib/git-batch.js` 1.0.0: `publishBatch` builds the new tree on the branch head in size-bounded chunks (≤ 4 MB / 200 files
+  per request), makes one commit and moves the ref fast-forward only; if main moved meanwhile the ref update is refused and the
+  batch is rebuilt on the new head (never a force push). `listTree` lists a folder's blob shas via git trees (the Contents API
+  stops at 1,000 entries; the ledger is ~790 and growing).
+- Why: the first v3 build (2026-09-27) published ~790 files as ~790 commits (~20 min); a second forced run started while the
+  first was still writing, both PUT the same ledger files (409s), and the run's `pressure` write lost its race.
+- `pnl.js` 1.2.1 uses `publishBatch` when given (index.js gives it); per-file stays as the fallback. Ledger positions carry the
+  pool `name` from dex-data/state-history's index (names are data).
+- Gate `mock-run-git-batch.js` 7/7 (fake git-data API: 790 × 40 KB files → one commit in 8 chunks; main moved mid-build →
+  rebuilt, the other commit kept; no-op → no commit; 1,500-entry listing; runPnlDuty on the real build → one batch of 792 files,
+  then one batch of the 3 builtAt files). mock-run-pnl 9/9, mock-run-pnl-v3 17/17.
+
+
 ## 3.5.0 — 2026-09-27 — build-pnl v3: positions, round trips, attribution, value curve (Milestone A step 3 (ii))
 
 - New `lib/pnl-positions.js` 1.0.0, driven by `pnl.js` 1.2.0 (the weekly duty, same slot). Per wallet × pool × mechanism:

@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.2.0';   // 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.2.1';   // 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -654,7 +654,7 @@ const crypto = require('crypto');
 const EPOCH_GENESIS_MS = Date.parse('2022-10-31T00:00:00Z'), EPOCH_MS = 7 * 86400000;
 const epochOf = (ms) => Math.floor((ms - EPOCH_GENESIS_MS) / EPOCH_MS) + 1;
 const blobSha = (buf) => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
-async function runPnlDuty({ fetchJson, listDir, publishFile, rawBase, env = process.env, now = () => new Date() }) {
+async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env = process.env, now = () => new Date() }) {
   const out = { status: 'skipped', reason: null, written: 0, unchanged: 0 };
   if (env.PNL === '0') { out.reason = 'PNL=0'; return out; }
   const t = now(); const force = env.PNL === 'force';
@@ -674,11 +674,16 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, rawBase, env = proc
   // write only what changed: one listing per folder → blob shas of what is on main
   const onMain = new Map();
   for (const dir of [OUT_DIR, `${OUT_DIR}/ledger`]) { const list = await listDir(dir); for (const f of list || []) if (f.sha) onMain.set(f.path, f.sha); }
+  // 1.2.1: ONE commit for the whole build when the caller gives publishBatch (lib/git-batch.js) — the per-file path took ~20 min
+  // for ~790 files and a second run collided with the first; per-file stays as the fallback (and for the gate's old harness)
+  const changed = [];
   for (const [p, obj] of built.files) {
     const content = serialize(obj); const sha = blobSha(Buffer.from(content));
     if (onMain.get(p) === sha) { out.unchanged++; continue; }
-    await publishFile(p, content, `tla-flows/pnl: weekly rollup (epoch ${curEpoch})`); out.written++;
+    changed.push({ path: p, content });
   }
+  if (publishBatch && changed.length) { const r = await publishBatch(changed, `tla-flows/pnl: weekly rollup (epoch ${curEpoch}) — ${changed.length} files`); out.written = changed.length; out.commit = r && r.commit; out.batch = { chunks: r && r.chunks, attempts: r && r.attempts }; }
+  else for (const f of changed) { await publishFile(f.path, f.content, `tla-flows/pnl: weekly rollup (epoch ${curEpoch})`); out.written++; }
   out.status = 'ok'; out.epoch = curEpoch; out.summary = built.summary; out.files = built.files.size;
   return out;
 }
