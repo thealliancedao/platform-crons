@@ -1,5 +1,7 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.15.1 (2026-09-26): the question log flushes every 2 minutes (or 10 questions) and on shutdown — a redeploy no longer loses the
+//   questions still waiting in the batch.
 // v1.15.0 (2026-09-26, owner: "make sure the chat bot can answer questions on anything in the Lion DAO ecosystem"): a LION DAO
 //   DATA MAP in the rules (rule 15: which product answers ROAR supply / burns / whales, pyROAR and the festival, ROAR20, the
 //   treasury, TLA positions, the validator, trends, pixeLions and Burning Lions) + the Lion DAO knowledge doc in the corpus;
@@ -850,7 +852,7 @@ async function runTool(name, input) {
 // Off unless QUESTION_LOG=1 and GITHUB_TOKEN are set on the service.
 const QLOG_ON = process.env.QUESTION_LOG === '1' && !!process.env.GITHUB_TOKEN;
 const QLOG_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
-const QLOG_FLUSH_MS = 10 * 60 * 1000, QLOG_MAX = 25;
+const QLOG_FLUSH_MS = Number(process.env.QUESTION_LOG_FLUSH_MS || 2 * 60 * 1000), QLOG_MAX = 10;   // v1.15.1: 2 min / 10 questions (was 10 min / 25) — the owner reads the log to help a visitor while they are still asking
 let qlog = [], qlogTimer = null;
 function redact(q) { return String(q).replace(/terra1[02-9ac-hj-np-z]{38,58}/g, '[address]').replace(/\b[0-9A-Fa-f]{64}\b/g, '[txhash]').slice(0, 600); }
 function logQuestion(rec) { if (!QLOG_ON) return; qlog.push(rec); if (qlog.length >= QLOG_MAX) flushQlog(); else if (!qlogTimer) qlogTimer = setTimeout(flushQlog, QLOG_FLUSH_MS); }
@@ -1008,4 +1010,7 @@ const server = http.createServer(async (req, res) => {
   }
   send(404, { error: 'Not found. Endpoints: GET /health, POST /ask {question}.' });
 });
+// v1.15.1: a redeploy or restart (Render sends SIGTERM) used to drop every question still waiting in the batch — flush first
+let _closing = false;
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => { if (_closing) return; _closing = true; try { await Promise.race([flushQlog(), new Promise(r => setTimeout(r, 8000))]); } catch (e) {} process.exit(0); });
 server.listen(process.env.PORT || 8787, () => console.log('help-agent listening'));
