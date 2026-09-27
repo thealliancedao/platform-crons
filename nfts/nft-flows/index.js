@@ -1,5 +1,10 @@
 'use strict';
-// org-nft-flows 1.6.0 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.6.1 — FORWARD CAPTURE for ONE collection
+// 1.6.1 (2026-09-27, SPEC-portfolio-locks L1): lib/classify.js 1.2.0 — lock_permanent / lock_unpermanent / lock_extend name
+//   their lock (the id from the msg's wasm-metadata_changed, else the msg body; token_id_from says which), a body-only
+//   deposit_for (FCD era, gauge claim_rebase) names its lock, and lock_create carries the amount locked. Ids and payments
+//   pair with THEIR ve/* event by position (two deposits or a permanent + merge in one msg). Forward rows are right from this
+//   deploy; history is re-derived by nft-collections nft-flows-derive (derive 1.3.0, gate-locks-l1).
 // 1.6.0 (2026-09-20, owner: "rethink Live Activity"): ACTIVITY EPISODES — <slug>/ledger/activity.json, the last 35 days of
 //   the ledger folded by lib/activity.js (THE rule) into what a reader sees as one act: a same-owner delist+relist inside
 //   24 h is one price change, thirty unstakes in an hour are one row of thirty (ids carried), the merge/split/migrate/
