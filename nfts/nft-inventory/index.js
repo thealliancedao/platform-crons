@@ -138,7 +138,7 @@ const ADAO_DEFAULT_CONFIG = Object.freeze({
     VENUES: ['bbl', 'atrium', 'boost'],
     // Grade-40 (Phoenix Rising) token ids — IMMUTABLE: the collection is fully minted, so this set can never change.
     // Source: adao-rarity-intended.json (defipatriot/nft-metadata).
-    PHOENIX_TOKEN_IDS: ['16','183','1128','1131','1433','1546','1622','2068','2227','2605','2633','2639','3445','4736','4983','5048','5088','5247','6013','6067','6151','6479','7755','9057','9426'],
+    PHOENIX_TOKEN_IDS: ['16','183','1128','1131','1433','1546','1622','2068','2227','2605','2633','2639','3445','4736','4983','5048','5088','5247','6013','6067','6151','6479','7755','9068','9941'],   // 2026-09-27: was 9057/9426 (not Phoenix — see adao/collection.json tiers.phoenix.repair)
 });
 
 const COLLECTION = String(process.env.COLLECTION || '').trim();   // '' | 'adao' → the default config; anything else → its manifest

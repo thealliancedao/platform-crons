@@ -23,7 +23,10 @@ console.log('\n== 1. the registry reproduces the aDAO literals ==');
 { const cfg = M.configFromManifest(adao, venues); const d = M.ADAO_DEFAULT_CONFIG; const diffs = [];
   for (const k of Object.keys(d)) if (JSON.stringify(cfg[k]) !== JSON.stringify(d[k])) diffs.push([k, cfg[k], d[k]]);
   ok('every field of ADAO_DEFAULT_CONFIG comes out of adao/collection.json unchanged (' + Object.keys(d).length + ' fields)', diffs.length === 0, diffs);
-  ok('25 Phoenix ids from tiers.phoenix.token_ids', cfg.PHOENIX_TOKEN_IDS.length === 25 && cfg.PHOENIX_TOKEN_IDS.includes('745') === false && cfg.PHOENIX_TOKEN_IDS.includes('1128')); }
+  ok('25 Phoenix ids from tiers.phoenix.token_ids', cfg.PHOENIX_TOKEN_IDS.length === 25 && cfg.PHOENIX_TOKEN_IDS.includes('745') === false && cfg.PHOENIX_TOKEN_IDS.includes('1128'));
+  // 2026-09-27: the list must BE the trait — the registry carried #9057/#9426 (not Phoenix) for #9068/#9941 until this check existed
+  { const md = rj(path.join(NFTC, 'adao/metadata/all_nfts_metadata.json')); const T = adao.tiers.phoenix; const want = md.filter(m => (m.attributes || []).some(a => a.trait_type === T.trait && a.value === T.value)).map(m => String(m.name.match(/#(\d+)/)[1])).sort((a, b) => a - b);
+    ok(`tiers.phoenix.token_ids == every token whose metadata ${T.trait} = "${T.value}" (${want.length})`, JSON.stringify([...cfg.PHOENIX_TOKEN_IDS].sort((a, b) => a - b)) === JSON.stringify(want), { registry: cfg.PHOENIX_TOKEN_IDS.filter(x => !want.includes(x)), metadata: want.filter(x => !cfg.PHOENIX_TOKEN_IDS.includes(x)) }); } }
 
 console.log('\n== 2. Pixel Lions from its own manifest ==');
 const plc = M.configFromManifest(pl, venues);
