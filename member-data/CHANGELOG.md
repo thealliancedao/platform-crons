@@ -1,5 +1,18 @@
 # member-data — changelog
 
+## 1.3.0 — 2026-09-27 — Credia for every TLA participant (Milestone A · the rewards planner's loan panel)
+
+- tla-participants: new phase 3b `attachCredia` — ONE Credia Portfolio-contract query per participant (`{portfolio:{address}}`,
+  contract from `config/contracts.js` CREDIA.portfolio) through the shared `lib/credia-reader.js` 1.0.0 (the same parse
+  ally-positions 1.5.1 uses — one code path). Each portfolio gains `credia: { supplied[], debt[], health, supplied_usd,
+  debt_usd, net_usd, source }`; USD is Credia's own oracle (the venue's contract is the source). Asset names/decimals from the
+  token catalog (shared resolver); an unknown asset keeps its USD with `symbol: null` (never guessed); the TLA ampLP receipt is
+  labelled. `summary` gains `credia_supplied_usd`, `credia_borrowed_usd`, `credia_lt_health_factor`.
+- A failed read is `credia.error` on that member and never stops the run; an empty read is 0, never null.
+  `discovery.credia = { read, failed, with_position, borrowers }`.
+- Additive only — no existing field changes. Gate: `TLA_CORE_DIR=<tla-core> node member-data/mock-run-credia.js` (7/7, on the
+  real captured answer tla-core docs/fixtures/2026-09-27/credia-portfolio-ryan.json + the committed catalog).
+
 ## 1.2.1 — 2026-09-21 — stables named by the catalog symbol (TLA queue item 1)
 
 - tla-snapshot `IBC_REGISTRY`: `USDC` → `USDC.n`, `USDT` → `USDt`, `EURE` → `EURe` — the token-catalog's effective symbols.

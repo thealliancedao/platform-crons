@@ -50,6 +50,31 @@ const {
     BATCH_CONCURRENCY,
     TLA_VOTING_ESCROW,
 } = require('../lib/capture-engine.js');
+const CR = require('../lib/credia-reader.js');   // 2026-09-27: every participant's Credia position (shared with ally-positions)
+const C = require('../config/contracts.js');
+const CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
+const { buildResolver } = require('../lib/denom-symbol.js');
+
+// Credia for every participant (2026-09-27, Milestone A / the rewards planner's loan panel): ONE Portfolio-contract query per wallet
+// (supplied, borrowed, Credia-oracle USD, health factors). Assets are named by the token catalog (the shared resolver). A failed read is recorded on
+// the member (credia.error) and never stops the run; a successful empty read is 0, never null. Summary gains the three totals.
+async function attachCredia(portfolios, deps) {
+    const { queryContract: q, fetchJson: fj, parallel = parallelMap, concurrency = BATCH_CONCURRENCY } = deps;
+    // names + decimals from the token catalog (the Credia snapshot carries denoms only) — the shared resolver, effective layer first
+    let resolve = null;
+    try { const cat = await fj(CATALOG_URL, 'token-catalog'); const r = buildResolver(cat || []); resolve = (d) => { const x = r(d); return x && x.symbol ? { symbol: x.symbol, decimals: x.decimals } : null; }; } catch (e) { resolve = null; }
+    const markets = [];
+    const stats = { read: 0, failed: 0, with_position: 0, borrowers: 0 };
+    await parallel(portfolios.filter(Boolean), async (p) => {
+        const r = await CR.readCredia(p.wallet || p.address, { queryContract: q, portfolioContract: C.CREDIA.portfolio, markets, resolve });
+        if (r.error || r.shape !== 'supplied_borrowed') { stats.failed++; p.credia = { error: r.error || 'unexpected portfolio shape (' + r.shape + ')', source: 'credia portfolio contract' }; return; }
+        stats.read++; if (r.supplied_usd > 0 || r.debt_usd > 0) stats.with_position++; if (r.debt_usd > 0) stats.borrowers++;
+        p.credia = { supplied: r.supplied, debt: r.debt, health: r.health, supplied_usd: r.supplied_usd, debt_usd: r.debt_usd, net_usd: r.net_usd, source: 'credia portfolio contract (' + CR.VERSION + ')' };
+        p.summary = p.summary || {}; p.summary.credia_supplied_usd = r.supplied_usd; p.summary.credia_borrowed_usd = r.debt_usd; p.summary.credia_lt_health_factor = r.health.lt_health_factor;
+    }, concurrency);
+    return stats;
+}
+
 
 // -----------------------------------------------------------------------------
 // CONFIG
@@ -307,6 +332,10 @@ async function run() {
         return portfolio;
     }, BATCH_CONCURRENCY);
     const valid = portfolios.filter(p => p && !p._error);
+    // Phase 3b: Credia per participant (isolated — a failure here never fails the run)
+    let crediaStats = null;
+    try { crediaStats = await attachCredia(valid, { queryContract, fetchJson }); console.log(`  ✓ credia: ${crediaStats.read} read · ${crediaStats.with_position} with a position · ${crediaStats.borrowers} borrowing · ${crediaStats.failed} failed`); }
+    catch (e) { console.warn('  ⚠ credia step failed (isolated):', e.message); crediaStats = { error: e.message }; }
     const withErrors = valid.filter(p => (p._errors || []).length > 0).length;
     console.log(`  ✓ ${valid.length}/${participants.length} portfolios captured (${withErrors} with per-member errors)`);
 
@@ -335,6 +364,7 @@ async function run() {
             lock_complete: lock_discovery.complete,
             bribe_source_ok: bribe_ok,
             participant_count: participants.length,
+            credia: crediaStats,
         },
         members: valid,
     };
@@ -409,4 +439,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main: run, discoverLockHolders, discoverBribeProviders, resolveParticipants };
+module.exports = { main: run, discoverLockHolders, discoverBribeProviders, resolveParticipants, attachCredia };
