@@ -23,13 +23,14 @@
 // =============================================================================
 
 const https = require('https');
-const Y = require('./yields.js');                 // Branch D (1.4.0): live yields from exchange_rates
+const Y = require('./yields.js');
+const HP = require('./holder-pnl.js');            // Branch E (1.5.0): the position story per holder (USD · LUNA · LST · Votion legs)                 // Branch D (1.4.0): live yields from exchange_rates
 const C = require('../config/contracts.js');      // LST_HUBS: symbol → hub (single source)
 
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.4.0';   // 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
+const VERSION       = 'org-votion-1.5.0';   // 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -496,6 +497,35 @@ async function runBranchB(now, vaults, errors) {
 }
 
 // =============================================================================
+// BRANCH E — holder P&L (daily, right after B): every Votion event since the vaults opened + the LUNA price series + the LST
+// ratio months + the positions just captured → votion/holder-pnl/current.json. Read → fold → drop; a failure never fails the run.
+// =============================================================================
+async function runBranchE(now, bDoc, errors) {
+    const events = []; const start = new Date(Date.UTC(2025, 1, 1));
+    for (let d = start; d <= now; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+        const mk = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+        const r = await apiGetJson(`votion/events/${mk}.json`); if (!r.ok) throw new Error(`events ${mk} unreadable — refusing a partial story`);
+        if (r.data) events.push(...(Array.isArray(r.data) ? r.data : Object.values(r.data)));
+    }
+    const lunaS = (await apiGetJson('price-history/series/LUNA.json')).data; if (!lunaS || !lunaS.daily) throw new Error('price-history/series/LUNA.json unreadable');
+    const ratioMonths = new Map();
+    for (let d = start; d <= now; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) { const mk = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`; const r = await apiGetJson(`price-history/ratios/${mk}.json`); ratioMonths.set(mk, (r.data && r.data.days) || {}); }
+    const back = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') - n * 864e5).toISOString().slice(0, 10);
+    const ratio = (day, sym) => { for (let i = 0; i <= 7; i++) { const d = back(day, i); const x = (ratioMonths.get(d.slice(0, 7).replace('-', '/')) || {})[d]; if (x && x[sym] && x[sym].ratio) return x[sym].ratio; } return null; };
+    const lunaUsd = (day) => { for (let i = 0; i <= 3; i++) { const v = lunaS.daily[back(day, i)]; if (v != null) return v; } return null; };
+    const yields = (await apiGetJson('votion/yields/current.json')).data;
+    const advertised = (vault) => { const v = ((yields && yields.vaults) || []).find(x => x.address === vault); const w = v && v.windows && (v.windows['30'] || v.windows['14'] || v.windows['7']); return w ? { apr: w.apr_daily_contract != null ? w.apr_daily_contract * 365.25 : null, apy: w.apy_contract != null ? w.apy_contract : null, window_days: w.days, source: 'votion/yields (vault exchange_rates)' } : null; };
+    const holders = new Map(); for (const v of bDoc.vaults) { const m = new Map(); for (const h of (v.holders || [])) m.set(h.address, h.vtoken_balance); holders.set(v.address, m); }
+    const nowDay = now.toISOString().slice(0, 10);
+    const r = HP.build({ events, vaults: bDoc.vaults, holders, lunaUsd, ratio, lstSymbolOf: lstSymbolOfContract, advertised, now: { lunaUsd: lunaUsd(nowDay), day: nowDay } });
+    const doc = { meta: { version: VERSION, engine: HP.VERSION, generated_at: now.toISOString(), events_read: events.length, luna_usd_now: r.luna_usd_now, notes: r.notes,
+        method: 'per deposit lot (FIFO): cost = LST in × LST→LUNA ratio × LUNA USD on the day; Δ USD = LUNA price leg + LST staking leg + Votion compounding leg (sum exact); APR simple, the Eris definition; untracked vTokens / unexplained outflows reported, never valued as P&L' },
+        holders: r.holders };
+    await publishFile('votion/holder-pnl/current.json', doc, `votion: holder P&L ${Object.keys(r.holders).length} positions @ ${now.toISOString()}`);
+    return { positions: Object.keys(r.holders).length, notes: r.notes };
+}
+
+// =============================================================================
 // MAIN
 // =============================================================================
 // ---- Branch C — Votion optimizer capture (DeFi_Patriot 2026-07-31) ---------------
@@ -663,6 +693,8 @@ async function run() {
         const b = await runBranchB(now, vaults, errors);
         positionsStatus = b.status; positionsAt = now.toISOString();
         console.log(`  B: positions ${b.status} — ${b.doc.totals.unique_holders} holders, TVL $${b.doc.totals.total_tvl_usd.toLocaleString()}`);
+        try { const e = await runBranchE(now, b.doc, errors); console.log(`  E: holder P&L — ${e.positions} positions (${e.notes.deposits} deposits, ${e.notes.withdraws} withdraws)`); }
+        catch (e) { errors.push({ where: 'holder_pnl', error: e.message }); console.warn(`  E: holder P&L failed: ${e.message}`); }
     } else {
         console.log(`  B: skipped (positions ${ageH.toFixed(1)}h old < ${POSITIONS_MAX_AGE_H}h)`);
     }

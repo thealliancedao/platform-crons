@@ -118,9 +118,17 @@ const CATALOG = { tokens: [
     console.log('— R1: first full run (A + B) —');
     CHAIN = healthyChain(); REPO = { 'token-catalog/snapshots/current.json': CATALOG,
              'member-data/snapshots/current.json': { wallets: [ { address: 'terra1erin' }, { address: 'terra1alice' }, { address: 'terra1quiet' } ] },
-             'votion/curated-holders.json': { addresses: ['terra1multisig'] } }; WRITES = {};
+             'votion/curated-holders.json': { addresses: ['terra1multisig'] },
+             // 1.5.0 Branch E inputs: alice's one deposit (10k ampLUNA → 8k vT at 1.25) on 07-01, LUNA $0.12 then / $0.10 now, ampLUNA ratio 1.30 then
+             'votion/events/2026/07.json': [{ txhash: 'D1', height: 100, timestamp: '2026-07-01T12:00:00Z', vault: V1, kind: 'deposit', user: null, vtoken_minted: '8000000000', lst_in: '10000000000', rate_sample: 1.25, raw_vault_attrs: [{ recipient: ['terra1alice'] }] }],
+             'price-history/series/LUNA.json': { daily: { '2026-07-01': 0.12, '2026-07-17': 0.10 } },
+             'price-history/ratios/2026/07.json': { days: { '2026-07-01': { ampLUNA: { ratio: 1.30 } } } } }; WRITES = {};
     CHAIN.balances['terra1multisig|factory/' + V2 + '/max/varbluna'] = '80000000000';   // 80k vtoken — the pre-retention whale
     let r = await M.run();
+    { const hp = REPO['votion/holder-pnl/current.json']; const a = hp && hp.holders[V1 + '|terra1alice']; const t = a && a.totals;
+      check('R9 Branch E: holder P&L published; alice cost $1,560 (10k ampLUNA × 1.30 × $0.12) → now $1,340; Δ −$220 = LUNA price −$260 + LST staking +$40 + Votion $0',
+        t && Math.abs(t.cost_usd - 1560) < 1e-6 && Math.abs(t.usd_now - 1340) < 1e-6 && Math.abs(t.legs.luna_price + 260) < 1e-6 && Math.abs(t.legs.lst_stake - 40) < 1e-6 && Math.abs(t.legs.votion) < 1e-9 && a.coverage === 1, a);
+      const c = hp && hp.holders[V2 + '|terra1carol']; check('R9 a holder with no archived deposit: untracked vTokens, no P&L (never a phantom basis)', c && c.totals === null && c.untracked_vtokens > 0 && c.coverage === 0, c); }
     check('R1 status ok', r.status === 'ok', r.errors);
     const vd = REPO['votion/snapshots/vaults.json'];
     check('R1 vaults.json: 2 vaults, chain discovery', vd.vaults.length === 2 && vd.meta.discovery_source === 'code_id_listing');
