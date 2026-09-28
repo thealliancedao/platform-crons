@@ -1,5 +1,13 @@
 # tla-flows — changelog
 
+## 3.5.4 — 2026-09-28 — moved beats disputed (pnl 1.2.5, pnl-positions 1.3.1)
+
+- The referee decides "not held" BEFORE the gauge-ceiling check for a wallet the hourly read covers (the position is not in the wallet,
+  whatever its size), and a ceiling dispute whose open units the transfer record explains (gross units sent ≥ 99 % of units open —
+  receipts that arrived by transfer never opened lots, so net under-counts) becomes a moved receipt, named where it went.
+- Found by the bot's new portfolio tool: the GMC Backing Wallet's 12.7M wBTC.osmo-wBTC.axl units, sent to terra1tt48s9jp… on
+  2026-03-17, read "ours $27,162 vs the whole gauge $137.87 · disputed". Gate V14 (2): 27/27 on main's data.
+
 ## 3.5.3 — 2026-09-28 — where receipts went, named; a custodian keeps a position held (pnl 1.2.4, pnl-positions 1.3.0)
 
 - Owner: "show what address it was sent to — its name if it's registered — and fix this for anyone, any LP, not just this one."

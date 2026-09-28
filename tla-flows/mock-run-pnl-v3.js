@@ -10,6 +10,7 @@
 //   V4 attribution identity on EVERY valued trip in the real build: out − in = market + lp (± $0.02 rounding)
 //   V5 units vs the chain: open non-amp units from events == participants' on-chain shares (< 0.1 %) on ≥ 95 % of positions
 //   V6 value vs the chain: median |ours − participants| < 5 % (non-amp and amp); every disputed position is OUT of the totals
+//   V14 (1.3.1) a ceiling dispute the transfer record explains is a moved receipt, named
 //   V13 (1.3.0) where receipts went: named destinations; a custodian (the ampCAPA DAO) keeps the position held_in; checked against the CAPA supply product
 //   V12 (1.2.0) not held: open lots the hourly chain read says are not in the wallet — out of Open now + the now point, trips/rewards kept
 //   V11 (1.1.0) LP now == the chain's staked balance; LP in ≥ LP now (the take rate only removes); drag valued; capital × days present
@@ -115,6 +116,11 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     check(`across the ledger: ${held} positions held in a custodian — every one's wallet has a DAO stake in the CAPA supply product (the chain's own count)`, held > 0 && heldWrong.length === 0, heldWrong);
     const rm = (() => { for (const [, doc] of built.files) { const m = doc && doc.sources; if (m && m.v3 && m.v3.receipt_moves) return m.v3.receipt_moves; } return null; })();
     check(`transfers mapped to pools by receipt denom: ${JSON.stringify(rm)}`, rm && rm.transfers_read > 500 && rm.mapped_to_pools === rm.transfers_read, rm); }
+  console.log('— V14 (1.3.1) a ceiling dispute the transfers explain is a moved receipt —');
+  { const G = 'terra1jd2tam4svukk7pg8fv0dkj7zgwes9yw5c2h3wm0gkjcwdth2mpfsxxw6zd'; const d = ledger(G); const x = d && Object.values(d.v3.positions).find(q => q.name === 'wBTC.osmo-wBTC.axl' && q.mechanism === 'amplified');
+    check(`GMC Backing Wallet wBTC.osmo-wBTC.axl amp: not held (${x && x.not_held && (x.not_held.via || 'the hourly read has none')}), not disputed; moved to ${x && x.moves && x.moves.find(m => m.net_units > 0) && x.moves.find(m => m.net_units > 0).to.slice(0, 14)}…`, x && x.not_held && !x.disputed && x.moves.some(m => m.out_units > 0), x && { nh: x.not_held, d: x.disputed });
+    let still = 0; for (const [p2, doc] of built.files) { if (!/ledger\/terra1/.test(p2) || !doc.v3) continue; for (const q of Object.values(doc.v3.positions)) if (q.disputed && q.disputed.reason === 'ceiling' && q.moves && q.moves.reduce((s2, m) => s2 + (m.out_units || 0), 0) >= q.units_open * 0.99 && q.units_open > 0) still++; }
+    check(`no ceiling dispute left that the transfer record fully explains (${still})`, still === 0); }
   console.log('— V7 totals add up —');
   { let bad = []; let sumOpen = 0, sumNet = 0;
     for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && !x.not_held && typeof x.open_value_usd === 'number') s += x.open_value_usd;
