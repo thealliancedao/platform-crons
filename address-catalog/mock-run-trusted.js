@@ -39,4 +39,9 @@ T('bad address key, unknown type, unknown method all reported as issues, never p
 const bad2 = buildTrusted({ curated: { addresses: { [C.ZAPPER.addr]: { label: 'x', type: 'weird', verified: [{ method: 'vibes' }] } } } });
 T('unknown type + unknown method + no valid verification ⇒ 3 issues, row present with methods []', bad2.meta.issues.length === 3 && bad2.addresses[0].methods.length === 0, JSON.stringify(bad2.meta.issues));
 T('empty inputs ⇒ empty product, status ok', buildTrusted({}).addresses.length === 0 && buildTrusted({}).meta.status === 'ok');
+console.log('===== T9 (2026-09-28): Solid (Capapult) + the ampCAPA DAO — every contract the solid probe found reaches the trusted product, labelled —');
+{ const S = C.SOLID; const want = [S.overseer, S.market, S.liquidation, S.collector, S.oracle, S.stable, ...Object.values(S.custodies).map(x => x.custody), ...Object.keys(S.custodies), ...C.CUSTODIANS.map(c => c.address)];
+  const miss = want.filter(a => !by[a] || !by[a].label); T(`${want.length} Solid / custodian addresses in the product, each with a label (the audit tool resolves them)`, miss.length === 0, JSON.stringify(miss));
+  T('the overseer reads "Solid Overseer" (protocol Solid (Capapult)), sourced from known_contracts.json', by[S.overseer] && by[S.overseer].label === 'Solid Overseer' && by[S.overseer].protocol === 'Solid (Capapult)' && by[S.overseer].sources.includes('known_contracts.json'));
+  T('every custody in config SOLID is labelled as Solid (a hand-curated label wins: USDC reads "Solid Protocol — USDC collateral market")', Object.values(S.custodies).every(x => by[x.custody] && /Solid/.test(by[x.custody].label))); }
 console.log(`\n===== TRUSTED GATE: ${pass}/${pass + fail} =====`); process.exit(fail ? 1 : 0);
