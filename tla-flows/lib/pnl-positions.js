@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.2.0';   // 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.3.0';   // 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -313,6 +313,10 @@ function walletOutput(book, ctx, address) {
     // A disputed position is listed with both figures and left OUT of every total (open, realized, curve) — never averaged in.
     let dispute = null;
     if (ctx.check && value) { dispute = ctx.check(address, p.pool, p.mech, value.usd); }
+    // 1.3.0: where this position's receipts went (ctx.moves, pnl.js 1.2.4). A receipt the chain read cannot find in the wallet but
+    // that sits with a CUSTODIAN is still the member's: held_in, lots stay open and counted — not "not held".
+    const moves = ctx.moves ? ctx.moves.of(address, p.pool, p.mech) : null; let heldIn = null;
+    if (dispute && dispute.reason === 'not_held' && moves) { const c = moves.find(x => x.custodian_key && x.net_units > 0); if (c) { heldIn = { where: c.label, custodian: c.to, key: c.custodian_key, net_units: c.net_units, since: c.first_day }; dispute = null; } }
     let notHeld = null; if (dispute && dispute.reason === 'not_held') { notHeld = dispute; dispute = null; (book.notHeld = book.notHeld || new Set()).add(key); }   // 1.2.0: see pnl.js 1.2.3
     if (dispute) { (book.disputed = book.disputed || new Set()).add(key); }
     // 1.1.0 LP in vs now (open lots): non-amplified loses LP to the take rate (the drag, and the top-up that restores it);
@@ -326,7 +330,7 @@ function walletOutput(book, ctx, address) {
         take_rate: p.mech === 'non_amplified' && !measured ? { unmeasured: true, why: 'no share-rate sample near when these lots went in — the LP they started with is not known, so the drag is not guessed' } : p.mech === 'non_amplified' && d != null && d > 0 ? { lp_raw: r6(d), pct: lpIn > 0 ? r6(d / lpIn) : null, usd: perLpUsd != null ? r2(d * perLpUsd) : null, luna: perLpLuna != null ? r6(d * perLpLuna) : null, note: 'LP tokens the take rate removed since these lots went in = the top-up that restores them' } : undefined,
         amp_growth: p.mech === 'amplified' && measured && d != null && d < 0 ? { lp_raw: r6(-d), pct: lpIn > 0 ? r6(-d / lpIn) : null, usd: perLpUsd != null ? r2(-d * perLpUsd) : null } : undefined,
         open_since: p.lots.reduce((m, l) => (m == null || l.day < m ? l.day : m), null), capital_days_usd: capUsd != null ? r2(capUsd) : null, capital_days_luna: capLuna != null ? r6(capLuna) : null, as_of_day: latest.day }; }
-    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
+    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, held_in: heldIn || undefined, moves: moves && moves.length ? moves : undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
       realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd) },
