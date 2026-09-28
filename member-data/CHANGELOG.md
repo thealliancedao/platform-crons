@@ -1,5 +1,19 @@
 # member-data — changelog
 
+## 1.4.0 — 2026-09-28 — receipts held by a custodian count in every member's totals (capture-engine 1.2)
+
+- Owner: "my ampCAPA is staked in the ampCAPA DAO — still my position, still earning; did it make it into past balances and trends?"
+  It did not: the engine only saw what sits in the wallet, so every total, the daily archive and the trends missed DAO-staked receipts
+  (owner: $7,156 → $16,854 with the stake; 25 wallets hold one).
+- `config/contracts.js` gains `CUSTODIANS` (the ampCAPA DAO voting module — what it holds, which pool, how the stake is measured) and
+  `SOLID` (the Capapult CDP set from solid-probe 1.3).
+- `lib/capture-engine.js` 1.2: `loadCustody()` reads each custodian's measuring product once per run (the CAPA supply product's
+  `capa_equiv.receipt_dao`), prices it at the run's CAPA price → `portfolio.custody[]`, `summary.custody_usd`, and the portfolio total
+  includes it with `summary.total_includes_custody = true` so no reader adds it twice. No price → amounts kept, USD blank; product
+  unreadable → no custody, error recorded, capture unaffected.
+- The shared lib changes every engine user: member-data and ally-positions carry a version bump so Render rebuilds them.
+- Gate: `mock-run-custody.js` K1–K6 on real data (owner $9,697.62; 25 wallets = the product's DAO total; no-price / unreadable / pre-1.2).
+
 ## 1.3.0 — 2026-09-27 — Credia for every TLA participant (Milestone A · the rewards planner's loan panel)
 
 - tla-participants: new phase 3b `attachCredia` — ONE Credia Portfolio-contract query per participant (`{portfolio:{address}}`,
