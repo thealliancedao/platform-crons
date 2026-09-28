@@ -1,5 +1,19 @@
 # tla-flows — changelog
 
+## 3.5.2 — 2026-09-28 — "not held": open lots whose receipt left the wallet stop counting as open (pnl 1.2.3, pnl-positions 1.2.0)
+
+- Owner report: the portfolio showed ampCAPA (amplified) and wBTC.osmo-wBTC.axl (amplified) as open. Both receipts left the wallet by
+  TRANSFER — the ampCAPA receipt is staked in the ampCAPA DAO (3.36M receipts ≈ 7.68M CAPA), the wBTC one was sent to
+  terra1jd2tam…6zd on 2026-03-06 — which the flow ledger sees as neither a deposit nor a withdraw, so the lots stayed "open".
+- The referee (hourly participants read) now also answers "not held": a wallet the read covered with NO row for a pool × mechanism
+  the ledger still has open (≥ $1). Such a position is marked `not_held` — its open lots leave Open now, unrealized, net and the
+  curve's "now" point; its realized trips and claims stay (a dispute drops the whole position; this does not).
+  `totals.positions_not_held`, `totals.not_held_usd`; the DAO rollup sums them; `referees.wallets_read`.
+- Where the receipt went is the page's job for now (member-portfolio 3.7 reads the ampCAPA DAO live and counts it as custody).
+  Queued: model receipt / LP transfers in the ledger itself (tla-flows/transfers) so a custodian keeps the lots' basis.
+- Gate: mock-run-pnl-v3 V12 (owner's two positions not held, trips/rewards kept, Open now = held only, now point clean; 36 not-held
+  positions across members, every one truly absent from the chain read). 21/21 on main's data.
+
 ## 3.5.1 — 2026-09-27 — the weekly P&L publishes as ONE commit; pool names in the ledger
 
 - New `lib/git-batch.js` 1.0.0: `publishBatch` builds the new tree on the branch head in size-bounded chunks (≤ 4 MB / 200 files

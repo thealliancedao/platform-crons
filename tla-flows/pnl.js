@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.2.2';   // 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.2.3';   // 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -285,12 +285,17 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
     // dispute referees (1.2.0): the gauge totals now (tla-snapshot) and the hourly participants valuation per wallet × pool × mechanism
     { const ceil = new Map(), ref = new Map();
       try { const snap = await src.readJson('member-data/tla-snapshot/current.json'); for (const pl of snap.pools || []) if (pl.gauge_pool_id && Number(pl.staked_in_tla_usd) > 0) ceil.set(pl.gauge_pool_id, Math.max(ceil.get(pl.gauge_pool_id) || 0, Number(pl.staked_in_tla_usd))); } catch { /* no ceiling — the check degrades to participants only */ }
-      try { const part = await src.readJson('member-data/participants/current.json'); for (const m of part.members || []) for (const l of m.lp_positions || []) { const k = `${m.wallet}|${l.pool_gauge_id}|${l.is_amplified ? 'amplified' : 'non_amplified'}`; if (Number.isFinite(Number(l.estimated_position_usd))) ref.set(k, (ref.get(k) || 0) + Number(l.estimated_position_usd)); } } catch { /* none */ }
+      const readW = new Set();   // 1.2.3: wallets the hourly read covered — for them, NO row for a pool means none held
+      try { const part = await src.readJson('member-data/participants/current.json'); for (const m of part.members || []) { if (Array.isArray(m.lp_positions)) readW.add(m.wallet); } for (const m of part.members || []) for (const l of m.lp_positions || []) { const k = `${m.wallet}|${l.pool_gauge_id}|${l.is_amplified ? 'amplified' : 'non_amplified'}`; if (Number.isFinite(Number(l.estimated_position_usd))) ref.set(k, (ref.get(k) || 0) + Number(l.estimated_position_usd)); } } catch { /* none */ }
       ctx.check = (wallet, pool, mech, usd) => {
         const c = ceil.get(pool); if (c != null && usd > Math.max(2 * c, 1000)) return { reason: 'ceiling', ours_usd: Math.round(usd * 100) / 100, gauge_total_usd: Math.round(c * 100) / 100 };
-        if (wallet) { const r = ref.get(`${wallet}|${pool}|${mech}`); if (r != null && Math.abs(usd - r) > Math.max(50, 0.5 * Math.max(usd, r))) return { reason: 'participants', ours_usd: Math.round(usd * 100) / 100, participants_usd: Math.round(r * 100) / 100 }; }
+        if (wallet) { const r = ref.get(`${wallet}|${pool}|${mech}`); if (r != null && Math.abs(usd - r) > Math.max(50, 0.5 * Math.max(usd, r))) return { reason: 'participants', ours_usd: Math.round(usd * 100) / 100, participants_usd: Math.round(r * 100) / 100 };
+          // 1.2.3 (owner 2026-09-28: ampCAPA + wBTC.osmo-wBTC.axl "open" — receipts that left the wallet by transfer): the read covered this
+          // wallet and found NOTHING in this pool × mechanism → the open lots are not held here (staked in a DAO, sent to another address).
+          // Not a dispute: the trips and rewards stay; only the open lots leave Open now / unrealized / net and the curve's "now" point.
+          if (r == null && readW.has(wallet) && usd >= 1) return { reason: 'not_held', ours_usd: Math.round(usd * 100) / 100, participants_usd: 0 }; }
         return null; };
-      v3meta.referees = { gauge_ceilings: ceil.size, participant_positions: ref.size }; }
+      v3meta.referees = { gauge_ceilings: ceil.size, participant_positions: ref.size, wallets_read: readW.size }; }
     const books = new Map(); const BOOK = (a) => books.get(a) || books.set(a, PP.newBook()).get(a);
     meta.months_read = [...monthKeys];
 
@@ -490,8 +495,8 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         claimed_yield_usd_at_event: walletRows.reduce((s, r) => s + r.claimed_yield.usd_at_event, 0),
         claimed_yield_luna: walletRows.reduce((s, r) => s + r.claimed_yield.luna_display, 0),
         v3: (() => { const T = { positions_disputed: 0, open_value_usd: 0, open_cost_usd: 0, realized_delta_usd: 0, market_usd: 0, lp_usd: 0, claims_usd: 0, bribes_usd: 0, net_usd: 0, trips_valued: 0, trips_blank: 0 };
-          for (const [, o] of v3) { const t = o.totals; T.open_value_usd += t.open.value_usd; T.open_cost_usd += t.open.cost_usd; T.realized_delta_usd += t.realized.delta_usd; T.market_usd += t.realized.market_usd; T.lp_usd += t.realized.lp_usd; T.claims_usd += t.rewards.claims_usd; T.bribes_usd += t.rewards.bribes_usd; T.net_usd += t.net_usd; T.trips_valued += t.realized.trips_valued; T.trips_blank += t.realized.trips_blank; T.trips_suspect = (T.trips_suspect || 0) + (t.realized.trips_suspect || 0); T.positions_disputed += t.positions_disputed || 0; }
-          for (const k of Object.keys(T)) if (!/trips|disputed/.test(k)) T[k] = Math.round(T[k] * 100) / 100; T.wallets = v3.size; T.bribe_only_wallets = bribeOnly.length; return T; })(),
+          for (const [, o] of v3) { const t = o.totals; T.open_value_usd += t.open.value_usd; T.open_cost_usd += t.open.cost_usd; T.realized_delta_usd += t.realized.delta_usd; T.market_usd += t.realized.market_usd; T.lp_usd += t.realized.lp_usd; T.claims_usd += t.rewards.claims_usd; T.bribes_usd += t.rewards.bribes_usd; T.net_usd += t.net_usd; T.trips_valued += t.realized.trips_valued; T.trips_blank += t.realized.trips_blank; T.trips_suspect = (T.trips_suspect || 0) + (t.realized.trips_suspect || 0); T.positions_disputed += t.positions_disputed || 0; T.positions_not_held = (T.positions_not_held || 0) + (t.positions_not_held || 0); T.not_held_usd = (T.not_held_usd || 0) + (t.not_held_usd || 0); }
+          for (const k of Object.keys(T)) if (!/trips|disputed|positions_not_held/.test(k)) T[k] = Math.round(T[k] * 100) / 100; T.wallets = v3.size; T.bribe_only_wallets = bribeOnly.length; return T; })(),
     };
 
     // ── Honesty assertions (abort — never publish inconsistent data) ────────

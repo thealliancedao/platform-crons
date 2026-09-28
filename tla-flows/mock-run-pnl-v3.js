@@ -10,6 +10,7 @@
 //   V4 attribution identity on EVERY valued trip in the real build: out − in = market + lp (± $0.02 rounding)
 //   V5 units vs the chain: open non-amp units from events == participants' on-chain shares (< 0.1 %) on ≥ 95 % of positions
 //   V6 value vs the chain: median |ours − participants| < 5 % (non-amp and amp); every disputed position is OUT of the totals
+//   V12 (1.2.0) not held: open lots the hourly chain read says are not in the wallet — out of Open now + the now point, trips/rewards kept
 //   V11 (1.1.0) LP now == the chain's staked balance; LP in ≥ LP now (the take rate only removes); drag valued; capital × days present
 //   V7 totals add up: wallet open.value_usd == Σ its non-disputed positions; DAO totals == Σ wallets
 //   V8 value curve: the last point equals the open value on a wallet with no disputes and no missing pools (the owner's)
@@ -92,11 +93,22 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     check(`the take rate only removes: LP in ≥ LP now on ${drag}/${drag + neg} (≥ 99 %); ${withUsd} drags valued in USD`, drag + neg > 100 && drag / (drag + neg) >= 0.99 && withUsd > 50, negs.slice(0, 5));
     let cap = 0, capBad = 0; for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; for (const x of Object.values(doc.v3.positions)) { if (!x.open_lp) continue; cap++; if (x.open_cost_usd && !(x.open_lp.capital_days_usd >= 0)) capBad++; } }
     check(`every open position carries capital × days for its APR (${cap}, ${capBad} bad)`, cap > 100 && capBad === 0); }
+  console.log('— V12 not held (pnl-positions 1.2.0): open lots the chain read says are not in the wallet —');
+  { const d = ledger(OWNER); const P = d.v3.positions; const nh = Object.entries(P).filter(([, x]) => x.not_held);
+    const has = (n) => nh.some(([k, x]) => x.name === n && x.mechanism === 'amplified');
+    check(`owner: ${nh.length} not held — ${nh.map(([, x]) => x.name + ' ' + x.mechanism + ' $' + x.not_held.ours_usd).join(', ')} (ampCAPA receipt staked in the DAO; wBTC.osmo-wBTC.axl receipt sent to another address)`, has('ampCAPA') && has('wBTC.osmo-wBTC.axl'));
+    const kept = nh.every(([, x]) => x.realized && x.claims && x.units_open > 0);
+    const openSum = Object.values(P).filter(x => !x.disputed && !x.not_held && typeof x.open_value_usd === 'number').reduce((a, x) => a + x.open_value_usd, 0);
+    check(`their trips and rewards stay; Open now ${d.v3.totals.open.value_usd} = the held positions only (${openSum.toFixed(2)}); totals say ${d.v3.totals.positions_not_held} not held ($${d.v3.totals.not_held_usd})`, kept && Math.abs(openSum - d.v3.totals.open.value_usd) < 0.05 && d.v3.totals.positions_not_held === nh.length);
+    const now = d.v3.value_curve[d.v3.value_curve.length - 1]; const pidx = d.v3.curve_pools;
+    check('the curve\'s now point leaves them out (a pool entry carries only what is still held; never "missing")', now.e === 'now' && nh.every(([k]) => { const pool = k.split('|')[0], i = pidx.indexOf(pool); const heldV = Object.entries(P).filter(([kk, x]) => kk.split('|')[0] === pool && !x.not_held && !x.disputed).reduce((a, [, x]) => a + (x.open_value_usd || 0), 0); return i < 0 || (((now.p || {})[i] || 0) <= heldV + 0.01 && !(now.m || []).includes(i)); }));   /* the pool's entry carries only its held mechanism (dust) */
+    let wrong = 0, n = 0; for (const m of part.members) { const L = ledger(m.wallet); if (!L || !L.v3) continue; for (const x of Object.values(L.v3.positions)) { if (!x.not_held) continue; n++; if ((m.lp_positions || []).some(l => l.pool_gauge_id === x.pool && (l.is_amplified ? 'amplified' : 'non_amplified') === x.mechanism)) wrong++; } }
+    check(`across members: ${n} not-held positions, every one truly absent from the chain read (${wrong} wrong)`, n > 0 && wrong === 0); }
   console.log('— V7 totals add up —');
   { let bad = []; let sumOpen = 0, sumNet = 0;
-    for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && typeof x.open_value_usd === 'number') s += x.open_value_usd;
+    for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && !x.not_held && typeof x.open_value_usd === 'number') s += x.open_value_usd;
       if (Math.abs(s - v.totals.open.value_usd) > 0.05 + 0.0001 * s) bad.push([doc.address.slice(-6), s, v.totals.open.value_usd]); sumOpen += v.totals.open.value_usd; sumNet += v.totals.net_usd; }
-    check('each wallet: open.value_usd == Σ non-disputed position values', bad.length === 0, bad.slice(0, 4));
+    check('each wallet: open.value_usd == Σ position values (not disputed, not "not held")', bad.length === 0, bad.slice(0, 4));
     check(`DAO: open value ${R.totals.v3.open_value_usd} == Σ wallets, net ${R.totals.v3.net_usd} == Σ wallets`, Math.abs(sumOpen - R.totals.v3.open_value_usd) < 1 && Math.abs(sumNet - R.totals.v3.net_usd) < 1, [sumOpen, sumNet]); }
 
   console.log('— V8 value curve (owner) —');
