@@ -117,6 +117,42 @@ const LST_HUBS = {
 const LST_DIVERGENCE_FLAG_PCT = 2;
 const LST_REVIEW_FLAG_PCT = 10;
 
+// ── Solid (Capapult CDP) — found by the solid-probe 1.3 run (tla-core docs/fixtures/2026-09-28/solid-probe.json) from the owner's
+// test txs; every custody's config names the same overseer / market / liquidation / collector. Query targets for the Solid reader
+// (queued). Labels + query shapes: docs/curated/known_contracts.json and docs/queries.md §19. OPEN: the oracle's price unit.
+const SOLID = {
+    overseer:    'terra10qnsw3wn4uaxs7en2kynhet2dsyy76lmprh2ptcz85d8hu59gkuqcpndnv',   // whitelist, collaterals{borrower}, all_collaterals, borrow_limit{borrower}
+    market:      'terra1h4cknjl5k0aysdhv0h4eqcaka620g8h69k8h0pjjccxvf9esfhws3cyqnc',   // state, borrower_info{borrower} (loan_amount), borrower_infos
+    liquidation: 'terra188d4q69nen6vmwt7vcvz8lf54mc80cfvqtrznpmsrawftm86jkmsh4grzp',
+    collector:   'terra1uz33y5dfazxspyfdvw30dwmpa5hhm4908tetpq5t0sm0z0c63rlspfkaau',
+    oracle:      'terra199pgv9dymcg9q8xtwsxk7yakazmvlf5ptkqh4zadcv7k0yqsal2q6tq7mv',   // v2 — the overseer's; prices{} (unit unconfirmed)
+    stable:      'terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst',   // SOLID cw20
+    // collateral token → custody (the overseer's whitelist, 2026-09-28)
+    custodies: {
+        'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct': { symbol: 'ampLUNA', custody: 'terra18uxq2k6wpsqythpakz5n6ljnuzyehrt775zkdclrtdtv6da63gmskqn7dq', max_ltv: 0.5 },
+        'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml': { symbol: 'bLUNA',   custody: 'terra1fyfrqdf58nf4fev2amrdrytq5d63njulfa7sm75c0zu4pnr693dsqlr7p9', max_ltv: 0.5 },
+        'terra14xsm2wzvu7xaf567r693vgfkhmvfs08l68h4tjj5wjgyn5ky8e2qvzyanh': { symbol: 'LunaX',   custody: 'terra18l7vt34kfy2ycv3aej4fgq286s060n55f7uz0qyw9jpzn5gszkxsy3r7nw', max_ltv: 0.5 },
+        'terra164ye3v3pksjzl8nan9z3jd8xyhwpee7ws82l5y2gfcwqnekz9ujqts7v58': { symbol: 'wETH',    custody: 'terra1xyxxg9z8eep6xkfts4sp7gper677glz0md4wd9krj4d8dllmut8q8tjjrl', max_ltv: 0.75, wraps: 'ibc/BC8A77AFBD872FDC32A348D3FB10CC09277C266CFE52081DE341C7EC6752E674' },
+        'terra1r6ju9f643v353n88dxaqdvkthdnclycgds2qc6kyddqpmcr9dj5sdkvu37': { symbol: 'wBTC',    custody: 'terra1jksfmpavp09wwla8xffera3q7z49ef6r2jx9lu29mwvl64g34ljs7u2hln', max_ltv: 0.75, wraps: 'ibc/05D299885B07905B6886F554B39346EA6761246076A1120B1950049B92B922DD' },
+        'terra1qv3gtys4u8hacv9mdzk3gmc88z6gv5w2c9ksmcf868pl8q3er42snwgdn2': { symbol: 'USDC',    custody: 'terra1shc5n0sqg30fzvg0e2j826j0g73ypmjw9vkf592ghdph5dhau25qha2rks', max_ltv: 0.95, wraps: 'ibc/2C962DAB9F57FE0921435426AE75196009FAA1981BF86991203C8411F8980FDB' },
+        'terra1ctelwayk6t2zu30a8v9kdg3u2gr0slpjdfny5pjp7m3tuquk32ysugyjdg': { symbol: 'wSOL',    custody: 'terra1e32q545j90agakl32mtkacq05990cnr54czj8wp0wv3nttkrhwlqr9spf5', max_ltv: 0.65 },
+        'terra1xc7ynquupyfcn43sye5pfmnlzjcw2ck9keh0l2w2a4rhjnkp64uq4pr388': { symbol: 'wBNB',    custody: 'terra1fluajm00hwu9wyy8yuyf4zag7x5pw95vdlgkhh8w03pfzqj6hapsx4673t', max_ltv: 0.65 },
+    },
+};
+
+// ── Custodians: contracts that HOLD a member's TLA receipt while it stays the member's (2026-09-28) ─────────────────
+// Owner: "I deposit, amplify, and stake the ampLP receipt in DAODAO for gov VP — still my position, still earning."
+// A receipt sent to one of these is NOT a withdrawal and NOT gone: the capture engine counts it in the member's totals
+// (measured by `measured_by`), the P&L build keeps its lots open ("held in"), the portfolio shows it apart from wallet LPs.
+// Add a custodian here (with how its per-wallet stake is measured) and every consumer picks it up.
+const CUSTODIANS = [
+    { key: 'ampcapa-dao', label: 'the ampCAPA DAO', kind: 'daodao_voting_module',
+      address: 'terra1juj3ymejnug9p92upphcq0prq4e0hpw6rcu20njf8tk7n9sl2wxqldr0mt',
+      holds_denom: 'factory/terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx/44/single/amplp',
+      pool: 'native:factory/terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y/ampCAPA', mechanism: 'amplified',
+      measured_by: { product: 'token-catalog/supply/capa/wallets.json', field: 'capa_equiv.receipt_dao', unit: 'CAPA', price_symbol: 'CAPA' } },
+];
+
 // ── TLA-relevant token CW20s (INTERIM) ──────────────────────────────────────
 // NOTE: token identity belongs to the token-catalog domain (the WORTH layer).
 // These live here only so no address is hardcoded today. When token-catalog is
@@ -141,4 +177,6 @@ module.exports = {
     LST_DIVERGENCE_FLAG_PCT,
     LST_REVIEW_FLAG_PCT,
     TLA_TOKENS,
+    CUSTODIANS,
+    SOLID,
 };
