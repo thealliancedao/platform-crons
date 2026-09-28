@@ -10,6 +10,7 @@
 //   V4 attribution identity on EVERY valued trip in the real build: out − in = market + lp (± $0.02 rounding)
 //   V5 units vs the chain: open non-amp units from events == participants' on-chain shares (< 0.1 %) on ≥ 95 % of positions
 //   V6 value vs the chain: median |ours − participants| < 5 % (non-amp and amp); every disputed position is OUT of the totals
+//   V11 (1.1.0) LP now == the chain's staked balance; LP in ≥ LP now (the take rate only removes); drag valued; capital × days present
 //   V7 totals add up: wallet open.value_usd == Σ its non-disputed positions; DAO totals == Σ wallets
 //   V8 value curve: the last point equals the open value on a wallet with no disputes and no missing pools (the owner's)
 //   V9 determinism: two builds byte-identical minus builtAt
@@ -28,6 +29,7 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
   const built = await quiet(() => P.buildPnl(localSrc, { now: () => NOW }));
   const R = built.files.get('tla-flows/pnl/rollup.json'); const W = new Map(R.wallets.map(w => [w.address, w]));
   const ledger = (a) => built.files.get(`tla-flows/pnl/ledger/${a}.json`);
+  if (process.env.OUT_DIR) { const path = require('path'); for (const [p, doc] of built.files) { const f = path.join(process.env.OUT_DIR, p); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(doc)); } console.log(`  wrote ${built.files.size} files → ${process.env.OUT_DIR} (the page gate reads them as PNL_OUT)`); }
 
   console.log('— V1 Phase A/B unchanged —');
   if (process.env.BASE_PNL && fs.existsSync(process.env.BASE_PNL)) {
@@ -79,6 +81,17 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const dis = Object.values(doc.v3.positions).filter(x => x.disputed); if (dis.length && (doc.v3.totals.positions_disputed || 0) !== dis.length) disputedInTotals++; }
     check(`every disputed position is counted as disputed in its wallet's totals (${R.totals.v3.positions_disputed} disputed DAO-wide)`, disputedInTotals === 0); }
 
+  console.log('— V11 LP in vs now (pnl-positions 1.1.0): the take-rate drag and the top-up, against the chain —');
+  { let tot = 0, near = 0, drag = 0, neg = 0, withUsd = 0; const off = [], negs = [];
+    for (const m of part.members) { const d = ledger(m.wallet); const P = (d && d.v3 && d.v3.positions) || {};
+      for (const l of m.lp_positions) { if (l.is_amplified || !l.pool_gauge_id) continue; const bal = Number(l.amplp_balance_raw || 0); if (bal < 1e6) continue; const p = P[l.pool_gauge_id + '|non_amplified']; if (!p || !p.open_lp || p.open_lp.lp_now_raw == null) continue; tot++;
+        if (Math.abs(p.open_lp.lp_now_raw - bal) / bal < 0.005) near++; else off.push([m.wallet.slice(-6), l.pool_name, bal, p.open_lp.lp_now_raw]);
+        if (p.open_lp.lp_in_raw != null) { if (p.open_lp.lp_in_raw >= p.open_lp.lp_now_raw * (1 - 1e-4)) drag++; /* 0.01 %: rate interpolation (a lot deposited just before the latest sample) */ else { neg++; negs.push([m.wallet.slice(-6), l.pool_name, p.open_lp.lp_in_raw, p.open_lp.lp_now_raw]); } }
+        if (p.open_lp.take_rate && p.open_lp.take_rate.usd != null && p.open_value_usd) { withUsd++; } } }
+    check(`LP now (units × today's rate) == the chain's staked balance (< 0.5 %) on ${near}/${tot} open non-amp positions (≥ 95 %)`, tot > 100 && near / tot >= 0.95, off.slice(0, 5));
+    check(`the take rate only removes: LP in ≥ LP now on ${drag}/${drag + neg} (≥ 99 %); ${withUsd} drags valued in USD`, drag + neg > 100 && drag / (drag + neg) >= 0.99 && withUsd > 50, negs.slice(0, 5));
+    let cap = 0, capBad = 0; for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; for (const x of Object.values(doc.v3.positions)) { if (!x.open_lp) continue; cap++; if (x.open_cost_usd && !(x.open_lp.capital_days_usd >= 0)) capBad++; } }
+    check(`every open position carries capital × days for its APR (${cap}, ${capBad} bad)`, cap > 100 && capBad === 0); }
   console.log('— V7 totals add up —');
   { let bad = []; let sumOpen = 0, sumNet = 0;
     for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && typeof x.open_value_usd === 'number') s += x.open_value_usd;

@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.2.1';   // 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.2.2';   // 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
