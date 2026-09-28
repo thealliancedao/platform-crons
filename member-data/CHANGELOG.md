@@ -1,5 +1,26 @@
 # member-data — changelog
 
+## 1.6.0 — 2026-09-28 — Solid for every participant (SPEC-portfolio-solid)
+
+- New shared `lib/solid-reader.js` 1.0.0. The protocol is read ONCE per run as a census, paged to the end (stops on an EMPTY page —
+  a contract may cap the limit): overseer `all_collaterals` (what is LOCKED), market `borrower_infos` (SOLID owed), every custody's
+  `borrowers` (deposited; `spendable` = not locked), oracle `prices`, overseer `whitelist`, cw20 `token_info` (decimals; the token catalog
+  as the labelled fallback — a Solid wrapper takes its ibc token's decimals). The protocol's own `borrow_limit` is asked only for the
+  wallets with a loan.
+- **The oracle unit is proven**: `price` is uusd per RAW unit → USD per token = price × 10^(decimals − 6) (ampLUNA / bLUNA = the price
+  feed; wBTC 828.44 → $82,844; WETH 2.64e-9 → $2,645). The catalog's WBTC.axl $60.5K is the stale one.
+- tla-participants phase 3c `attachSolid`: `portfolio.solid` = collateral per token (locked, idle, USD, max LTV), SOLID debt, borrow limit
+  (protocol, else computed), health = limit ÷ loan and its band (safe ≥ 1.5 · watch · at risk < 1.2 · liquidatable < 1), liquidation
+  (one collateral: the price it falls to; several: the % they must all fall), net. Summary: `solid_collateral_usd / solid_idle_usd /
+  solid_debt_usd / solid_health`. A wallet with nothing in Solid gets nothing (no "$0"). The participants doc gains `solid_protocol`
+  (total SOLID owed, collateral locked per token, oracle prices) and `discovery.solid` (census stats). Isolated; `SOLID=0` disables.
+- history-series 1.1.0: rows gain `ss` / `sb` (Solid collateral incl. idle / SOLID debt, USD) — null before capture.
+- Gate `mock-run-solid.js` S1–S7 9/9 on the chain's recorded answers (solid-probe 1.3): the oracle unit on four assets; the owner's test
+  position (limit 0.012243 = the protocol's, computed within 0.1 %, health 1.01 → at risk); deposited = locked + spendable on every
+  recorded row; a real borrower (190,100 ampLUNA vs 8,040 SOLID → health 1.43, liquidates at a 29.9 % ampLUNA fall); paging; attach;
+  a dead chain touches no one. S8 (the full census vs the protocol's limits) runs once solid-probe 1.4 has committed its fixture.
+  mock-run-history H7 (Solid columns) 20/20.
+
 ## 1.5.0 — 2026-09-28 — history series: one daily series per wallet for the member portfolio's chart
 
 - Owner: "portfolio trackers have a lot of functionality in their charts — time frames, trends … a central chart the user can change".

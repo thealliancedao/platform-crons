@@ -16,7 +16,8 @@
 //   rates) · fx (locked, LUNA stamped at lock — VP = 10× at max) · lp · cu (staked in a DAO, USD) · cuS (0 = the day's capture,
 //   1 = filled from the CAPA supply history, 2 = carried across a hole in that history — held on both sides) · wb (TLA tokens in the wallet) · vt (Votion, USD) · vtv (Votion implied VP) ·
 //   cs / cb (Credia supplied / borrowed USD) · vp · pvp (VP if adjusted) · pr (pending rewards USD) · px (LUNA USD that day) ·
-//   nl (lock count) · src (p = participants archive, m = member archive)
+//   nl (lock count) · src (p = participants archive, m = member archive) · ss / sb (1.1.0: Solid collateral incl. idle / SOLID debt, USD;
+//   null before Solid was captured, and for a wallet with nothing in Solid)
 // Blank beats phantom: a field the day's capture did not carry is null, never 0. A day with no archive file is a gap (no row).
 //
 // When: the first run with no index SEEDS every archived day (2026-08-11 → today), one day at a time (read → fold → drop:
@@ -24,10 +25,10 @@
 // everything; HISTORY=0 disables. Publishes the changed shards as ONE commit (tla-flows lib/git-batch.js).
 // The deep backfill (SPEC-deep-history) writes older days into the SAME files with src = 'd' — one canonical file per series.
 // =============================================================================
-const VERSION = 'history-series-1.0.0';
+const VERSION = 'history-series-1.1.0';   // 1.1.0 (2026-09-28): + ss / sb — Solid collateral (locked + idle) and SOLID debt in USD (member-data 1.6.0 attachSolid); appended, readers decode by name
 const OUT_DIR = 'member-data/history/series';
 const FIRST_ARCHIVE_DAY = '2026-08-11';   // the org participants / member archives start here (older days live in the legacy repos)
-const COLS = ['d', 'p', 'lk', 'lkL', 'fx', 'lp', 'cu', 'cuS', 'wb', 'vt', 'vtv', 'cs', 'cb', 'vp', 'pvp', 'pr', 'px', 'nl', 'src'];
+const COLS = ['d', 'p', 'lk', 'lkL', 'fx', 'lp', 'cu', 'cuS', 'wb', 'vt', 'vtv', 'cs', 'cb', 'vp', 'pvp', 'pr', 'px', 'nl', 'src', 'ss', 'sb'];
 const SHARD_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';   // bech32 — the character after "terra1"
 const shardOf = (addr) => { const c = String(addr || '').charAt(6); return SHARD_CHARS.includes(c) ? c : '_'; };
 const r2 = (x) => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100;
@@ -49,7 +50,8 @@ function rowOf(day, m, src, vot, cuFill, px) {
     r2(cu), cu == null ? null : (inc ? 0 : (cuFill && cuFill.carried ? 2 : 1)), r2(num(s.total_wallet_balances_usd)),
     vot ? r2(vot.usd) : null, vot ? r2(vot.vp) : null,
     s.credia_supplied_usd !== undefined ? r2(num(s.credia_supplied_usd)) : null, s.credia_borrowed_usd !== undefined ? r2(num(s.credia_borrowed_usd)) : null,
-    r2(num(s.voting_power_human)), r2(num(s.potential_vp_human)), r2(num(s.total_pending_rewards_usd)), r6(px), num(s.lock_count), src];
+    r2(num(s.voting_power_human)), r2(num(s.potential_vp_human)), r2(num(s.total_pending_rewards_usd)), r6(px), num(s.lock_count), src,
+    s.solid_collateral_usd !== undefined ? r2((num(s.solid_collateral_usd) || 0) + (num(s.solid_idle_usd) || 0)) : null, s.solid_debt_usd !== undefined ? r2(num(s.solid_debt_usd)) : null];
 }
 
 // ── fold one archived day into the state (pure given its inputs) ────────────────────────────────────────────────────

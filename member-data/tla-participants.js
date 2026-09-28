@@ -51,6 +51,7 @@ const {
     TLA_VOTING_ESCROW,
 } = require('../lib/capture-engine.js');
 const CR = require('../lib/credia-reader.js');   // 2026-09-27: every participant's Credia position (shared with ally-positions)
+const SR = require('../lib/solid-reader.js');    // 2026-09-28: every participant's Solid position (one census per run, SPEC-portfolio-solid)
 const C = require('../config/contracts.js');
 const CATALOG_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/token-catalog/snapshots/current.json';
 const { buildResolver } = require('../lib/denom-symbol.js');
@@ -75,6 +76,28 @@ async function attachCredia(portfolios, deps) {
     return stats;
 }
 
+// Solid for every participant (member-data 1.6.0, SPEC-portfolio-solid): the protocol read ONCE as a paged census (locked collateral,
+// loans, every custody's deposits, the oracle, the whitelist, decimals), joined to each wallet — plus the protocol's own borrow limit for
+// the wallets with a loan. portfolio.solid = { collateral[], debt_solid, borrow_limit_solid, health, band, liquidation, collateral_usd,
+// idle_usd, net_usd } or absent when the wallet has nothing in Solid (no card, never "$0"). An unreadable census → solid.error on no one:
+// the run records it in discovery.solid and every member keeps its absence as "unknown", not zero (summary fields left unset).
+async function attachSolid(portfolios, deps) {
+    const { queryContract: q } = deps; const cfg = C.SOLID;
+    const query = async (addr, msg) => { try { const r = await q(addr, msg); return r == null ? null : r; } catch (e) { return null; } };
+    let decimalsOf = null;   // the token catalog's decimals — the fallback when a collateral's token_info does not answer
+    try { const cat = await (deps.fetchJson || fetchJson)(CATALOG_URL, 'token-catalog'); const r = buildResolver(cat || []); decimalsOf = (d) => { const x = r(d); return x && x.decimals != null ? x.decimals : null; }; } catch (e) { decimalsOf = null; }
+    const census = await SR.loadCensus(query, cfg, { decimalsOf });
+    const wallets = portfolios.filter(Boolean).map(p => p.wallet || p.address);
+    const lim = await SR.loadLimits(query, cfg, census, wallets);
+    const stats = { census_complete: census.complete, errors: census.errors.length ? census.errors : undefined, ...census.stats, limits_read: lim.read, limits_failed: lim.failed, with_position: 0, borrowers: 0 };
+    if (!census.locked.size && !census.loans.size && census.errors.length) return { stats, protocol: null };   // nothing read — leave every member unknown
+    for (const p of portfolios.filter(Boolean)) {
+        const pos = SR.positionOf(p.wallet || p.address, census); if (!pos) continue;
+        p.solid = pos; stats.with_position++; if (pos.debt_solid > 0) stats.borrowers++;
+        p.summary = p.summary || {}; p.summary.solid_collateral_usd = pos.collateral_usd; p.summary.solid_idle_usd = pos.idle_usd; p.summary.solid_debt_usd = pos.debt_usd; p.summary.solid_health = pos.health;
+    }
+    return { stats, protocol: SR.protocolSummary(census) };
+}
 
 // -----------------------------------------------------------------------------
 // CONFIG
@@ -336,6 +359,10 @@ async function run() {
     let crediaStats = null;
     try { crediaStats = await attachCredia(valid, { queryContract, fetchJson }); console.log(`  ✓ credia: ${crediaStats.read} read · ${crediaStats.with_position} with a position · ${crediaStats.borrowers} borrowing · ${crediaStats.failed} failed`); }
     catch (e) { console.warn('  ⚠ credia step failed (isolated):', e.message); crediaStats = { error: e.message }; }
+    // Phase 3c: Solid (isolated — a failure here never fails the run)
+    let solidRes = null;
+    if (process.env.SOLID !== '0') { try { solidRes = await attachSolid(valid, { queryContract, fetchJson }); const st = solidRes.stats; console.log(`  ✓ solid: census ${st.collateral_rows} collateral rows · ${st.loan_rows} loan rows (${st.borrowers_with_loan} with a loan) · ${st.with_position} participants in Solid · ${st.borrowers} borrowing · limits ${st.limits_read}${st.errors ? ' · ⚠ ' + st.errors.join('; ') : ''}`); }
+      catch (e) { console.warn('  ⚠ solid step failed (isolated):', e.message); solidRes = { stats: { error: e.message }, protocol: null }; } }
     const withErrors = valid.filter(p => (p._errors || []).length > 0).length;
     console.log(`  ✓ ${valid.length}/${participants.length} portfolios captured (${withErrors} with per-member errors)`);
 
@@ -365,7 +392,9 @@ async function run() {
             bribe_source_ok: bribe_ok,
             participant_count: participants.length,
             credia: crediaStats,
+            solid: solidRes ? solidRes.stats : { skipped: 'SOLID=0' },
         },
+        solid_protocol: solidRes ? solidRes.protocol : null,   // 1.6.0: the Solid protocol in one line per collateral (total debt, locked, oracle prices)
         members: valid,
     };
 
@@ -439,4 +468,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main: run, discoverLockHolders, discoverBribeProviders, resolveParticipants, attachCredia };
+module.exports = { main: run, discoverLockHolders, discoverBribeProviders, resolveParticipants, attachCredia, attachSolid };

@@ -68,6 +68,11 @@ const quiet = () => {};
   const r4 = await HS.run({ fetchJson, publishBatch, rawBase: RAW, env: { HISTORY: '0' }, now: at(lastArchive, 23), log: quiet });
   ok('HISTORY=0 → disabled', r4.status === 'skipped' && r4.reason === 'HISTORY=0');
 
+  console.log('— H7 Solid (1.1.0) —');
+  const C2 = Object.fromEntries(HS.COLS.map((c, i) => [c, i]));
+  const rs = HS.rowOf('2026-09-29', { summary: { total_portfolio_value_usd: 10, solid_collateral_usd: 22946.7, solid_idle_usd: 3.3, solid_debt_usd: 7911.6 } }, 'p', null, null, 0.05);
+  const rn = HS.rowOf('2026-09-29', { summary: { total_portfolio_value_usd: 10 } }, 'p', null, null, 0.05);
+  ok(`a day with Solid: ss = collateral + idle (${rs[C2.ss]}), sb = debt (${rs[C2.sb]}); a day / wallet without Solid: null (not 0); the archive's own rows have no Solid yet (${rows.filter(r => r[C.ss] != null).length} with)`, rs[C2.ss] === 22950 && rs[C2.sb] === 7911.6 && rn[C2.ss] === null && rn[C2.sb] === null);
   console.log('— H6 size —');
   let tot = 0, max = 0, maxP = ''; for (const [p, c] of published) if (p.startsWith(HS.OUT_DIR)) { tot += c.length; if (c.length > max) { max = c.length; maxP = p; } }
   ok(`largest shard ${(max / 1024).toFixed(0)} KB (${maxP.split('/').pop()}), all ${(tot / 1024 / 1024).toFixed(2)} MB — a phone reads one shard`, max < 600 * 1024);
