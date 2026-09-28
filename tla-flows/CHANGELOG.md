@@ -1,5 +1,17 @@
 # tla-flows — changelog
 
+## 3.5.5 — 2026-09-28 — tokens in / out on every trip (pnl 1.3.0, pnl-positions 1.4.0)
+
+- Owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — so you can see how things did in USD in and out, or token
+  amounts in and out?" The build already knew each lot's tokens (the provided legs, or the derived basket) and each exit's (the
+  refund legs, or the basket) — it only published USD and LUNA.
+- Trips gain `tok_in` / `tok_out` (appended to trip_cols — readers decode by name): [[symbol, amount], …], the consumed lots' tokens
+  in and the matched share of what came out. Positions gain `realized.tok_in / tok_out` (Σ trips) and, for open lots, `open_tok`:
+  the entry tokens, the tokens the units hold now, and `hold_usd / hold_luna` — the entry tokens at today's prices (LP vs hold).
+- Gate V15 (5): 13,340/13,340 valued trips carry tokens; tokens out × price-history/series that day == the trip's out USD within 3 %
+  on 5,244/5,468 measured exits; position totals == Σ trips; no raw denom names. 32/32 on main's data under the 200 MB heap.
+- Needs one `PNL=force` run on org-tla-flows after the deploy (the weekly build for epoch 205 already ran on 1.2.4).
+
 ## 3.5.4 — 2026-09-28 — moved beats disputed (pnl 1.2.5, pnl-positions 1.3.1)
 
 - The referee decides "not held" BEFORE the gauge-ceiling check for a wallet the hourly read covers (the position is not in the wallet,

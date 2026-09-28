@@ -14,6 +14,7 @@
 //   V13 (1.3.0) where receipts went: named destinations; a custodian (the ampCAPA DAO) keeps the position held_in; checked against the CAPA supply product
 //   V12 (1.2.0) not held: open lots the hourly chain read says are not in the wallet — out of Open now + the now point, trips/rewards kept
 //   V11 (1.1.0) LP now == the chain's staked balance; LP in ≥ LP now (the take rate only removes); drag valued; capital × days present
+//   V15 (1.4.0) tokens: trips carry tokens in / out; tokens out × price-history/series ≈ out USD; position totals == Σ trips
 //   V7 totals add up: wallet open.value_usd == Σ its non-disputed positions; DAO totals == Σ wallets
 //   V8 value curve: the last point equals the open value on a wallet with no disputes and no missing pools (the owner's)
 //   V9 determinism: two builds byte-identical minus builtAt
@@ -121,6 +122,25 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     check(`GMC Backing Wallet wBTC.osmo-wBTC.axl amp: not held (${x && x.not_held && (x.not_held.via || 'the hourly read has none')}), not disputed; moved to ${x && x.moves && x.moves.find(m => m.net_units > 0) && x.moves.find(m => m.net_units > 0).to.slice(0, 14)}…`, x && x.not_held && !x.disputed && x.moves.some(m => m.out_units > 0), x && { nh: x.not_held, d: x.disputed });
     let still = 0; for (const [p2, doc] of built.files) { if (!/ledger\/terra1/.test(p2) || !doc.v3) continue; for (const q of Object.values(doc.v3.positions)) if (q.disputed && q.disputed.reason === 'ceiling' && q.moves && q.moves.reduce((s2, m) => s2 + (m.out_units || 0), 0) >= q.units_open * 0.99 && q.units_open > 0) still++; }
     check(`no ceiling dispute left that the transfer record fully explains (${still})`, still === 0); }
+  console.log('— V15 (1.4.0) tokens in / out: every trip names its tokens; the amounts price back to the trip\'s own USD —');
+  { const series = new Map(); const pxOf = (sym, day) => { if (!series.has(sym)) { const f = path.join(SRC, 'price-history/series', sym + '.json'); series.set(sym, fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')).daily : null); } const d = series.get(sym); if (!d) return null; for (let i = 0; i <= 3; i++) { const k = new Date(Date.parse(day + 'T00:00:00Z') - i * 864e5).toISOString().slice(0, 10); if (d[k] != null) return d[k]; } return null; };
+    let valued = 0, withTok = 0, priced = 0, near = 0, sumBad = 0, longSym = 0; const worst = [];
+    for (const [p2, doc] of built.files) { if (!/ledger\/terra1/.test(p2) || !doc.v3) continue; const C = doc.v3.trip_cols; const I = (k) => C.indexOf(k);
+      for (const x of Object.values(doc.v3.positions)) { const acc = {};
+        for (const r of x.trips || []) { const tin = r[I('tok_in')], tout = r[I('tok_out')]; if (r[I('in_usd')] != null && r[I('out_usd')] != null) { valued++; if (tin && tout) withTok++; }
+          if (tin && tout) { for (const [sym, a] of tin) acc[sym] = (acc[sym] || 0) + a; for (const [sym] of [...tin, ...tout]) if (/^terra1|\//.test(sym) || sym.length > 14) longSym++; }
+          // an independent price source (price-history/series, not the build's month files): tokens out × that day's price ≈ out_usd on a measured exit
+          if (tout && r[I('out_usd')] > 5 && r[I('tier_out')] === 'M' && !r[I('flag')]) { let v = 0, all = true; for (const [sym, a] of tout) { const q = pxOf(sym, r[I('day')]); if (q == null) { all = false; break; } v += a * q; } if (all) { priced++; const rel = Math.abs(v / r[I('out_usd')] - 1); if (rel < 0.03) near++; else if (worst.length < 4) worst.push([doc.address.slice(-6), x.name, r[I('day')], r[I('out_usd')], +v.toFixed(2)]); } } }
+        if (x.realized && x.realized.tok_in) for (const [sym, a] of Object.entries(x.realized.tok_in)) if (Math.abs((acc[sym] || 0) - a) > Math.max(1e-6, a * 1e-5)) sumBad++; } }
+    check(`${withTok}/${valued} valued trips carry the tokens in and out (≥ 95 %)`, valued > 10000 && withTok / valued >= 0.95, { withTok, valued });
+    check(`tokens out × the price-history series that day == the trip's out USD (< 3 %) on ${near}/${priced} measured exits (≥ 95 %)`, priced > 1000 && near / priced >= 0.95, worst);
+    check(`every position's token totals == Σ its trips (${sumBad} off) · no raw denom as a token name (${longSym})`, sumBad === 0 && longSym === 0);
+    const OL = ledger(OWNER).v3; const byName = (n, m) => Object.values(OL.positions).find(x => x.name === n && x.mechanism === m);
+    const lu = byName('LUNA-USDC', 'amplified'); const t0 = lu && lu.trips[0], C = OL.trip_cols;
+    check(`owner LUNA-USDC amp: trips name LUNA + its USDC (${t0 && JSON.stringify(t0[C.indexOf('tok_in')])} in → ${t0 && JSON.stringify(t0[C.indexOf('tok_out')])} out); position in ${lu && JSON.stringify(lu.realized.tok_in)} → out ${lu && JSON.stringify(lu.realized.tok_out)}`,
+      lu && lu.realized.tok_in && Object.keys(lu.realized.tok_in).length === 2 && 'LUNA' in lu.realized.tok_in && Object.keys(lu.realized.tok_in).some(k => /^USDC/.test(k)) && t0[C.indexOf('tok_in')].length === 2);   /* the pool's USDC is Noble USDC (USDC.n) — the token list says which */
+    const cap = byName('ampCAPA', 'amplified'); check(`owner ampCAPA (open): tokens in ${cap && JSON.stringify(cap.open_tok && cap.open_tok.tok_in)} vs now ${cap && JSON.stringify(cap.open_tok && cap.open_tok.tok_now)} · held would be $${cap && cap.open_tok && cap.open_tok.hold_usd}`,
+      cap && cap.open_tok && cap.open_tok.tok_in && cap.open_tok.tok_now && (cap.open_tok.hold_usd == null || cap.open_tok.hold_usd > 0)); }
   console.log('— V7 totals add up —');
   { let bad = []; let sumOpen = 0, sumNet = 0;
     for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && !x.not_held && typeof x.open_value_usd === 'number') s += x.open_value_usd;
