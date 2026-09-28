@@ -1,5 +1,7 @@
 'use strict';
-// org-nft-flows 1.6.1 — FORWARD CAPTURE for ONE collection
+// org-nft-flows 1.6.2 — FORWARD CAPTURE for ONE collection
+// 1.6.2 (2026-09-28): lib/classify.js 1.2.1 — a lock_migrate names the lock it CREATES (the next escrow create_lock after the
+//   migrate), not the burned one; history re-derived by nft-flows-derive 1.3.1.
 // 1.6.1 (2026-09-27, SPEC-portfolio-locks L1): lib/classify.js 1.2.0 — lock_permanent / lock_unpermanent / lock_extend name
 //   their lock (the id from the msg's wasm-metadata_changed, else the msg body; token_id_from says which), a body-only
 //   deposit_for (FCD era, gauge claim_rebase) names its lock, and lock_create carries the amount locked. Ids and payments
