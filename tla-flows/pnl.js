@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.2.3';   // 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.2.4';   // 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -296,6 +296,28 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
           if (r == null && readW.has(wallet) && usd >= 1) return { reason: 'not_held', ours_usd: Math.round(usd * 100) / 100, participants_usd: 0 }; }
         return null; };
       v3meta.referees = { gauge_ceilings: ceil.size, participant_positions: ref.size, wallets_read: readW.size }; }
+    // 1.2.4 WHERE RECEIPTS WENT (owner 2026-09-28: "show what address it was sent to — its name if registered — and fix it for anyone,
+    // any LP, not just this one"): every amplified receipt transfer in tla-flows/transfers (captured since 2025-01), mapped to its
+    // pool by the receipt denom (the compounder's amp_denom → underlying LP, archived registry amplp_mappings — fixed once a vault
+    // exists), aggregated per wallet × pool × counterparty. Counterparties are named: a CUSTODIAN (config/contracts.js — the receipt
+    // is still the member's), an org-catalog entity, a known contract, a member's name, else the bare address.
+    { const C = require('../config/contracts.js');
+      const recPool = new Map(); try { const reg = await src.readJson('docs/archive/legacy-registry/tla-chain-registry-2026-08-11.json'); for (const [d, m] of Object.entries(reg.amplp_mappings || {})) if (m && m.underlying_lp_address) recPool.set(d, (m.underlying_lp_type === 'cw20' ? 'cw20:' : 'native:') + m.underlying_lp_address); } catch { /* no map → no destinations, never guessed */ }
+      const names = new Map(); const put = (a, label, kind) => { if (a && label && !names.has(a)) names.set(a, { label, kind }); };
+      for (const cu of (C.CUSTODIANS || [])) put(cu.address, cu.label, 'custodian');
+      try { const ac = await src.readJson('catalog/snapshots/current.json'); for (const [a, e] of Object.entries(ac.entities || {})) put(a, e.label, 'entity'); for (const [a, e] of Object.entries(ac.by_address || {})) put(a, e.handle, 'member'); } catch { /* labels are optional */ }
+      try { const kc = await src.readJson('docs/curated/known_contracts.json'); for (const c of (kc.contracts || [])) put(c.address, c.name, 'contract'); } catch { /* optional */ }
+      try { const part = await src.readJson('member-data/participants/current.json'); for (const m of part.members || []) put(m.wallet, m.name, 'member'); } catch { /* optional */ }
+      const byW = new Map(); let nT = 0, nMapped = 0;
+      for (const ym of monthKeys) { let rows = null; try { rows = await src.readJson(`tla-flows/transfers/${ym}.json`); } catch { rows = null; } if (!Array.isArray(rows)) continue;
+        for (const t of rows) { nT++; const pool = recPool.get(t.denom); if (!pool || !t.from || !t.to) continue; nMapped++; const amt = Number(t.amount) || 0; const day = String(t.timestamp || '').slice(0, 10);
+          for (const [w, cp, dir] of [[t.from, t.to, 'out'], [t.to, t.from, 'in']]) { const pm = byW.get(w) || byW.set(w, new Map()).get(w); const cm = pm.get(pool) || pm.set(pool, new Map()).get(pool);
+            const x = cm.get(cp) || cm.set(cp, { out_units: 0, in_units: 0, first_day: day, last_day: day, last_tx: t.txhash }).get(cp); x[dir + '_units'] += amt; if (day < x.first_day) x.first_day = day; if (day >= x.last_day) { x.last_day = day; x.last_tx = t.txhash; } } } }
+      const cust = new Map((C.CUSTODIANS || []).map(c => [c.address, c]));
+      ctx.moves = { of: (wallet, pool, mech) => { if (mech !== 'amplified') return null; const cm = byW.get(wallet) && byW.get(wallet).get(pool); if (!cm) return null;
+          return [...cm.entries()].map(([to, x]) => { const n = names.get(to) || null; const c = cust.get(to); return { to, label: n ? n.label : null, kind: n ? n.kind : null, custodian_key: c ? c.key : undefined, out_units: x.out_units, in_units: x.in_units, net_units: x.out_units - x.in_units, first_day: x.first_day, last_day: x.last_day, last_tx: x.last_tx }; })
+            .sort((a, b) => b.net_units - a.net_units).slice(0, 6); } };
+      v3meta.receipt_moves = { transfers_read: nT, mapped_to_pools: nMapped, receipt_denoms_mapped: recPool.size, labels: names.size, map_source: 'docs/archive/legacy-registry/tla-chain-registry-2026-08-11.json amplp_mappings' }; }
     const books = new Map(); const BOOK = (a) => books.get(a) || books.set(a, PP.newBook()).get(a);
     meta.months_read = [...monthKeys];
 

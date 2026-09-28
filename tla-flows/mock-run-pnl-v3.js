@@ -10,6 +10,7 @@
 //   V4 attribution identity on EVERY valued trip in the real build: out − in = market + lp (± $0.02 rounding)
 //   V5 units vs the chain: open non-amp units from events == participants' on-chain shares (< 0.1 %) on ≥ 95 % of positions
 //   V6 value vs the chain: median |ours − participants| < 5 % (non-amp and amp); every disputed position is OUT of the totals
+//   V13 (1.3.0) where receipts went: named destinations; a custodian (the ampCAPA DAO) keeps the position held_in; checked against the CAPA supply product
 //   V12 (1.2.0) not held: open lots the hourly chain read says are not in the wallet — out of Open now + the now point, trips/rewards kept
 //   V11 (1.1.0) LP now == the chain's staked balance; LP in ≥ LP now (the take rate only removes); drag valued; capital × days present
 //   V7 totals add up: wallet open.value_usd == Σ its non-disputed positions; DAO totals == Σ wallets
@@ -96,7 +97,7 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
   console.log('— V12 not held (pnl-positions 1.2.0): open lots the chain read says are not in the wallet —');
   { const d = ledger(OWNER); const P = d.v3.positions; const nh = Object.entries(P).filter(([, x]) => x.not_held);
     const has = (n) => nh.some(([k, x]) => x.name === n && x.mechanism === 'amplified');
-    check(`owner: ${nh.length} not held — ${nh.map(([, x]) => x.name + ' ' + x.mechanism + ' $' + x.not_held.ours_usd).join(', ')} (ampCAPA receipt staked in the DAO; wBTC.osmo-wBTC.axl receipt sent to another address)`, has('ampCAPA') && has('wBTC.osmo-wBTC.axl'));
+    check(`owner: ${nh.length} not held — ${nh.map(([, x]) => x.name + ' ' + x.mechanism + ' $' + x.not_held.ours_usd).join(', ')} (the wBTC.osmo-wBTC.axl receipt sent to another address; ampCAPA is held in the DAO — V13)`, has('wBTC.osmo-wBTC.axl') && !has('ampCAPA'));
     const kept = nh.every(([, x]) => x.realized && x.claims && x.units_open > 0);
     const openSum = Object.values(P).filter(x => !x.disputed && !x.not_held && typeof x.open_value_usd === 'number').reduce((a, x) => a + x.open_value_usd, 0);
     check(`their trips and rewards stay; Open now ${d.v3.totals.open.value_usd} = the held positions only (${openSum.toFixed(2)}); totals say ${d.v3.totals.positions_not_held} not held ($${d.v3.totals.not_held_usd})`, kept && Math.abs(openSum - d.v3.totals.open.value_usd) < 0.05 && d.v3.totals.positions_not_held === nh.length);
@@ -104,6 +105,16 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     check('the curve\'s now point leaves them out (a pool entry carries only what is still held; never "missing")', now.e === 'now' && nh.every(([k]) => { const pool = k.split('|')[0], i = pidx.indexOf(pool); const heldV = Object.entries(P).filter(([kk, x]) => kk.split('|')[0] === pool && !x.not_held && !x.disputed).reduce((a, [, x]) => a + (x.open_value_usd || 0), 0); return i < 0 || (((now.p || {})[i] || 0) <= heldV + 0.01 && !(now.m || []).includes(i)); }));   /* the pool's entry carries only its held mechanism (dust) */
     let wrong = 0, n = 0; for (const m of part.members) { const L = ledger(m.wallet); if (!L || !L.v3) continue; for (const x of Object.values(L.v3.positions)) { if (!x.not_held) continue; n++; if ((m.lp_positions || []).some(l => l.pool_gauge_id === x.pool && (l.is_amplified ? 'amplified' : 'non_amplified') === x.mechanism)) wrong++; } }
     check(`across members: ${n} not-held positions, every one truly absent from the chain read (${wrong} wrong)`, n > 0 && wrong === 0); }
+  console.log('— V13 where receipts went (pnl 1.2.4 / pnl-positions 1.3.0): named destinations; a custodian keeps the position held —');
+  { const d = ledger(OWNER); const P = d.v3.positions; const amp = Object.values(P).find(x => x.name === 'ampCAPA' && x.mechanism === 'amplified'); const wb = Object.values(P).find(x => x.name === 'wBTC.osmo-wBTC.axl' && x.mechanism === 'amplified');
+    check(`owner ampCAPA amp: held in ${amp.held_in && amp.held_in.where} (${amp.held_in && amp.held_in.custodian.slice(0, 12)}…, net ${amp.held_in && amp.held_in.net_units} receipt units since ${amp.held_in && amp.held_in.since}) — still open and counted, not "not held"`, amp.held_in && amp.held_in.key === 'ampcapa-dao' && !amp.not_held && amp.units_open > 0 && amp.moves.some(m => m.kind === 'custodian'));
+    const w = wb.moves && wb.moves[0];
+    check(`owner wBTC.osmo-wBTC.axl amp: not held, and the build says where — ${w && (w.label || w.to)} on ${w && w.last_day}, ${w && w.net_units} units (= the ledger's open ${wb.units_open}, ±1 rounding)`, wb.not_held && w && w.to === 'terra1jd2tam4svukk7pg8fv0dkj7zgwes9yw5c2h3wm0gkjcwdth2mpfsxxw6zd' && w.last_day === '2026-03-06' && Math.abs(w.net_units - wb.units_open) <= 1, wb.moves);
+    const prod = JSON.parse(fs.readFileSync(path.join(SRC, 'token-catalog/supply/capa/wallets.json'), 'utf8')); const inDao = new Set(prod.rows.filter(r => r.capa_equiv && r.capa_equiv.receipt_dao > 0).map(r => r.address));
+    let held = 0, heldWrong = []; for (const [p2, doc] of built.files) { if (!/ledger\/terra1/.test(p2) || !doc.v3) continue; for (const x of Object.values(doc.v3.positions)) if (x.held_in) { held++; if (x.held_in.key === 'ampcapa-dao' && !inDao.has(doc.address)) heldWrong.push(doc.address.slice(-6)); } }
+    check(`across the ledger: ${held} positions held in a custodian — every one's wallet has a DAO stake in the CAPA supply product (the chain's own count)`, held > 0 && heldWrong.length === 0, heldWrong);
+    const rm = (() => { for (const [, doc] of built.files) { const m = doc && doc.sources; if (m && m.v3 && m.v3.receipt_moves) return m.v3.receipt_moves; } return null; })();
+    check(`transfers mapped to pools by receipt denom: ${JSON.stringify(rm)}`, rm && rm.transfers_read > 500 && rm.mapped_to_pools === rm.transfers_read, rm); }
   console.log('— V7 totals add up —');
   { let bad = []; let sumOpen = 0, sumNet = 0;
     for (const [p, doc] of built.files) { if (!/ledger\/terra1/.test(p) || !doc.v3) continue; const v = doc.v3; let s = 0; for (const x of Object.values(v.positions)) if (!x.disputed && !x.not_held && typeof x.open_value_usd === 'number') s += x.open_value_usd;

@@ -1,5 +1,18 @@
 # tla-flows — changelog
 
+## 3.5.3 — 2026-09-28 — where receipts went, named; a custodian keeps a position held (pnl 1.2.4, pnl-positions 1.3.0)
+
+- Owner: "show what address it was sent to — its name if it's registered — and fix this for anyone, any LP, not just this one."
+- Every amplified receipt transfer in `tla-flows/transfers` (all 666 since 2025-01) is mapped to its pool by the receipt denom (the
+  compounder's amp_denom → underlying LP, archived registry `amplp_mappings`, 65 vaults) and aggregated per wallet × pool × counterparty
+  → `position.moves[]` (to, label, kind, out/in/net units, first/last day, last tx). Counterparties are named by the registry: a
+  CUSTODIAN (config), an org-catalog entity, a known contract, a member's name — else the bare address.
+- A position the chain read cannot find in the wallet whose receipt sits with a custodian is `held_in` (kept open and counted), not
+  "not held": 7 positions across the ledger (each wallet confirmed in the CAPA supply product's DAO stakes); not-held 36 → 29.
+- Owner: ampCAPA held in the ampCAPA DAO; wBTC.osmo-wBTC.axl not held — sent to terra1jd2tam…6zd on 2026-03-06 (121,654 units = the
+  ledger's open lot), unregistered.
+- Gate V13 (4 checks) + V12 updated: 25/25 on main's data; heap 200 MB OK.
+
 ## 3.5.2 — 2026-09-28 — "not held": open lots whose receipt left the wallet stop counting as open (pnl 1.2.3, pnl-positions 1.2.0)
 
 - Owner report: the portfolio showed ampCAPA (amplified) and wBTC.osmo-wBTC.axl (amplified) as open. Both receipts left the wallet by
