@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.3.0';   // 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.3.1';   // 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -316,6 +316,10 @@ function walletOutput(book, ctx, address) {
     // 1.3.0: where this position's receipts went (ctx.moves, pnl.js 1.2.4). A receipt the chain read cannot find in the wallet but
     // that sits with a CUSTODIAN is still the member's: held_in, lots stay open and counted — not "not held".
     const moves = ctx.moves ? ctx.moves.of(address, p.pool, p.mech) : null; let heldIn = null;
+    // 1.3.1: a "ceiling" dispute whose open units the transfer record fully explains (receipts sent away ≥ 99 % of units open, gross) is a MOVED
+    // receipt, not a data disagreement — named where it went instead of "disputed" (the GMC Backing Wallet's 12.7M wBTC.osmo-wBTC.axl
+    // units, sent on 2026-03-17, read "ours $27,162 vs the whole gauge $137.87")
+    if (dispute && dispute.reason === 'ceiling' && moves && p.units_open > 0) { const sent = moves.reduce((x, m) => x + (m.out_units || 0), 0); if (sent >= p.units_open * 0.99)   /* gross out: receipts that arrived by transfer never opened lots, so net under-counts what left */ dispute = { reason: 'not_held', ours_usd: dispute.ours_usd, participants_usd: 0, via: 'transfers (was a ceiling dispute: gauge $' + dispute.gauge_total_usd + ')' }; }
     if (dispute && dispute.reason === 'not_held' && moves) { const c = moves.find(x => x.custodian_key && x.net_units > 0); if (c) { heldIn = { where: c.label, custodian: c.to, key: c.custodian_key, net_units: c.net_units, since: c.first_day }; dispute = null; } }
     let notHeld = null; if (dispute && dispute.reason === 'not_held') { notHeld = dispute; dispute = null; (book.notHeld = book.notHeld || new Set()).add(key); }   // 1.2.0: see pnl.js 1.2.3
     if (dispute) { (book.disputed = book.disputed || new Set()).add(key); }
