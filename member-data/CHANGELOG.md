@@ -1,5 +1,14 @@
 # member-data — changelog
 
+## 1.4.1 — 2026-09-28 — single-asset cw20 gauges valued (capture-engine 1.2.1)
+
+- Found on the GMC BTC Backing Treasury: its wBTC.creda.a backing (0.3971 tokens, ≈ $33.1K, active single gauge) read "unknown, $0".
+  The engine looked a cw20 asset up only by LP-token address — a single-asset gauge has none — so every holder of a cw20 single got a
+  nameless $0 row (7 in the hourly read). Now: LP address, else gauge id `cw20:<addr>`.
+- A single priced by symbol assumed 6 decimals (wBTC.creda.a has 8 → 100× if a price existed). When the price feed has no symbol price,
+  the single is priced from the pool's own row, decimals-free: user_lp × staked_in_tla_usd ÷ amp_lp.underlying_lp_amount.
+- `amplifiedPosition()` extracted (pure) and exported; gate `mock-run-singles.js` S1–S5 on real data (S4: 99 pair rows unchanged).
+
 ## 1.4.0 — 2026-09-28 — receipts held by a custodian count in every member's totals (capture-engine 1.2)
 
 - Owner: "my ampCAPA is staked in the ampCAPA DAO — still my position, still earning; did it make it into past balances and trends?"
