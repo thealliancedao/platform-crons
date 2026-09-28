@@ -30,14 +30,14 @@ const C = require('../config/contracts.js');      // LST_HUBS: symbol → hub (s
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.5.0';   // 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
+const VERSION       = 'org-votion-1.5.1';   // 1.5.1 (2026-09-28): the daily gate at 19.5 h (20 h was missed by 0.6 s by an hourly job and waited an extra hour); the heartbeat records holder_pnl_at and a never-built holder P&L is built at once from the committed positions snapshot · 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
 const GAUGE  = 'terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj';
 const LCD_ENDPOINTS = ['https://terra-rest.publicnode.com', 'https://phoenix-lcd.terra.dev', 'https://terra-lcd.stakely.io'];   // 1.4.0: Stakely LCD LB as third fallback (owner-found 2026-08-26)
 const CONCURRENCY = 5;                       // publicnode saturation rule
-const POSITIONS_MAX_AGE_H = 20;              // daily branch trigger
+const POSITIONS_MAX_AGE_H = 19.5;            // daily branch trigger — 1.5.1: was 20, and an hourly job on the same minute missed it by 0.6 s (19h 59m 59.4s) and waited a whole extra hour; half an hour of slack makes the 20th run fire
 const TXS_PAGE_LIMIT = 100;
 const TXS_MAX_PAGES = 50;
 
@@ -687,16 +687,24 @@ async function run() {
 
     // Branch B — daily (positions stale or never run)
     let positionsStatus = 'skipped';
+    let holderPnlAt = prevHb && prevHb.holder_pnl_at || null;   // 1.5.1: recorded so a missing product is noticed and built
     let positionsAt = prevHb && prevHb.positions_at || null;
     const ageH = positionsAt ? (now.getTime() - new Date(positionsAt).getTime()) / 36e5 : Infinity;
     if (ageH >= POSITIONS_MAX_AGE_H) {
         const b = await runBranchB(now, vaults, errors);
         positionsStatus = b.status; positionsAt = now.toISOString();
         console.log(`  B: positions ${b.status} — ${b.doc.totals.unique_holders} holders, TVL $${b.doc.totals.total_tvl_usd.toLocaleString()}`);
-        try { const e = await runBranchE(now, b.doc, errors); console.log(`  E: holder P&L — ${e.positions} positions (${e.notes.deposits} deposits, ${e.notes.withdraws} withdraws)`); }
+        try { const e = await runBranchE(now, b.doc, errors); holderPnlAt = now.toISOString(); console.log(`  E: holder P&L — ${e.positions} positions (${e.notes.deposits} deposits, ${e.notes.withdraws} withdraws)`); }
         catch (e) { errors.push({ where: 'holder_pnl', error: e.message }); console.warn(`  E: holder P&L failed: ${e.message}`); }
     } else {
         console.log(`  B: skipped (positions ${ageH.toFixed(1)}h old < ${POSITIONS_MAX_AGE_H}h)`);
+        // 1.5.1: the holder P&L never written yet (a fresh deploy between daily runs) → build it now from the committed positions
+        // snapshot instead of waiting up to a day for the next B. Same inputs B would hand over, read back from the repo.
+        if (!(prevHb && prevHb.holder_pnl_at)) {
+            try { const snap = (await apiGetJson('votion/snapshots/current.json')).data; if (!snap || !Array.isArray(snap.vaults)) throw new Error('votion/snapshots/current.json unreadable');
+                const e = await runBranchE(now, snap, errors); holderPnlAt = now.toISOString(); console.log(`  E: holder P&L (first build, from the committed snapshot) — ${e.positions} positions`); }
+            catch (e) { errors.push({ where: 'holder_pnl', error: e.message }); console.warn(`  E: holder P&L failed: ${e.message}`); }
+        }
     }
 
     // Branch C — optimizer capture (every run: it changes intra-epoch)
@@ -722,7 +730,7 @@ async function run() {
     const status = vaults.length === 0 ? 'error' : (errors.length ? 'partial' : 'ok');
     await publishFile('votion/heartbeat.json', {
         version: VERSION, capturedAt: now.toISOString(), status,
-        vaults_at: now.toISOString(), positions_at: positionsAt, positions_status: positionsStatus,
+        vaults_at: now.toISOString(), positions_at: positionsAt, positions_status: positionsStatus, holder_pnl_at: holderPnlAt,
         lst_rate_fallback_in_use: errors.some(e => /lst_hub/.test(e.where)),
         vault_count: vaults.length, optimization_status: optC.status, optimization_vaults: optC.slugs, optimization_probes: optC.probes, yields_status: yieldsStatus, _errors: errors.length ? errors : null,
     }, `votion heartbeat ${status}`);

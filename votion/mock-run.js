@@ -251,6 +251,16 @@ const CATALOG = { tokens: [
     check('R8 partial + heartbeat lst flag + error recorded', REPO['votion/heartbeat.json'].status === 'partial' && REPO['votion/heartbeat.json'].lst_rate_fallback_in_use === true && REPO['votion/heartbeat.json']._errors.some(e => /lst_hub/.test(e.where)));
     check('R8 ampLUNA (hub alive) unaffected', REPO['votion/snapshots/current.json'].vaults[0].lst_rate_source === 'hub_exchange_rate');
 
+    console.log('— R10 (1.5.1): the daily gate at 19.5 h; a never-built holder P&L is built at once from the committed snapshot —');
+    { CHAIN = healthyChain(); const hb = REPO['votion/heartbeat.json']; const pAt = Date.parse(hb.positions_at);
+      delete REPO['votion/holder-pnl/current.json']; delete hb.holder_pnl_at; NOW = new Date(pAt + 3 * 36e5);   /* 3 h after B: B must skip */
+      r = await M.run(); const hb2 = REPO['votion/heartbeat.json']; const hp = REPO['votion/holder-pnl/current.json'];
+      check('R10 B skipped (3 h old) but the missing holder P&L was built from votion/snapshots/current.json; heartbeat holder_pnl_at set', hb2.positions_status === 'skipped' && hp && Object.keys(hp.holders).length > 0 && hb2.holder_pnl_at === NOW.toISOString(), { st: hb2.positions_status, at: hb2.holder_pnl_at, n: hp && Object.keys(hp.holders).length });
+      const at1 = hb2.holder_pnl_at; NOW = new Date(pAt + 4 * 36e5); r = await M.run();
+      check('R10 next hour: not rebuilt (holder_pnl_at carried, B still skipped)', REPO['votion/heartbeat.json'].holder_pnl_at === at1 && REPO['votion/heartbeat.json'].positions_status === 'skipped');
+      NOW = new Date(pAt + 19 * 36e5 + 59 * 6e4 + 59400); r = await M.run();   /* the live miss: 19 h 59 m 59.4 s */
+      check('R10 19 h 59 m 59.4 s after the last B (the run that missed on 2026-09-28): B now runs, and E with it', REPO['votion/heartbeat.json'].positions_status !== 'skipped' && REPO['votion/heartbeat.json'].holder_pnl_at === NOW.toISOString(), REPO['votion/heartbeat.json'].positions_status); }
+
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);
 })().catch(e => { console.error('GATE CRASH:', e); process.exit(1); });
