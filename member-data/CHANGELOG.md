@@ -1,5 +1,22 @@
 # member-data — changelog
 
+## 1.5.0 — 2026-09-28 — history series: one daily series per wallet for the member portfolio's chart
+
+- Owner: "portfolio trackers have a lot of functionality in their charts — time frames, trends … a central chart the user can change".
+  The page's trend read the member archive (~390 KB a day, registered members only) and sampled 17 days — "all" drew 7 dots; the
+  participants archive (every lock holder, ~2.5 MB a day) was never readable from a phone.
+- New fold `history-series.js` 1.0.0: every archived day (participants + member archive + Votion's daily) folded once into
+  `member-data/history/series/<c>.json` (32 shards by the character after "terra1", ~1.2 MB in all, largest ~80 KB) + `index.json`.
+  Row: day · TLA total · locks (USD, LUNA at that day's hub rates, LUNA stamped) · LP · staked in a DAO · wallet · Votion (USD, VP) ·
+  Credia supplied / borrowed · VP · VP if adjusted · pending rewards · LUNA price · lock count · source. Null = not captured that day.
+- The CAPA custody fill for days before capture-engine 1.2 moved here from the page (same rule: nearest supply capture ≤ 7 days back ×
+  CAPA that day, cuS=1). New: the supply history's hole (2026-08-10 → 08-23) — a stake held on BOTH sides is carried at the earlier
+  capture's CAPA (a lower bound), cuS=2; it was the owner's false $10K dip on 08-17 … 08-23.
+- Seeds 2026-08-11 → today on its first run; then refolds today at 23:xx (and fills any missing day). ONE commit per write
+  (tla-flows `lib/git-batch.js`). `HISTORY=0` disables, `HISTORY=force` rebuilds, `HISTORY=1` refolds today now.
+- Gate `mock-run-history.js` H1–H6 19/19 on the real archives under a 200 MB heap (the owner's 09-28 row == the archive's own fields;
+  Votion == Σ his holdings; the DAO stake once; blanks stay null; forward refold in place; largest shard 77 KB).
+
 ## 1.4.1 — 2026-09-28 — single-asset cw20 gauges valued (capture-engine 1.2.1)
 
 - Found on the GMC BTC Backing Treasury: its wBTC.creda.a backing (0.3971 tokens, ≈ $33.1K, active single gauge) read "unknown, $0".
