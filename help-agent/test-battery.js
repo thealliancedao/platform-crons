@@ -155,6 +155,27 @@ const TESTS = [
       if (cost && back && votion && est) return ['pass', 'breakdown + Votion reaction + estimate caveat'];
       return ['review', 'expect You pay / comes back / real cost, Votion\'s reaction and the estimate caveat'];
     } },
+  // v1.17.0 — the Member Portfolio (portfolio tool + rule 17)
+  { id: 'T13', tag: 'Portfolio · custody',
+    q: "I'm terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw. My LP section says I have no LP positions but I have a big ampCAPA position — is the portfolio wrong?",
+    truth: 'portfolio tool: CUSTODY_DAO — the amplified ampCAPA receipt is staked in the ampCAPA DAO (≈ 7.68M CAPA ≈ $9.6K at 2026-09-28), still theirs, shown in the cyan STAKED IN A DAO panel and counted once in the totals → known behavior, not a fault.',
+    grade: (t) => { const dao = /ampCAPA DAO|staked in (a|the) DAO/i.test(t), still = /still (yours|your)|still earn/i.test(t), notwrong = /not (a )?(fault|wrong|error)|by design|expected|documented/i.test(t);
+      return dao && still && notwrong ? ['pass', 'custody explained as known'] : ['review', 'expect: staked in the ampCAPA DAO, still theirs, known behavior']; } },
+  { id: 'T14', tag: 'Portfolio · moved receipt, named',
+    q: "terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw — why does my wBTC.osmo-wBTC.axl row say 'not in this wallet'? Where did it go?",
+    truth: 'portfolio tool: MOVED_RECEIPT — the amplified receipt (121,654 units) was sent on 2026-03-06 to the GMC Backing Wallet (terra1jd2tam4svukk7pg8fv0dkj7zgwes9yw5c2h3wm0gkjcwdth2mpfsxxw6zd) — a transfer, not a withdrawal; left out of Open now, trips + rewards kept.',
+    grade: (t) => { const when = /2026-03-06|March 6/i.test(t), where = /GMC|terra1jd2tam/i.test(t), transfer = /transfer|sent/i.test(t);
+      return when && where && transfer ? ['pass', 'destination + date + transfer'] : ['review', 'expect: sent 2026-03-06 to the GMC Backing Wallet, a transfer']; } },
+  { id: 'T15', tag: 'Portfolio · a fault → what to send',
+    q: "My portfolio total looks wrong to me. If something is actually broken, what exactly should I send you so it gets fixed? My wallet is terra1hr8zsfpch47qygc96c8e6rzkd2t7mafqx77ulw.",
+    truth: 'Runs portfolio, says what it checked (findings, freshness); if nothing is a fault says so; lists what to send: wallet, card + number seen, expected, finding code, product path + capturedAt — via the Report an issue form or @DeFi_Patriot.',
+    grade: (t) => { const form = /report an issue|report form|@?DeFi_Patriot/i.test(t), what = /(card|section).*(number|value)|finding code|capturedAt|product/i.test(t);
+      return form && what ? ['pass', 'report path + what to include'] : ['review', 'expect: the form / @DeFi_Patriot and the list of what to include']; } },
+  { id: 'T16', tag: 'Portfolio · strategies, never advice',
+    q: "Who should I copy to get the best returns in TLA? Show me the top wallets.",
+    truth: 'Leaderboards are planned (deep-history cohort, SPEC-deep-history §7), not live; the bot may describe a named wallet factually via the portfolio tool; never "should", never a ranking it computed; rule-2 line.',
+    grade: (t) => { const planned = /planned|not (yet )?live|coming|queued/i.test(t), noadv = !/you should copy|best wallet to copy/i.test(t), nfa = /not financial advice/i.test(t);
+      return planned && noadv && nfa ? ['pass', 'planned + no advice + NFA line'] : ['review', 'expect: leaderboards planned, facts not advice, the rule-2 line']; } },
 ];
 
 async function ask(question) {

@@ -1,5 +1,13 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.17.0 (2026-09-28, owner: "the bot should answer questions about their portfolio or others', who to follow or copy for a
+//   strategy, what we show and where the data comes from, and errors or data that may be wrong — diagnose it, say why it is right
+//   or wrong, and if wrong what to send me"): THE MEMBER PORTFOLIO — tool `portfolio` (lib/portfolio-tool.js) reads the SAME
+//   products the page renders (hourly record incl. custody, live LP rows, the P&L ledger with not_held / held_in / moves / disputed,
+//   Votion stories, Credia, each product's freshness) and returns coded findings (known | check | fault) + what to report; rule 17
+//   = the portfolio protocol (diagnose → classify → explain → report path), strategies as facts never advice, leaderboards / deep
+//   history / Solid card as planned. Corpus: the portfolio chapter (docs/ecosystem-knowledge/member-portfolio.md) + the two specs.
+//   Gate gate-portfolio-tool.mjs on real data.
 // v1.16.0 (2026-09-27, owner: "make sure we get this tool and its functionality added to the bot"): THE VOTE MARKET — tool
 //   vote_market runs the site's own engine (aDAO-links-site lib/vote-market.js, fetched + cached 1 h; model 10 min, live pots when
 //   the incentive manager answers) so the bot's bribe/vote answers are the TLA Stats tile's, the simulator's and the app's numbers:
@@ -45,7 +53,8 @@
 'use strict';
 const http = require('http');
 const NFT = require('./lib/nft-tools.js');
-const VMT = require('./lib/vote-market-tool.js');   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
+const VMT = require('./lib/vote-market-tool.js');
+const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfolio tool (reads the page's own products; coded findings)   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
@@ -121,7 +130,11 @@ const CORPUS_SOURCES = [
   ['spec-activity-feed',`${CORE}/docs/pending-changes/SPEC-activity-feed.md`],
   ['spec-help-agent',   `${CORE}/docs/pending-changes/SPEC-site-help-agent.md`],
   ['build-queue',       `${CORE}/docs/pending-changes/CHANGES_PENDING.md`],
-  ['lion-dao',          `${CORE}/docs/ecosystem-knowledge/LION-DAO.md`],   // v1.15.0: the Lion DAO ecosystem — ROAR, pyROAR and the festival, ROAR20, pixeLions, Burning Lions, where each number lives
+  ['lion-dao',          `${CORE}/docs/ecosystem-knowledge/LION-DAO.md`],
+  // v1.17.0: the Member Portfolio — every card, its source + cadence, the honesty rules, the diagnosis table; and what is planned
+  ['member-portfolio',  `${CORE}/docs/ecosystem-knowledge/member-portfolio.md`],
+  ['spec-deep-history', `${CORE}/docs/pending-changes/SPEC-deep-history.md`],
+  ['spec-portfolio-solid', `${CORE}/docs/pending-changes/SPEC-portfolio-solid.md`],   // v1.15.0: the Lion DAO ecosystem — ROAR, pyROAR and the festival, ROAR20, pixeLions, Burning Lions, where each number lives
 ];
 const LIVE_HEADS = [
   ['system-health',     `${CORE}/system-health/current.json`],
@@ -308,7 +321,28 @@ Hard rules, in priority order:
      the replacement when the tool returns winding_down.
    - Link the simulator the tool returns (https://thealliancedao.com/vote-market.html?pool=…&bribe=…, ?view=best for the split)
      so the visitor can try it; the same tool is in the app's Vote Market tab and on TLA Stats. Never tell anyone what they MUST
-     vote — lay out the estimate and the trade-off.`;
+     vote — lay out the estimate and the trade-off.
+17. MEMBER PORTFOLIO (v1.17.0) — any question about a wallet's portfolio goes through the portfolio tool first (the <member-portfolio>
+   chapter in the corpus is the map: every card, its source, its cadence, the honesty rules, the diagnosis table).
+   - "Why does my portfolio show X / is this right?" → run portfolio, then answer from its FINDINGS in this order: what the page shows,
+     why (the finding's words + the numbers), and whether it is RIGHT: kind "known" = documented behavior (say so plainly — a receipt staked
+     in a DAO is still theirs, a moved receipt is left out of Open now, a blank APR is deliberate, an illiquid token is kept out of totals);
+     "check" = worth their attention (an inactive pool still charging the take rate, a pool near the 1% line, low Credia health) — state
+     the fact, not a recommendation; "fault" = a real disagreement or a stale product.
+   - WHEN IT IS WRONG (a fault, or their claim you cannot refute from the record): say so, and tell them exactly what to send — through
+     the Help page's "Report an issue" form (it files a pre-checked report), or to @DeFi_Patriot: the wallet, the card and the number seen,
+     what they expected and why, the finding code(s), and the product path + capturedAt you checked (the tool's report block lists these).
+   - WHERE DATA COMES FROM: name the product path and its time from the tool's freshness block; link it (rule 10). Blank ≠ zero;
+     "not captured yet" ≠ nothing there.
+   - OTHER WALLETS AND STRATEGIES: every tracked wallet's portfolio is public on the page. You may run the portfolio tool on a wallet the
+     visitor names or a registered public wallet (a DAO treasury, a named member, the GMC Backing Wallet) and describe what it DOES — its
+     pools, amplified or not, votes, locks, Credia / Solid use — and how it measured, as FACTS with dates. Never say they should copy it,
+     never rank wallets yourself (rule 11) and never call a strategy "best". Leaderboards (top wallets per protocol by measured P&L) are
+     PLANNED for the deep-history cohort (SPEC-deep-history §7) — say so; they are not live.
+   - PLANNED, NOT LIVE (say so when asked): deep history (a one-time archive backfill for supporters — who qualifies is in
+     SPEC-deep-history §1), leaderboards, the Solid card (SPEC-portfolio-solid). The trend's org archive starts 2026-08-11.
+   - Two lenses: quote USD and, where the tool has it, LUNA; separate what LUNA's price did from what the position did (Votion legs,
+     the P&L's market vs pool split). End with the rule-2 line when the answer touches what to do.`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
@@ -477,6 +511,9 @@ const CHAIN_TOOLS = [
   { name: 'vote_market',   // v1.16.0
     description: 'The TLA Vote Market simulator — the SAME engine as TLA Stats\' Vote Market tile, /vote-market.html and the app. Use for ANY bribe / voting-strategy question: where $X of bribe does the most (action overview, lens impact|underdogs|liquidity|volume|pd|leaving|mine, bucket all|stable|project|bluechip|single), what a bribe on a pool does (action simulate: pool, bribe_usd, optional wallet, pct of the wallet\'s votes to move there and from which pool) — Votion\'s reaction per vault, what comes back to the wallet, the real cost, the APR next epoch; the best split of a wallet\'s VP (action best_split: wallet or vp); Votion\'s own next move if nothing changes (action votion_moves); one pool\'s pot / votes / $ per 1M VP / what it takes (action pool). Pools by name (LUNA-EURe) — an ambiguous name returns candidates to choose from.',
     input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['overview', 'simulate', 'best_split', 'votion_moves', 'pool'] }, usd: { type: 'number', description: 'overview: the $ to add (default 50)' }, lens: { type: 'string', description: 'overview: impact (default) | underdogs | liquidity | volume | pd | leaving | mine' }, bucket: { type: 'string', description: 'all | stable | project | bluechip | single (also disambiguates a pool name)' }, pool: { type: 'string', description: 'pool name (e.g. LUNA-ROAR) or its bucket|gauge key' }, bribe_usd: { type: 'number' }, wallet: { type: 'string', description: 'terra1… — read only; its votes and LP from the participants product' }, vp: { type: 'number', description: 'a typed VP when there is no wallet (default 1,000,000)' }, pct: { type: 'number', description: 'simulate: % of the wallet\'s votes in that bucket to move to the pool (0-100)' }, from: { type: 'string', description: 'simulate: move from this pool (default all of the wallet\'s pools in the bucket)' }, limit: { type: 'integer' }, untested: { type: 'boolean', description: 'overview impact: include pools Votion has not been offered yet' } }, required: ['action'] } },
+  { name: 'portfolio',   // v1.17.0
+    description: 'A wallet\'s Member Portfolio as the page builds it, plus a DIAGNOSIS: the hourly record (totals incl. receipts staked in a DAO = custody, locks, LP, wallet, Credia, VP), the live LP rows (pool, bucket, amplified, active/inactive, USD, distance to the 1% line), the P&L ledger (net USD/LUNA, open / flagged / top closed positions with not_held, held_in, moves = where a receipt went, disputed, unpriced trips), Votion stories (USD in → now = LUNA price + LST staking + Votion legs, real vs advertised APR), each product\'s freshness, and coded findings {code, kind: known|check|fault, says} with a report block when something is a fault. Use for ANY question about a wallet\'s portfolio, "why does my portfolio show X", "is this number right", "what does wallet Y do / hold / how did it do", and before telling anyone a number is wrong.',
+    input_schema: { type: 'object', properties: { wallet: { type: 'string', description: 'terra1… address (the visitor\'s own, or a public wallet they name — a DAO treasury, a registered member, the GMC Backing Wallet)' } }, required: ['wallet'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -852,6 +889,7 @@ async function runTool(name, input) {
   }
   if (name === 'nft_wallet' || name === 'nft_token') return nftTool(name, input);   // v1.14.0
   if (name === 'vote_market') return VMT.run(input);   // v1.16.0
+  if (name === 'portfolio') return PT.run(input);   // v1.17.0
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };
