@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.1.0';   // 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.2.0';   // 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -290,7 +290,7 @@ function valueCurve(book, ctx) {
   // the NOW point: units after every captured event (this week's too), valued like open positions (latest epoch's state + day)
   const latest = ctx.pools.latest; if (latest) { while (i < tl.length) { const [, k, d] = tl[i]; units.set(k, Math.max(0, (units.get(k) || 0) + d)); i++; }
     let usd = 0; const by = {}; const missing = [];
-    for (const [k, u] of units) { if (!(u > 0)) continue; const [pool] = k.split('|'); if (book.disputed && book.disputed.has(k)) { missing.push(pool + ' (disputed)'); continue; } const rr = rateAt(ctx.rates, k, latest.t); const b = basketAt(ctx.pools, pool, latest.t, ctx.pools.singles.has(pool) ? null : latest.epoch); if (!b) { missing.push(pool); continue; } const items = basketItemsFromLp(ctx, b.basket, u * rr.r); if (!items) { missing.push(pool); continue; } const v = valueBasket(ctx, items, latest.day); if (!v.priced) { missing.push(pool); continue; } usd += v.usd; by[pool] = (by[pool] || 0) + v.usd; }
+    for (const [k, u] of units) { if (!(u > 0)) continue; const [pool] = k.split('|'); if (book.disputed && book.disputed.has(k)) { missing.push(pool + ' (disputed)'); continue; } if (book.notHeld && book.notHeld.has(k)) continue; const rr = rateAt(ctx.rates, k, latest.t); const b = basketAt(ctx.pools, pool, latest.t, ctx.pools.singles.has(pool) ? null : latest.epoch); if (!b) { missing.push(pool); continue; } const items = basketItemsFromLp(ctx, b.basket, u * rr.r); if (!items) { missing.push(pool); continue; } const v = valueBasket(ctx, items, latest.day); if (!v.priced) { missing.push(pool); continue; } usd += v.usd; by[pool] = (by[pool] || 0) + v.usd; }
     const L = ctx.lunaUsd(latest.day); out.push({ e: 'now', usd: r2(usd), luna: L ? r6(usd / L) : null, pools: Object.fromEntries(Object.entries(by).sort().map(([k, v]) => [k, r2(v)])), missing: missing.length ? [...new Set(missing)].sort() : undefined }); }
   return out;
 }
@@ -313,6 +313,7 @@ function walletOutput(book, ctx, address) {
     // A disputed position is listed with both figures and left OUT of every total (open, realized, curve) — never averaged in.
     let dispute = null;
     if (ctx.check && value) { dispute = ctx.check(address, p.pool, p.mech, value.usd); }
+    let notHeld = null; if (dispute && dispute.reason === 'not_held') { notHeld = dispute; dispute = null; (book.notHeld = book.notHeld || new Set()).add(key); }   // 1.2.0: see pnl.js 1.2.3
     if (dispute) { (book.disputed = book.disputed || new Set()).add(key); }
     // 1.1.0 LP in vs now (open lots): non-amplified loses LP to the take rate (the drag, and the top-up that restores it);
     //   amplified compounds (growth). Valued at today's value per LP. Capital × days = Σ lot cost × days held → the APR denominator.
@@ -325,7 +326,7 @@ function walletOutput(book, ctx, address) {
         take_rate: p.mech === 'non_amplified' && !measured ? { unmeasured: true, why: 'no share-rate sample near when these lots went in — the LP they started with is not known, so the drag is not guessed' } : p.mech === 'non_amplified' && d != null && d > 0 ? { lp_raw: r6(d), pct: lpIn > 0 ? r6(d / lpIn) : null, usd: perLpUsd != null ? r2(d * perLpUsd) : null, luna: perLpLuna != null ? r6(d * perLpLuna) : null, note: 'LP tokens the take rate removed since these lots went in = the top-up that restores them' } : undefined,
         amp_growth: p.mech === 'amplified' && measured && d != null && d < 0 ? { lp_raw: r6(-d), pct: lpIn > 0 ? r6(-d / lpIn) : null, usd: perLpUsd != null ? r2(-d * perLpUsd) : null } : undefined,
         open_since: p.lots.reduce((m, l) => (m == null || l.day < m ? l.day : m), null), capital_days_usd: capUsd != null ? r2(capUsd) : null, capital_days_luna: capLuna != null ? r6(capLuna) : null, as_of_day: latest.day }; }
-    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
+    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
       realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd) },
@@ -334,14 +335,15 @@ function walletOutput(book, ctx, address) {
     if (dispute) { T.disputed = (T.disputed || 0) + 1; continue; }
     T.in_usd += R.in_usd; T.out_usd += R.out_usd; T.delta_usd += R.delta_usd; T.in_luna += R.in_luna; T.out_luna += R.out_luna; T.delta_luna += R.delta_luna; T.market_usd += R.market_usd; T.lp_usd += R.lp_usd;
     T.trips_valued += tv.length; T.trips_suspect = (T.trips_suspect || 0) + ts; T.trips_blank += trips.length - tv.length - ts; T.claims_luna += p.claims.luna; T.claims_usd += p.claims.usd; if (p.unmatched_units > 0) T.unmatched_units_positions++;
-    if (p.lots.length) { if (costOk) { T.open_cost_usd += cost_usd; T.open_cost_luna += cost_luna; } if (value) { T.open_value_usd += value.usd; T.open_value_luna += value.luna || 0; } else T.open_unvalued++; }
+    if (notHeld) { T.not_held = (T.not_held || 0) + 1; T.not_held_usd = (T.not_held_usd || 0) + notHeld.ours_usd; }
+    if (p.lots.length && !notHeld) { if (costOk) { T.open_cost_usd += cost_usd; T.open_cost_luna += cost_luna; } if (value) { T.open_value_usd += value.usd; T.open_value_luna += value.luna || 0; } else T.open_unvalued++; }
   }
   const unreal_usd = T.open_value_usd - T.open_cost_usd, unreal_luna = T.open_value_luna - T.open_cost_luna;
   const totals = { as_of_epoch: latest ? latest.epoch : null, as_of_day: latest ? latest.day : null,
     realized: { in_usd: r2(T.in_usd), out_usd: r2(T.out_usd), delta_usd: r2(T.delta_usd), in_luna: r6(T.in_luna), out_luna: r6(T.out_luna), delta_luna: r6(T.delta_luna), market_usd: r2(T.market_usd), lp_usd: r2(T.lp_usd), trips_valued: T.trips_valued, trips_blank: T.trips_blank, trips_suspect: T.trips_suspect || undefined },
     open: { cost_usd: r2(T.open_cost_usd), cost_luna: r6(T.open_cost_luna), value_usd: r2(T.open_value_usd), value_luna: r6(T.open_value_luna), unrealized_usd: r2(unreal_usd), unrealized_luna: r6(unreal_luna), positions_unvalued: T.open_unvalued },
     rewards: { claims_luna: r6(T.claims_luna + book.unattributed_claims.luna), claims_usd: r2(T.claims_usd + book.unattributed_claims.usd), unattributed_luna: r6(book.unattributed_claims.luna), bribes_usd: r2(book.bribes_usd), bribes_luna: r6(book.bribes_luna), bribes_unpriced_coins: book.bribes_unpriced || undefined },
-    segments: book.segments || undefined, positions_with_unmatched_units: T.unmatched_units_positions || undefined, positions_disputed: T.disputed || undefined };
+    segments: book.segments || undefined, positions_with_unmatched_units: T.unmatched_units_positions || undefined, positions_disputed: T.disputed || undefined, positions_not_held: T.not_held || undefined, not_held_usd: T.not_held_usd ? r2(T.not_held_usd) : undefined };
   // net = realized Δ + unrealized + TLA rewards (claims + bribes). Fees/zap costs are inside the basis already (provides legs are post-swap).
   totals.net_usd = r2(T.delta_usd + unreal_usd + T.claims_usd + book.unattributed_claims.usd + book.bribes_usd);
   totals.net_luna = r6(T.delta_luna + unreal_luna + T.claims_luna + book.unattributed_claims.luna + book.bribes_luna);
