@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.0.0';
+const VERSION = 'pnl-positions-1.1.0';   // 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -178,9 +178,11 @@ function applyEvent(book, ctx, e, migrations) {
       const b = basketAt(ctx.pools, e.pool, t); if (b) { items = basketItemsFromLp(ctx, b.basket, lpRaw); tier = items ? 'D' : null; }
     }
     const v = items ? valueBasket(ctx, items, day) : null;
-    let lot = { t, day, units, items, in_usd: v && v.priced ? v.usd : null, in_luna: v && v.priced ? v.luna : null, tier: v && v.priced ? tier : null, missing: v ? v.missing : ['no-basket'] };
+    // 1.1.0: LP tokens this deposit put in — amplified: the bond amount the flow names; non-amplified: shares × the measured rate that day
+    let lpIn = null, lpInOk = false; { if (mech === 'amplified') { const f = (e.flows || []).find(x => x.user === e.user && mechOf(x.mechanism) === 'amplified' && num(x.bond_amount) > 0); if (f) { lpIn = num(f.bond_amount); lpInOk = true; } } if (lpIn == null) { const rr = rateAt(ctx.rates, key, t); lpIn = rr && rr.r > 0 ? units * rr.r : null; lpInOk = !!rr && (rr.tier === 'event' || rr.tier === 'curve' || (rr.tier === 'nearest' && rr.days != null && rr.days <= 7)); } }   // measured = the event's own amount, or a rate sample within 7 days
+    let lot = { t, day, units, lp_in: lpIn, lp_in_measured: lpInOk, items, in_usd: v && v.priced ? v.usd : null, in_luna: v && v.priced ? v.luna : null, tier: v && v.priced ? tier : null, missing: v ? v.missing : ['no-basket'] };
     if (isSeg && book._carry && book._carry.tx === e.txhash && book._carry.pool === e.pool) {   // migration: carry the consumed basis
-      const c = book._carry; lot = { t: c.t, day: c.day, units, items: c.items, in_usd: c.in_usd, in_luna: c.in_luna, tier: c.tier, carried: { from: c.mech, at: day }, missing: c.missing };
+      const c = book._carry; lot = { t: c.t, day: c.day, units, lp_in: lpIn, lp_in_measured: lpInOk, items: c.items, in_usd: c.in_usd, in_luna: c.in_luna, tier: c.tier, carried: { from: c.mech, at: day }, missing: c.missing };
       book._carry = null; book.segments++; p.carried_in++;
     }
     tierCount(p, 'lot:' + (lot.tier || 'blank')); p.lots.push(lot); p.units_open += units;
@@ -200,7 +202,7 @@ function applyEvent(book, ctx, e, migrations) {
   while (need > 1e-9 && p.lots.length) {
     const lot = p.lots[0]; const take = Math.min(need, lot.units); const f = take / lot.units;
     parts.push({ t: lot.t, day: lot.day, units: take, items: lot.items ? lot.items.map(it => ({ denom: it.denom, amount: it.amount * f })) : null, in_usd: lot.in_usd != null ? lot.in_usd * f : null, in_luna: lot.in_luna != null ? lot.in_luna * f : null, tier: lot.tier });
-    if (f >= 1 - 1e-12) p.lots.shift(); else { lot.units -= take; if (lot.items) lot.items = lot.items.map(it => ({ denom: it.denom, amount: it.amount * (1 - f) })); if (lot.in_usd != null) lot.in_usd *= (1 - f); if (lot.in_luna != null) lot.in_luna *= (1 - f); }
+    if (f >= 1 - 1e-12) p.lots.shift(); else { lot.units -= take; if (lot.lp_in != null) lot.lp_in *= (1 - f); if (lot.items) lot.items = lot.items.map(it => ({ denom: it.denom, amount: it.amount * (1 - f) })); if (lot.in_usd != null) lot.in_usd *= (1 - f); if (lot.in_luna != null) lot.in_luna *= (1 - f); }
     need -= take;
   }
   const matched = units - Math.max(0, need); const unmatched = Math.max(0, need);
@@ -312,7 +314,18 @@ function walletOutput(book, ctx, address) {
     let dispute = null;
     if (ctx.check && value) { dispute = ctx.check(address, p.pool, p.mech, value.usd); }
     if (dispute) { (book.disputed = book.disputed || new Set()).add(key); }
-    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
+    // 1.1.0 LP in vs now (open lots): non-amplified loses LP to the take rate (the drag, and the top-up that restores it);
+    //   amplified compounds (growth). Valued at today's value per LP. Capital × days = Σ lot cost × days held → the APR denominator.
+    let lpBlock;
+    if (p.lots.length && latest) { const lpIn = p.lots.every(l => l.lp_in != null) ? p.lots.reduce((s, l) => s + l.lp_in, 0) : null; const rrN = rateAt(ctx.rates, key, latest.t); const lpNow = rrN && rrN.r > 0 ? p.units_open * rrN.r : null;
+      const measured = p.lots.every(l => l.lp_in_measured);
+      const perLpUsd = value && lpNow > 0 ? value.usd / lpNow : null; const perLpLuna = value && lpNow > 0 && value.luna != null ? value.luna / lpNow : null; const d = lpIn != null && lpNow != null ? lpIn - lpNow : null;
+      const capUsd = costOk ? p.lots.reduce((s, l) => s + l.in_usd * Math.max(0, (latest.t - l.t) / 864e5), 0) : null; const capLuna = costOk ? p.lots.reduce((s, l) => s + (l.in_luna || 0) * Math.max(0, (latest.t - l.t) / 864e5), 0) : null;
+      lpBlock = { lp_in_raw: lpIn != null ? r6(lpIn) : null, lp_now_raw: lpNow != null ? r6(lpNow) : null, lp_rate_tier: rrN ? rrN.tier : undefined,
+        take_rate: p.mech === 'non_amplified' && !measured ? { unmeasured: true, why: 'no share-rate sample near when these lots went in — the LP they started with is not known, so the drag is not guessed' } : p.mech === 'non_amplified' && d != null && d > 0 ? { lp_raw: r6(d), pct: lpIn > 0 ? r6(d / lpIn) : null, usd: perLpUsd != null ? r2(d * perLpUsd) : null, luna: perLpLuna != null ? r6(d * perLpLuna) : null, note: 'LP tokens the take rate removed since these lots went in = the top-up that restores them' } : undefined,
+        amp_growth: p.mech === 'amplified' && measured && d != null && d < 0 ? { lp_raw: r6(-d), pct: lpIn > 0 ? r6(-d / lpIn) : null, usd: perLpUsd != null ? r2(-d * perLpUsd) : null } : undefined,
+        open_since: p.lots.reduce((m, l) => (m == null || l.day < m ? l.day : m), null), capital_days_usd: capUsd != null ? r2(capUsd) : null, capital_days_luna: capLuna != null ? r6(capLuna) : null, as_of_day: latest.day }; }
+    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
       realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd) },
