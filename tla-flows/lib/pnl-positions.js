@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.3.1';   // 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.4.0';   // 1.4.0 (2026-09-28, owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — see how things did in token amounts in and out?"): every trip carries the TOKENS it put in and took out (tok_in / tok_out: [[symbol, amount], …] — the provided / refunded legs when measured, else the derived basket); positions carry token totals in / out and, for open lots, tokens in vs tokens now plus what the entry tokens would be worth held (hold_usd / hold_luna: the LP-vs-hold figure for open positions) · 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -223,7 +223,9 @@ function applyEvent(book, ctx, e, migrations) {
   const frac = units > 0 ? matched / units : 0;   // the matched share of what came out (unmatched units carry no basis)
   const out_usd = outV && outV.priced ? outV.usd : null, out_luna = outV && outV.priced ? outV.luna : null;
   const trip = { day, t_open: S.t0 != null ? new Date(S.t0).toISOString().slice(0, 10) : null, t_open_last: S.t1 != null ? new Date(S.t1).toISOString().slice(0, 10) : null,
-    units, matched_units: matched, unmatched_units: unmatched || undefined, tier_in: S.priced ? [...S.tiers].sort().join('+') : null, tier_out: outTier, tx: e.txhash };
+    units, matched_units: matched, unmatched_units: unmatched || undefined, tier_in: S.priced ? [...S.tiers].sort().join('+') : null, tier_out: outTier, tx: e.txhash,
+    // 1.4.0: the tokens — what went in (the consumed lots' legs) and what came out (the matched share of the refund)
+    tok_in: parts.length && parts.every(c => c.items) ? tokList(ctx, S.items) : null, tok_out: outItems ? tokList(ctx, outItems.map(it => ({ denom: it.denom, amount: it.amount * frac }))) : null };
   if (S.priced && out_usd != null) {
     const outM = out_usd * frac, outLM = out_luna != null ? out_luna * frac : null;
     const entryAtExit = valueBasket(ctx, S.items, day);
@@ -238,9 +240,15 @@ function applyEvent(book, ctx, e, migrations) {
   tierCount(p, 'trip:' + (trip.delta_usd != null ? 'valued' : 'blank')); p.trips.push(trip);
 }
 // a trip as one row (columns in TRIP_COLS) — the ledger is read by pages on phones; one array per trip, not one object
-const TRIP_COLS = ['day', 'opened', 'units', 'matched_units', 'in_usd', 'out_usd', 'in_luna', 'out_luna', 'market_usd', 'lp_usd', 'tier_in', 'tier_out', 'tx', 'flag'];
+const TRIP_COLS = ['day', 'opened', 'units', 'matched_units', 'in_usd', 'out_usd', 'in_luna', 'out_luna', 'market_usd', 'lp_usd', 'tier_in', 'tier_out', 'tx', 'flag', 'tok_in', 'tok_out'];   // 1.4.0: + tok_in, tok_out (appended — readers decode by name)
 function tripRow(x) { const flag = x.suspect ? 'suspect ' + x.suspect : (x.unmatched_units ? 'unmatched ' + x.unmatched_units : (x.out_usd_unbasised != null ? 'no basis, out ' + x.out_usd_unbasised : null));
-  return [x.day, x.t_open, x.units, x.matched_units, x.in_usd ?? null, x.out_usd ?? null, x.in_luna ?? null, x.out_luna ?? null, x.market_usd ?? null, x.lp_usd ?? null, x.tier_in, x.tier_out, x.tx, flag]; }
+  return [x.day, x.t_open, x.units, x.matched_units, x.in_usd ?? null, x.out_usd ?? null, x.in_luna ?? null, x.out_luna ?? null, x.market_usd ?? null, x.lp_usd ?? null, x.tier_in, x.tier_out, x.tx, flag, x.tok_in || null, x.tok_out || null]; }
+// 1.4.0: [{denom, amount}] display items → [[symbol, amount], …] (largest first; a denom the catalog cannot name keeps a short denom)
+function tokList(ctx, items) { if (!items) return null; const m = new Map(); for (const it of items) { if (!(it.amount > 0)) continue; const sym = (ctx.symbolOf && ctx.symbolOf(it.denom)) || shortDenom(it.denom); m.set(sym, (m.get(sym) || 0) + it.amount); } return [...m].sort((a, b) => b[1] - a[1]).map(([s, a]) => [s, sig(a)]); }
+function shortDenom(d) { const t = String(d).split('/').pop(); return /^terra1/.test(t) ? t.slice(0, 10) + '…' : t; }
+function sig(a) { if (!(a > 0)) return 0; const k = Math.max(0, 6 - Math.floor(Math.log10(a))); return Math.round(a * 10 ** Math.min(k, 12)) / 10 ** Math.min(k, 12); }   // 6–7 significant digits: sat-sized wBTC keeps its digits, millions of ROAR round
+function addToks(acc, list) { if (!list) return false; for (const [s, a] of list) acc[s] = (acc[s] || 0) + a; return true; }
+function tokObj(acc) { const e = Object.entries(acc).filter(([, a]) => a > 0).sort((a, b) => b[1] - a[1]); return e.length ? Object.fromEntries(e.map(([s, a]) => [s, sig(a)])) : undefined; }
 function mergeItems(items) { const m = new Map(); for (const it of items) m.set(it.denom, (m.get(it.denom) || 0) + it.amount); return [...m].map(([denom, amount]) => ({ denom, amount })); }
 
 // a LUNA claim: [{ pool: 'a,b,c', reward_amount }] (display LUNA = raw / 1e6)
@@ -305,8 +313,13 @@ function walletOutput(book, ctx, address) {
     for (const x of tv) { R.in_usd += x.in_usd; R.out_usd += x.out_usd; R.delta_usd += x.delta_usd; R.in_luna += x.in_luna || 0; R.out_luna += x.out_luna || 0; R.delta_luna += x.delta_luna || 0; R.market_usd += x.market_usd || 0; R.lp_usd += x.lp_usd || 0; }
     // open lots: cost and value now (the latest complete epoch's state + day)
     let cost_usd = 0, cost_luna = 0, costOk = true; for (const l of p.lots) { if (l.in_usd == null) costOk = false; else { cost_usd += l.in_usd; cost_luna += l.in_luna || 0; } }
-    let value = null;
-    if (p.units_open > 0 && latest) { const rr = rateAt(ctx.rates, key, latest.t); const b = basketAt(ctx.pools, p.pool, latest.t, ctx.pools.singles.has(p.pool) ? null : latest.epoch); if (b) { const items = basketItemsFromLp(ctx, b.basket, p.units_open * rr.r); if (items) { const v = valueBasket(ctx, items, latest.day); if (v.priced) value = { usd: v.usd, luna: v.luna, rate_tier: rr.tier }; } } }
+    let value = null, nowItems = null;
+    if (p.units_open > 0 && latest) { const rr = rateAt(ctx.rates, key, latest.t); const b = basketAt(ctx.pools, p.pool, latest.t, ctx.pools.singles.has(p.pool) ? null : latest.epoch); if (b) { const items = basketItemsFromLp(ctx, b.basket, p.units_open * rr.r); if (items) { nowItems = items; const v = valueBasket(ctx, items, latest.day); if (v.priced) value = { usd: v.usd, luna: v.luna, rate_tier: rr.tier }; } } }
+    // 1.4.0 tokens: realized in / out summed over the trips that know them; open lots' entry tokens vs the tokens the units hold now,
+    // and what those entry tokens would be worth today had they been held (the LP-vs-hold figure for what is still open)
+    const tokIn = {}, tokOut = {}; let tokTrips = 0; for (const x of trips) { if (x.tok_in && x.tok_out) { addToks(tokIn, x.tok_in); addToks(tokOut, x.tok_out); tokTrips++; } }
+    let openTok = null; if (p.lots.length && p.lots.every(l => l.items)) { const inItems = mergeItems(p.lots.flatMap(l => l.items)); const hold = latest ? valueBasket(ctx, inItems, latest.day) : null;
+      openTok = { tok_in: tokObj(Object.fromEntries(tokList(ctx, inItems) || [])), tok_now: nowItems ? tokObj(Object.fromEntries(tokList(ctx, nowItems) || [])) : undefined, hold_usd: hold && hold.priced ? r2(hold.usd) : null, hold_luna: hold && hold.priced && hold.luna != null ? r6(hold.luna) : null }; }
     // DISPUTE CHECK — a part cannot exceed the whole, and the hourly chain read is the referee where it exists:
     //   ceiling: open value > max(2 × the gauge's total staked USD now, $1,000) → impossible (units or decimals misread)
     //   participants: the hourly participants product values the same wallet × pool × mechanism; off by > 50 % and > $50 → disputed
@@ -337,7 +350,9 @@ function walletOutput(book, ctx, address) {
     positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, held_in: heldIn || undefined, moves: moves && moves.length ? moves : undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
-      realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd) },
+      realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd),
+        tok_in: tokObj(tokIn), tok_out: tokObj(tokOut), tok_trips: tokTrips || undefined },
+      open_tok: openTok && (openTok.tok_in || openTok.tok_now) ? openTok : undefined,
       claims: { luna: r6(p.claims.luna), usd: r2(p.claims.usd), n: p.claims.n, split_by_value: p.claims.split_n || undefined },
       unmatched_units: p.unmatched_units > 0 ? p.unmatched_units : undefined, carried_in: p.carried_in || undefined, tiers: p.tiers, trips: trips.map(tripRow) };
     if (dispute) { T.disputed = (T.disputed || 0) + 1; continue; }
