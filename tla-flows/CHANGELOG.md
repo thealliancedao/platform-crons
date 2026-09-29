@@ -1,5 +1,16 @@
 # tla-flows — changelog
 
+## 3.5.6 — 2026-09-29 — the P&L builds DAILY (pnl 1.3.1)
+
+- Owner: "should P&L run more often than weekly?" The build is a pure derive over committed files (no chain reads), writes only
+  changed files in one commit — nothing makes weekly necessary. Now once per UTC day at/after 03:30 UTC (the daily prices and ratios
+  are in), so a new deposit / withdrawal / claim shows in "How you've done" within a day. `PNL_CADENCE=weekly` restores the old cadence.
+- A ledger built by an older builder version is rebuilt on the next run by itself — after a deploy there is no `PNL=force` to set (or to
+  forget to remove). `PNL=force` still forces; `PNL=0` still disables.
+- Gate: the six gate cases (due after 03:30, not before, already built today, older builder, weekly cadence, off). mock-run-pnl-v3 is
+  31/32 on today's data both with and without this change — the one red (take-rate "LP in ≥ LP now" on 142/149 < 99 %) is a
+  pre-existing, data-dependent threshold, not this change.
+
 ## 3.5.5 — 2026-09-28 — tokens in / out on every trip (pnl 1.3.0, pnl-positions 1.4.0)
 
 - Owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — so you can see how things did in USD in and out, or token

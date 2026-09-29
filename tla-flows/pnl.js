@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.3.0';   // 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.3.1';   // 1.3.1 (2026-09-29): DAILY build (once per UTC day after 03:30 UTC; PNL_CADENCE=weekly for the old cadence) and an automatic rebuild when the last build was made by an older builder — no PNL=force after a deploy · 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -577,7 +577,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
 
     out.files.set(`${OUT_DIR}/rollup.json`, rollup);
     out.files.set(`${OUT_DIR}/heartbeat.json`, {
-        schemaVersion: 1, product: 'tla-flows/pnl', builder: `${PNL_VERSION} (org-tla-flows weekly duty)`,
+        schemaVersion: 1, product: 'tla-flows/pnl', builder: `${PNL_VERSION} (org-tla-flows daily duty)`,
         builtAt, status: 'ok',
         wallet_count: totals.wallets,
         events_read: meta.events_read,
@@ -687,11 +687,19 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBa
   const out = { status: 'skipped', reason: null, written: 0, unchanged: 0 };
   if (env.PNL === '0') { out.reason = 'PNL=0'; return out; }
   const t = now(); const force = env.PNL === 'force';
-  // gate: current epoch newer than the last build's epoch, and ≥ 3.5 h into the epoch (Mon 03:30 UTC)
+  // 1.3.1 gate (owner 2026-09-29: "should P&L run more often than weekly?"): DAILY by default — once per UTC day at/after 03:30 UTC (the
+  // daily prices and ratios are in by then); PNL_CADENCE=weekly keeps the old once-per-epoch (Mon 03:30 UTC). A build made by an OLDER
+  // builder version is rebuilt on the next run by itself — no PNL=force needed after a deploy (and none to forget to remove).
   const hb = await fetchJson(`${rawBase}/tla-flows/pnl/heartbeat.json?t=${Date.now()}`).catch(() => null);
   const builtEpoch = hb && hb.builtAt ? epochOf(Date.parse(hb.builtAt)) : 0; const curEpoch = epochOf(t.getTime());
   const intoEpochMs = t.getTime() - (EPOCH_GENESIS_MS + (curEpoch - 1) * EPOCH_MS);
-  if (!force && !(curEpoch > builtEpoch && intoEpochMs >= 3.5 * 3600000)) { out.reason = curEpoch > builtEpoch ? `epoch ${curEpoch} started, builds at Mon 03:30 UTC` : `epoch ${curEpoch} already built (${hb && hb.builtAt})`; return out; }
+  const builtDay = hb && hb.builtAt ? String(hb.builtAt).slice(0, 10) : ''; const today = t.toISOString().slice(0, 10);
+  const pastHour = t.getUTCHours() * 60 + t.getUTCMinutes() >= 3 * 60 + 30;
+  const staleBuilder = !!(hb && hb.builder && !String(hb.builder).startsWith(PNL_VERSION));
+  const weekly = String(env.PNL_CADENCE || 'daily') === 'weekly';
+  const due = weekly ? (curEpoch > builtEpoch && intoEpochMs >= 3.5 * 3600000) : (builtDay < today && pastHour);
+  if (!force && !due && !staleBuilder) { out.reason = weekly ? (curEpoch > builtEpoch ? `epoch ${curEpoch} started, builds at Mon 03:30 UTC` : `epoch ${curEpoch} already built (${hb && hb.builtAt})`) : (builtDay >= today ? `already built today (${hb && hb.builtAt})` : 'builds after 03:30 UTC'); return out; }
+  if (staleBuilder && !force && !due) console.log(`  pnl: the last build was made by ${hb.builder} — rebuilding with ${PNL_VERSION}`);
   // derive
   const src = {
     readJson: (p) => fetchJson(`${rawBase}/${p}?t=${Date.now()}`),
@@ -711,8 +719,8 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBa
     if (onMain.get(p) === sha) { out.unchanged++; continue; }
     changed.push({ path: p, content });
   }
-  if (publishBatch && changed.length) { const r = await publishBatch(changed, `tla-flows/pnl: weekly rollup (epoch ${curEpoch}) — ${changed.length} files`); out.written = changed.length; out.commit = r && r.commit; out.batch = { chunks: r && r.chunks, attempts: r && r.attempts }; }
-  else for (const f of changed) { await publishFile(f.path, f.content, `tla-flows/pnl: weekly rollup (epoch ${curEpoch})`); out.written++; }
+  if (publishBatch && changed.length) { const r = await publishBatch(changed, `tla-flows/pnl: rollup ${t.toISOString().slice(0, 10)} (epoch ${curEpoch}) — ${changed.length} files`); out.written = changed.length; out.commit = r && r.commit; out.batch = { chunks: r && r.chunks, attempts: r && r.attempts }; }
+  else for (const f of changed) { await publishFile(f.path, f.content, `tla-flows/pnl: rollup ${t.toISOString().slice(0, 10)} (epoch ${curEpoch})`); out.written++; }
   out.status = 'ok'; out.epoch = curEpoch; out.summary = built.summary; out.files = built.files.size;
   return out;
 }
