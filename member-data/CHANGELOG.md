@@ -1,5 +1,15 @@
 # member-data — changelog
 
+
+## history-series 1.2.0 — 2026-09-29 — blank, not $0, for an LP the capture could not price
+
+- The GMC backing wallet's chart showed $0 of LP until 09-28 and then a jump to $33K ("1d −99.6 %" on the page): its wBTC.creda.a
+  stake was in every daily capture, but UNPRICED (estimated_position_usd null) until capture-engine priced Credia receipts on 09-28 —
+  and the series wrote the summary's 0. A day with an unpriced LP position now records lp and the TLA total as BLANK; the chart shows a
+  gap. The deep backfill fills those days properly.
+- A series built by an older version rebuilds every day by itself (no HISTORY=force to set and remove).
+- Gate: mock-run-history 21/21 (H8: GMC's 48 pre-09-28 days blank, priced from 09-28; the owner's day-to-day check skips 8 blank days).
+
 ## 1.6.0 — 2026-09-28 — Solid for every participant (SPEC-portfolio-solid)
 
 - New shared `lib/solid-reader.js` 1.0.0. The protocol is read ONCE per run as a census, paged to the end (stops on an EMPTY page —

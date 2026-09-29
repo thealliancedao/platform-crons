@@ -25,7 +25,7 @@
 // everything; HISTORY=0 disables. Publishes the changed shards as ONE commit (tla-flows lib/git-batch.js).
 // The deep backfill (SPEC-deep-history) writes older days into the SAME files with src = 'd' — one canonical file per series.
 // =============================================================================
-const VERSION = 'history-series-1.1.0';   // 1.1.0 (2026-09-28): + ss / sb — Solid collateral (locked + idle) and SOLID debt in USD (member-data 1.6.0 attachSolid); appended, readers decode by name
+const VERSION = 'history-series-1.2.0';   // 1.2.0 (2026-09-29, the GMC backing wallet): a day whose capture held an LP position it could NOT price (estimated_position_usd null — e.g. wBTC.creda.a before capture-engine priced it on 09-28) records lp and the TLA total as BLANK, not $0 — the chart shows a gap, never a phantom 99 % drop; a series built by an older version rebuilds itself · 1.1.0 (2026-09-28): + ss / sb — Solid collateral (locked + idle) and SOLID debt in USD (member-data 1.6.0 attachSolid); appended, readers decode by name
 const OUT_DIR = 'member-data/history/series';
 const FIRST_ARCHIVE_DAY = '2026-08-11';   // the org participants / member archives start here (older days live in the legacy repos)
 const COLS = ['d', 'p', 'lk', 'lkL', 'fx', 'lp', 'cu', 'cuS', 'wb', 'vt', 'vtv', 'cs', 'cb', 'vp', 'pvp', 'pr', 'px', 'nl', 'src', 'ss', 'sb'];
@@ -44,9 +44,10 @@ function rowOf(day, m, src, vot, cuFill, px) {
   const inc = !!s.total_includes_custody;
   const cuCap = inc ? num(s.custody_usd) : null;
   const cu = inc ? (cuCap || 0) : (cuFill && cuFill.usd > 0 ? cuFill.usd : null);
-  const base = num(s.total_portfolio_value_usd);
+  const lpUnpriced = ((m && m.lp_positions) || []).some(x => x && x.estimated_position_usd == null);   // 1.2.0: blank beats phantom
+  const base = lpUnpriced ? null : num(s.total_portfolio_value_usd);
   const p = base == null ? null : base + (!inc && cu ? cu : 0);   // the day's TLA total, the DAO stake once
-  return [day, r2(p), r2(num(s.total_locked_usd)), r2(num(s.total_locked_luna_equivalent)), r2(num(s.fixed_amount_human)), r2(num(s.total_lp_position_usd)),
+  return [day, r2(p), r2(num(s.total_locked_usd)), r2(num(s.total_locked_luna_equivalent)), r2(num(s.fixed_amount_human)), lpUnpriced ? null : r2(num(s.total_lp_position_usd)),
     r2(cu), cu == null ? null : (inc ? 0 : (cuFill && cuFill.carried ? 2 : 1)), r2(num(s.total_wallet_balances_usd)),
     vot ? r2(vot.usd) : null, vot ? r2(vot.vp) : null,
     s.credia_supplied_usd !== undefined ? r2(num(s.credia_supplied_usd)) : null, s.credia_borrowed_usd !== undefined ? r2(num(s.credia_borrowed_usd)) : null,
@@ -112,7 +113,8 @@ async function run(deps) {
   const { fetchJson, publishBatch, rawBase, env = {}, now = () => new Date() } = deps; const log = deps.log || console.log;
   if (env.HISTORY === '0') { log('  history-series: disabled (HISTORY=0)'); return { status: 'skipped', reason: 'HISTORY=0' }; }
   const t = now(); const today = t.toISOString().slice(0, 10); const hour = t.getUTCHours();
-  const index = env.HISTORY === 'force' ? null : await fetchJson(`${rawBase}/${OUT_DIR}/index.json?t=${Date.now()}`).catch(() => null);
+  let index = env.HISTORY === 'force' ? null : await fetchJson(`${rawBase}/${OUT_DIR}/index.json?t=${Date.now()}`).catch(() => null);
+  if (index && index.version && index.version !== VERSION) { log(`  history-series: built by ${index.version} — rebuilding every day with ${VERSION}`); index = null; }   // 1.2.0: no HISTORY=force after a deploy
   let from;
   if (!index) from = FIRST_ARCHIVE_DAY;                                        // seed
   else if (index.last_day < today) from = new Date(Date.parse(index.last_day + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);

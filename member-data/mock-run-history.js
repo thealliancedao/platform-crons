@@ -52,7 +52,12 @@ const quiet = () => {};
 
   const hole = rows.filter(r => r[0] >= '2026-08-17' && r[0] <= '2026-08-23');
   ok(`the CAPA supply history's hole (08-10 → 08-23): 08-17 … 08-23 carry the stake held on both sides (cuS=2, ${hole.length} days) — no false $10K dip`, hole.length === 7 && hole.every(r => r[C.cuS] === 2 && r[C.cu] > 5000));
-  let worst = 0; for (let i = 1; i < rows.length; i++) worst = Math.max(worst, Math.abs(rows[i][C.p] / rows[i - 1][C.p] - 1)); ok(`day-to-day moves in the owner's total stay under 25% (worst ${(worst * 100).toFixed(1)}%)`, worst < 0.25);
+  const pr = rows.filter(r => r[C.p] != null); const blanks = rows.length - pr.length;
+  let worst = 0; for (let i = 1; i < pr.length; i++) worst = Math.max(worst, Math.abs(pr[i][C.p] / pr[i - 1][C.p] - 1)); ok(`day-to-day moves in the owner's total stay under 25% (worst ${(worst * 100).toFixed(1)}%; ${blanks} day(s) blank — an LP the capture could not price)`, worst < 0.25);
+  // H8 (1.2.0) the GMC backing wallet: its wBTC.creda.a stake was captured unpriced before 09-28 — those days are BLANK, not $0
+  { const G = 'terra1jd2tam4svukk7pg8fv0dkj7zgwes9yw5c2h3wm0gkjcwdth2mpfsxxw6zd'; const gr = []; const gs = published.get(`${HS.OUT_DIR}/${HS.shardOf(G)}.json`); for (const f of gs ? [gs] : []) { const d = JSON.parse(f); if (d.wallets && d.wallets[G]) gr.push(...d.wallets[G]); }
+    const before = gr.filter(r => r[0] < '2026-09-28'), after = gr.filter(r => r[0] >= '2026-09-28');
+    ok(`H8 GMC backing wallet: ${before.length} days before 09-28 carry lp = blank (the stake was there, unpriced) and TLA total blank; from 09-28 the priced $${after[0] && after[0][C.lp]}`, before.length > 0 && before.every(r => r[C.lp] === null && r[C.p] === null) && after.length > 0 && after.every(r => r[C.lp] > 30000)); }
   console.log('— H4 blank beats phantom —');
   const first = rows[0]; const D1 = JSON.parse(fs.readFileSync(path.join(CORE, 'member-data/participants/daily', first[0] + '.json'), 'utf8')).members.find(m => m.wallet === OWNER);
   ok(`${first[0]}: Credia was not captured yet → cs/cb null (not 0)`, D1 && D1.summary.credia_supplied_usd === undefined ? (first[C.cs] === null && first[C.cb] === null) : true, first);
