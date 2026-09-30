@@ -1,5 +1,9 @@
 # help-agent — the site's grounded Q&A service (v1)
 
+> **v1.17.1 (2026-09-30)** — rule 17 updated: the Solid card is LIVE (debt with no collateral explained); deep history is CAPTURED
+> (1,159 wallets) but the raw archive is private and not on the page yet — the bot never estimates a wallet's past from it and never
+> guesses who owns a wallet. No new env vars, no corpus change. Redeploy picks it up.
+
 > **v1.16.0 (2026-09-27)** — tool `vote_market`: the TLA Vote Market simulator on the site's OWN engine (`aDAO-links-site/lib/vote-market.js`,
 > fetched from the site repo, cached 1 h; model 10 min; live pots when the incentive manager answers). Actions overview / simulate /
 > best_split / votion_moves / pool — the same numbers as TLA Stats' tile, /vote-market.html and the app. Rule 16 says when and how.

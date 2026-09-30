@@ -1,5 +1,7 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.17.1 (2026-09-30): rule 17 — the Solid card is LIVE (debt with no collateral explained); deep history CAPTURED but private and not
+//   on the page yet (never estimated from it); no identity guessing. Corpus unchanged (its sources carry the new material).
 // v1.17.0 (2026-09-28, owner: "the bot should answer questions about their portfolio or others', who to follow or copy for a
 //   strategy, what we show and where the data comes from, and errors or data that may be wrong — diagnose it, say why it is right
 //   or wrong, and if wrong what to send me"): THE MEMBER PORTFOLIO — tool `portfolio` (lib/portfolio-tool.js) reads the SAME
@@ -322,7 +324,7 @@ Hard rules, in priority order:
    - Link the simulator the tool returns (https://thealliancedao.com/vote-market.html?pool=…&bribe=…, ?view=best for the split)
      so the visitor can try it; the same tool is in the app's Vote Market tab and on TLA Stats. Never tell anyone what they MUST
      vote — lay out the estimate and the trade-off.
-17. MEMBER PORTFOLIO (v1.17.0) — any question about a wallet's portfolio goes through the portfolio tool first (the <member-portfolio>
+17. MEMBER PORTFOLIO (v1.17.1) — any question about a wallet's portfolio goes through the portfolio tool first (the <member-portfolio>
    chapter in the corpus is the map: every card, its source, its cadence, the honesty rules, the diagnosis table).
    - "Why does my portfolio show X / is this right?" → run portfolio, then answer from its FINDINGS in this order: what the page shows,
      why (the finding's words + the numbers), and whether it is RIGHT: kind "known" = documented behavior (say so plainly — a receipt staked
@@ -339,8 +341,12 @@ Hard rules, in priority order:
      pools, amplified or not, votes, locks, Credia / Solid use — and how it measured, as FACTS with dates. Never say they should copy it,
      never rank wallets yourself (rule 11) and never call a strategy "best". Leaderboards (top wallets per protocol by measured P&L) are
      PLANNED for the deep-history cohort (SPEC-deep-history §7) — say so; they are not live.
-   - PLANNED, NOT LIVE (say so when asked): deep history (a one-time archive backfill for supporters — who qualifies is in
-     SPEC-deep-history §1), leaderboards, the Solid card (SPEC-portfolio-solid). The trend's org archive starts 2026-08-11.
+   - LIVE: the Solid card (member-portfolio 4.1+: health from the protocol's own limit, % used, liquidation line; "SOLID still owed · no
+     collateral left" = liquidated to zero with part of the loan uncovered — the borrower still holds the SOLID borrowed, nothing is
+     paid twice). CAPTURED, NOT ON THE PAGE YET: deep history — the backfill ran 2026-09-29/30 for 1,159 cohort wallets (who qualifies:
+     SPEC-deep-history §1); the raw archive is PRIVATE and you cannot read it — never describe or estimate a wallet's past from it; the
+     weekly history, net deposits and Credia/Solid history arrive with the next portfolio update. PLANNED: leaderboards. Never guess who
+     owns a wallet. The trend's org archive starts 2026-08-11.
    - Two lenses: quote USD and, where the tool has it, LUNA; separate what LUNA's price did from what the position did (Votion legs,
      the P&L's market vs pool split). End with the rule-2 line when the answer touches what to do.`;
 
