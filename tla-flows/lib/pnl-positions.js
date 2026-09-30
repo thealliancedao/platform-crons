@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.4.0';   // 1.4.0 (2026-09-28, owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — see how things did in token amounts in and out?"): every trip carries the TOKENS it put in and took out (tok_in / tok_out: [[symbol, amount], …] — the provided / refunded legs when measured, else the derived basket); positions carry token totals in / out and, for open lots, tokens in vs tokens now plus what the entry tokens would be worth held (hold_usd / hold_luna: the LP-vs-hold figure for open positions) · 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.5.0';   // 1.5.0 (2026-09-30, owner: the aDAO treasury's LUNA-FUEL cost held every token of a 15-stake DAO proposal and 10 of its 16 pools had no cost): ONE EVENT PER STAKE — splitEvent() turns a tx's flows[] (every stake / unstake the walker saw) into one event per (user, pool, mechanism); each gets only the provides / withdraw_liquidity legs of its OWN pool (pair → LP from state-history; an amplified stake also claims the provide whose share equals its bond amount); the tx-wide legs (swap cost, fee, zap-out) stay on the signer's first piece only, so nothing is counted twice. Before: only a tx's FIRST stake was booked (1,044 member stakes / unstakes in 247 wallets were never booked) and every provide in the tx was charged to it. Protocol contracts (the compounder, zapper, buckets, gauge, escrow) are never wallets · 1.4.0 (2026-09-28, owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — see how things did in token amounts in and out?"): every trip carries the TOKENS it put in and took out (tok_in / tok_out: [[symbol, amount], …] — the provided / refunded legs when measured, else the derived basket); positions carry token totals in / out and, for open lots, tokens in vs tokens now plus what the entry tokens would be worth held (hold_usd / hold_luna: the LP-vs-hold figure for open positions) · 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -123,6 +123,7 @@ function addEpochState(P, rec) {
     if (!x || !x.ok || !Array.isArray(x.assets) || !(num(x.total_share) > 0)) continue;
     const ts = num(x.total_share);
     (P.byPool.get(pool) || P.byPool.set(pool, []).get(pool)).push({ epoch: rec.epoch, t, basket: x.assets.map(a => ({ denom: norm(a.denom), per: num(a.amount) / ts })) });
+    if (x.pair) (P.lpOfPair || (P.lpOfPair = new Map())).set(x.pair, norm(pool));   // 1.5.0: a provide names its pair; the flow names its LP
   }
   if (!P.latest || rec.epoch > P.latest.epoch) P.latest = { epoch: rec.epoch, t, day };
 }
@@ -306,7 +307,7 @@ function valueCurve(book, ctx) {
 // per-wallet output (open positions valued at the latest epoch, realized trips, attribution totals)
 function walletOutput(book, ctx, address) {
   const latest = ctx.pools.latest; const positions = {}; const T = { disputed: 0, in_usd: 0, out_usd: 0, delta_usd: 0, in_luna: 0, out_luna: 0, delta_luna: 0, market_usd: 0, lp_usd: 0, trips_valued: 0, trips_blank: 0,
-    open_cost_usd: 0, open_cost_luna: 0, open_value_usd: 0, open_value_luna: 0, open_unvalued: 0, claims_luna: 0, claims_usd: 0, unmatched_units_positions: 0 };
+    open_cost_usd: 0, open_cost_luna: 0, open_value_usd: 0, open_value_luna: 0, open_unvalued: 0, costed_value_usd: 0, costed_value_luna: 0, uncosted_value_usd: 0, uncosted_value_luna: 0, uncosted_positions: 0, claims_luna: 0, claims_usd: 0, unmatched_units_positions: 0 };
   for (const [key, p] of [...book.positions].sort(([a], [b]) => a.localeCompare(b))) {
     const trips = p.trips; const tv = trips.filter(x => x.delta_usd != null && !x.suspect); const ts = trips.filter(x => x.suspect).length;
     const R = { in_usd: 0, out_usd: 0, delta_usd: 0, in_luna: 0, out_luna: 0, delta_luna: 0, market_usd: 0, lp_usd: 0 };
@@ -326,6 +327,11 @@ function walletOutput(book, ctx, address) {
     // A disputed position is listed with both figures and left OUT of every total (open, realized, curve) — never averaged in.
     let dispute = null;
     if (ctx.check && value) { dispute = ctx.check(address, p.pool, p.mech, value.usd); }
+    // 1.5.0 COST SANITY — a cost the position's own tokens cannot explain is a misread (units / decimals / a foreign leg), never a result:
+    // open cost > 100 × what the position is worth now AND > 100 × what its entry tokens would be worth held today, and > $10,000 → disputed
+    // (the live build had one xASTRO position costed at $33.8 billion against $1,223 — the whole DAO net read −$33.8B)
+    if (!dispute) { const cost = p.lots.reduce((x, l) => x + (l.in_usd || 0), 0); const ref = Math.max(value ? value.usd : 0, openTok && openTok.hold_usd ? openTok.hold_usd : 0);
+      if (cost > 10000 && ref > 0 && cost > 100 * ref) dispute = { reason: 'implausible_cost', cost_usd: Math.round(cost * 100) / 100, ours_usd: value ? Math.round(value.usd * 100) / 100 : null, hold_usd: openTok ? openTok.hold_usd : null }; }
     // 1.3.0: where this position's receipts went (ctx.moves, pnl.js 1.2.4). A receipt the chain read cannot find in the wallet but
     // that sits with a CUSTODIAN is still the member's: held_in, lots stay open and counted — not "not held".
     const moves = ctx.moves ? ctx.moves.of(address, p.pool, p.mech) : null; let heldIn = null;
@@ -359,12 +365,15 @@ function walletOutput(book, ctx, address) {
     T.in_usd += R.in_usd; T.out_usd += R.out_usd; T.delta_usd += R.delta_usd; T.in_luna += R.in_luna; T.out_luna += R.out_luna; T.delta_luna += R.delta_luna; T.market_usd += R.market_usd; T.lp_usd += R.lp_usd;
     T.trips_valued += tv.length; T.trips_suspect = (T.trips_suspect || 0) + ts; T.trips_blank += trips.length - tv.length - ts; T.claims_luna += p.claims.luna; T.claims_usd += p.claims.usd; if (p.unmatched_units > 0) T.unmatched_units_positions++;
     if (notHeld) { T.not_held = (T.not_held || 0) + 1; T.not_held_usd = (T.not_held_usd || 0) + notHeld.ours_usd; }
-    if (p.lots.length && !notHeld) { if (costOk) { T.open_cost_usd += cost_usd; T.open_cost_luna += cost_luna; } if (value) { T.open_value_usd += value.usd; T.open_value_luna += value.luna || 0; } else T.open_unvalued++; }
+    if (p.lots.length && !notHeld) { if (costOk) { T.open_cost_usd += cost_usd; T.open_cost_luna += cost_luna; } if (value) { T.open_value_usd += value.usd; T.open_value_luna += value.luna || 0;
+        // 1.5.0: unrealized = value − cost over positions whose cost IS known; a position with no measured cost is held (counted in value) but
+        // never profit — before, its whole value read as gain ($151K DAO-wide, 81 positions: ampCAPA stakes, receipts that arrived by transfer)
+        if (costOk) { T.costed_value_usd += value.usd; T.costed_value_luna += value.luna || 0; } else { T.uncosted_value_usd += value.usd; T.uncosted_value_luna += value.luna || 0; T.uncosted_positions++; } } else T.open_unvalued++; }
   }
-  const unreal_usd = T.open_value_usd - T.open_cost_usd, unreal_luna = T.open_value_luna - T.open_cost_luna;
+  const unreal_usd = T.costed_value_usd - T.open_cost_usd, unreal_luna = T.costed_value_luna - T.open_cost_luna;   // 1.5.0: costed positions only
   const totals = { as_of_epoch: latest ? latest.epoch : null, as_of_day: latest ? latest.day : null,
     realized: { in_usd: r2(T.in_usd), out_usd: r2(T.out_usd), delta_usd: r2(T.delta_usd), in_luna: r6(T.in_luna), out_luna: r6(T.out_luna), delta_luna: r6(T.delta_luna), market_usd: r2(T.market_usd), lp_usd: r2(T.lp_usd), trips_valued: T.trips_valued, trips_blank: T.trips_blank, trips_suspect: T.trips_suspect || undefined },
-    open: { cost_usd: r2(T.open_cost_usd), cost_luna: r6(T.open_cost_luna), value_usd: r2(T.open_value_usd), value_luna: r6(T.open_value_luna), unrealized_usd: r2(unreal_usd), unrealized_luna: r6(unreal_luna), positions_unvalued: T.open_unvalued },
+    open: { cost_usd: r2(T.open_cost_usd), cost_luna: r6(T.open_cost_luna), value_usd: r2(T.open_value_usd), value_luna: r6(T.open_value_luna), unrealized_usd: r2(unreal_usd), unrealized_luna: r6(unreal_luna), positions_unvalued: T.open_unvalued, value_without_cost_usd: T.uncosted_positions ? r2(T.uncosted_value_usd) : undefined, value_without_cost_luna: T.uncosted_positions ? r6(T.uncosted_value_luna) : undefined, positions_without_cost: T.uncosted_positions || undefined },
     rewards: { claims_luna: r6(T.claims_luna + book.unattributed_claims.luna), claims_usd: r2(T.claims_usd + book.unattributed_claims.usd), unattributed_luna: r6(book.unattributed_claims.luna), bribes_usd: r2(book.bribes_usd), bribes_luna: r6(book.bribes_luna), bribes_unpriced_coins: book.bribes_unpriced || undefined },
     segments: book.segments || undefined, positions_with_unmatched_units: T.unmatched_units_positions || undefined, positions_disputed: T.disputed || undefined, positions_not_held: T.not_held || undefined, not_held_usd: T.not_held_usd ? r2(T.not_held_usd) : undefined };
   // net = realized Δ + unrealized + TLA rewards (claims + bribes). Fees/zap costs are inside the basis already (provides legs are post-swap).
@@ -375,5 +384,45 @@ function walletOutput(book, ctx, address) {
   return { trip_cols: TRIP_COLS, curve_pools: pidx, totals, positions, bribes: Object.fromEntries(Object.entries(book.bribes).sort().map(([k, v]) => [k, { amount: r6(v.amount), usd: r2(v.usd), luna: r6(v.luna), n: v.n, unpriced: v.unpriced || undefined }])), value_curve: curveRows };
 }
 
-module.exports = { TRIP_COLS, VERSION, norm, keyOf, mechOf, newRates, addRate, finishRates, rateAt, rateSamplesFromEvent, rateSamplesFromEpoch, rateSamplesFromParticipants,
+
+// ── 1.5.0: one event per stake ───────────────────────────────────────────────────────────────────────────────────────
+// The walker keeps EVERY stake / unstake of a tx in e.flows[] (v3) but files the tx under its first one; a DAO proposal or a
+// zap that touches several pools is one tx. splitEvent returns one event per (user, pool, mechanism) flow, each carrying only
+// its own pool's provide / withdraw_liquidity legs. lpOfPair: Map(pair address → LP, norm'd) from state-history (optional —
+// without it a leg is kept only where the match is unambiguous). contracts: Set of protocol addresses that are never wallets.
+function splitEvent(e, lpOfPair, contracts) {
+  if (!e || e.retracted || (e.type !== 'deposit' && e.type !== 'withdraw')) return [e];
+  const flows = (Array.isArray(e.flows) ? e.flows : []).filter(f => f && f.user && f.pool && (f.type === 'deposit' || f.type === 'withdraw') && !(contracts && contracts.has(f.user)));
+  if (!flows.length) return (contracts && contracts.has(e.user)) ? [] : [e];
+  const P = norm; const provs = (e.provides || []).map(pr => ({ pr, pool: lpOfPair && pr.pair ? lpOfPair.get(pr.pair) || null : null, used: false }));
+  const wls = (e.withdraw_liqs || []).map(wl => ({ wl, pool: lpOfPair && wl.pair ? lpOfPair.get(wl.pair) || null : null, used: false }));
+  const out = []; let signerFirst = true;
+  // amplified stakes first: they claim the provide whose LP share equals their bond amount (exact), then non-amplified take their pool's rest
+  const order = flows.map((f, i) => [f, i]).sort((a, b) => ((a[0].mechanism === 'amplified' ? 0 : 1) - (b[0].mechanism === 'amplified' ? 0 : 1)) || (a[1] - b[1]));
+  const legsFor = new Map();
+  for (const [f, i] of order) {
+    const fp = P(f.pool); let mine = [];
+    if (f.type === 'deposit') {
+      if (f.mechanism === 'amplified' && f.bond_amount) { const hit = provs.find(x => !x.used && String(x.pr.share) === String(f.bond_amount) && (x.pool == null || x.pool === fp)); if (hit) { hit.used = true; mine = [hit.pr]; } }
+      if (!mine.length && f.mechanism !== 'amplified') { const same = provs.filter(x => !x.used && x.pool === fp); for (const x of same) x.used = true; mine = same.map(x => x.pr); }   // amplified stakes went first and took theirs exactly
+      if (!mine.length && flows.length === 1 && provs.length === 1 && provs[0].pool == null) { provs[0].used = true; mine = [provs[0].pr]; }   // unmapped but unambiguous
+    } else {
+      const same = wls.filter(x => !x.used && x.pool === fp); if (same.length) { const x = same[0]; x.used = true; mine = [x.wl]; }
+      else if (flows.length === 1 && wls.length === 1 && wls[0].pool == null) { wls[0].used = true; mine = [wls[0].wl]; }
+    }
+    legsFor.set(i, mine);
+  }
+  for (let i = 0; i < flows.length; i++) {
+    const f = flows[i]; const mine = legsFor.get(i) || []; const isSigner = f.user === e.user;
+    const ev = { ...e, type: f.type, mechanism: f.mechanism, user: f.user, pool: f.pool, amount: f.amount, amount_unit: f.unit || e.amount_unit, flows: [f],
+      provides: f.type === 'deposit' ? (mine.length ? mine : undefined) : undefined, withdraw_liqs: f.type === 'withdraw' ? (mine.length ? mine : undefined) : undefined };
+    if (!(isSigner && signerFirst)) { ev.cost = undefined; ev.fee = undefined; ev.zap_out_assets = undefined; ev.claims = undefined; ev.claimed_coins = undefined; }
+    else signerFirst = false;
+    if (flows.length > 1) ev.split = { i, n: flows.length };
+    out.push(ev);
+  }
+  return out;
+}
+
+module.exports = { splitEvent, TRIP_COLS, VERSION, norm, keyOf, mechOf, newRates, addRate, finishRates, rateAt, rateSamplesFromEvent, rateSamplesFromEpoch, rateSamplesFromParticipants,
   newPools, addEpochState, finishPools, basketAt, newBook, applyEvent, applyClaim, applyBribe, valueCurve, walletOutput, MAX_BASKET_DAYS };
