@@ -25,10 +25,10 @@
 // everything; HISTORY=0 disables. Publishes the changed shards as ONE commit (tla-flows lib/git-batch.js).
 // The deep backfill (SPEC-deep-history) writes older days into the SAME files with src = 'd' — one canonical file per series.
 // =============================================================================
-const VERSION = 'history-series-1.2.0';   // 1.2.0 (2026-09-29, the GMC backing wallet): a day whose capture held an LP position it could NOT price (estimated_position_usd null — e.g. wBTC.creda.a before capture-engine priced it on 09-28) records lp and the TLA total as BLANK, not $0 — the chart shows a gap, never a phantom 99 % drop; a series built by an older version rebuilds itself · 1.1.0 (2026-09-28): + ss / sb — Solid collateral (locked + idle) and SOLID debt in USD (member-data 1.6.0 attachSolid); appended, readers decode by name
+const VERSION = 'history-series-1.2.1';   // 1.2.1 (2026-09-30, owner: the aDAO treasury's LP band vanished 08-21 → 09-06): an unpriced LP row blanks the day only when it is MATERIAL — a day whose priced LP value is ≥ 90 % of the wallet's previous recorded LP value keeps that value and is flagged partial (lpu = the unpriced rows); a $0 xASTRO row had erased $8K of LP for 17 days. The GMC case (the unpriced row WAS the position: priced $0 vs $33K the day before) still blanks · 1.2.0 (2026-09-29, the GMC backing wallet): a day whose capture held an LP position it could NOT price (estimated_position_usd null — e.g. wBTC.creda.a before capture-engine priced it on 09-28) records lp and the TLA total as BLANK, not $0 — the chart shows a gap, never a phantom 99 % drop; a series built by an older version rebuilds itself · 1.1.0 (2026-09-28): + ss / sb — Solid collateral (locked + idle) and SOLID debt in USD (member-data 1.6.0 attachSolid); appended, readers decode by name
 const OUT_DIR = 'member-data/history/series';
 const FIRST_ARCHIVE_DAY = '2026-08-11';   // the org participants / member archives start here (older days live in the legacy repos)
-const COLS = ['d', 'p', 'lk', 'lkL', 'fx', 'lp', 'cu', 'cuS', 'wb', 'vt', 'vtv', 'cs', 'cb', 'vp', 'pvp', 'pr', 'px', 'nl', 'src', 'ss', 'sb'];
+const COLS = ['d', 'p', 'lk', 'lkL', 'fx', 'lp', 'cu', 'cuS', 'wb', 'vt', 'vtv', 'cs', 'cb', 'vp', 'pvp', 'pr', 'px', 'nl', 'src', 'ss', 'sb', 'lpu'];   // 1.2.1: + lpu (unpriced LP rows on a partial day; readers decode by name)
 const SHARD_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';   // bech32 — the character after "terra1"
 const shardOf = (addr) => { const c = String(addr || '').charAt(6); return SHARD_CHARS.includes(c) ? c : '_'; };
 const r2 = (x) => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100;
@@ -39,12 +39,15 @@ const dayList = (from, to) => { const out = []; for (let t = Date.parse(from + '
 // ── one wallet's row for one day (pure) ─────────────────────────────────────────────────────────────────────────────
 // m = a capture-engine portfolio record (participants or member archive); vot = { usd, vp } or null; cuFill = { usd } or null
 // (the CAPA supply history, only for a day whose capture did not carry custody); px = LUNA USD that day
-function rowOf(day, m, src, vot, cuFill, px) {
+function rowOf(day, m, src, vot, cuFill, px, prevLp) {
   const s = (m && m.summary) || {};
   const inc = !!s.total_includes_custody;
   const cuCap = inc ? num(s.custody_usd) : null;
   const cu = inc ? (cuCap || 0) : (cuFill && cuFill.usd > 0 ? cuFill.usd : null);
-  const lpUnpriced = ((m && m.lp_positions) || []).some(x => x && x.estimated_position_usd == null);   // 1.2.0: blank beats phantom
+  const unpricedRows = ((m && m.lp_positions) || []).filter(x => x && x.estimated_position_usd == null).length;
+  // 1.2.0: blank beats phantom — 1.2.1: but only when the unpriced rows could matter: the priced LP must still hold ≥ 90 % of the last recorded LP
+  const pricedLp = num(s.total_lp_position_usd) || 0;
+  const lpUnpriced = unpricedRows > 0 && !(prevLp != null && prevLp > 0 && pricedLp >= 0.9 * prevLp);
   const base = lpUnpriced ? null : num(s.total_portfolio_value_usd);
   const p = base == null ? null : base + (!inc && cu ? cu : 0);   // the day's TLA total, the DAO stake once
   return [day, r2(p), r2(num(s.total_locked_usd)), r2(num(s.total_locked_luna_equivalent)), r2(num(s.fixed_amount_human)), lpUnpriced ? null : r2(num(s.total_lp_position_usd)),
@@ -52,7 +55,8 @@ function rowOf(day, m, src, vot, cuFill, px) {
     vot ? r2(vot.usd) : null, vot ? r2(vot.vp) : null,
     s.credia_supplied_usd !== undefined ? r2(num(s.credia_supplied_usd)) : null, s.credia_borrowed_usd !== undefined ? r2(num(s.credia_borrowed_usd)) : null,
     r2(num(s.voting_power_human)), r2(num(s.potential_vp_human)), r2(num(s.total_pending_rewards_usd)), r6(px), num(s.lock_count), src,
-    s.solid_collateral_usd !== undefined ? r2((num(s.solid_collateral_usd) || 0) + (num(s.solid_idle_usd) || 0)) : null, s.solid_debt_usd !== undefined ? r2(num(s.solid_debt_usd)) : null];
+    s.solid_collateral_usd !== undefined ? r2((num(s.solid_collateral_usd) || 0) + (num(s.solid_idle_usd) || 0)) : null, s.solid_debt_usd !== undefined ? r2(num(s.solid_debt_usd)) : null,
+    unpricedRows && !lpUnpriced ? unpricedRows : null];
 }
 
 // ── fold one archived day into the state (pure given its inputs) ────────────────────────────────────────────────────
@@ -68,8 +72,10 @@ function foldDay(state, day, inp) {
     const addr = m && m.wallet; if (!addr || seen.has(addr) || !m.summary) return; seen.add(addr);
     const inc = !!m.summary.total_includes_custody;
     const fill = inc ? null : capaFill(addr); if (fill && inp.carried) fill.carried = true;
-    const row = rowOf(day, m, src, vot.has(addr) ? vot.get(addr) : (inp.votion ? { usd: 0, vp: 0 } : null), fill, px);
-    const w = state.wallets.get(addr) || state.wallets.set(addr, new Map()).get(addr); w.set(day, row); n++;
+    const w = state.wallets.get(addr) || state.wallets.set(addr, new Map()).get(addr);
+    let prevLp = null; { let best = null; for (const [d, r] of w) if (d < day && r[5] != null && (!best || d > best)) { best = d; prevLp = r[5]; } }   // 1.2.1: the last day this wallet's LP had a value
+    const row = rowOf(day, m, src, vot.has(addr) ? vot.get(addr) : (inp.votion ? { usd: 0, vp: 0 } : null), fill, px, prevLp);
+    w.set(day, row); n++;
   };
   for (const m of (inp.parts && inp.parts.members) || []) put(m, 'p');        // every TLA lock holder
   const M = inp.members || {};

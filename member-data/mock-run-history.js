@@ -54,6 +54,10 @@ const quiet = () => {};
   ok(`the CAPA supply history's hole (08-10 → 08-23): 08-17 … 08-23 carry the stake held on both sides (cuS=2, ${hole.length} days) — no false $10K dip`, hole.length === 7 && hole.every(r => r[C.cuS] === 2 && r[C.cu] > 5000));
   const pr = rows.filter(r => r[C.p] != null); const blanks = rows.length - pr.length;
   let worst = 0; for (let i = 1; i < pr.length; i++) worst = Math.max(worst, Math.abs(pr[i][C.p] / pr[i - 1][C.p] - 1)); ok(`day-to-day moves in the owner's total stay under 25% (worst ${(worst * 100).toFixed(1)}%; ${blanks} day(s) blank — an LP the capture could not price)`, worst < 0.25);
+  // H9 (1.2.1) the aDAO treasury 08-21 → 09-06: 16 LP rows captured, only a $0 xASTRO row unpriced — the LP band stays (flagged partial)
+  { const S = await (async () => { const ix = JSON.parse(published.get(`${HS.OUT_DIR}/index.json`)); const T = 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm'; const sh = JSON.parse(published.get(`${HS.OUT_DIR}/${HS.shardOf(T)}.json`)); return { C: Object.fromEntries(ix.cols.map((c, i) => [c, i])), rows: sh.wallets[T] || [] }; })();
+    const gap = S.rows.filter(r => r[0] >= '2026-08-21' && r[0] <= '2026-09-06');
+    ok(`H9 aDAO treasury 08-21 → 09-06: ${gap.length} days keep their LP value (min $${Math.min(...gap.map(r => r[S.C.lp] ?? 0))}), flagged partial on ${gap.filter(r => r[S.C.lpu] > 0).length} (was: blank)`, gap.length >= 10 && gap.every(r => r[S.C.lp] > 5000) && gap.some(r => r[S.C.lpu] > 0), gap.slice(0, 3)); }
   // H8 (1.2.0) the GMC backing wallet: its wBTC.creda.a stake was captured unpriced before 09-28 — those days are BLANK, not $0
   { const G = 'terra1jd2tam4svukk7pg8fv0dkj7zgwes9yw5c2h3wm0gkjcwdth2mpfsxxw6zd'; const gr = []; const gs = published.get(`${HS.OUT_DIR}/${HS.shardOf(G)}.json`); for (const f of gs ? [gs] : []) { const d = JSON.parse(f); if (d.wallets && d.wallets[G]) gr.push(...d.wallets[G]); }
     const before = gr.filter(r => r[0] < '2026-09-28'), after = gr.filter(r => r[0] >= '2026-09-28');
