@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.3.1';   // 1.3.1 (2026-09-29): DAILY build (once per UTC day after 03:30 UTC; PNL_CADENCE=weekly for the old cadence) and an automatic rebuild when the last build was made by an older builder — no PNL=force after a deploy · 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.4.0';   // 1.4.0 (2026-09-30): one event per stake (pnl-positions 1.5.0 splitEvent) — every stake / unstake in a tx is booked with its own pool's legs (1,044 member stakes / unstakes in 247 wallets were never booked; the aDAO treasury's 15-stake proposal of 2026-05-22 was booked as ONE LUNA-FUEL deposit carrying every token); protocol contracts (compounder, zapper, buckets, gauge, escrow, bribe manager) are never wallets (the compounder had become a 'wallet' with 16 positions) · 1.3.1 (2026-09-29): DAILY build (once per UTC day after 03:30 UTC; PNL_CADENCE=weekly for the old cadence) and an automatic rebuild when the last build was made by an older builder — no PNL=force after a deploy · 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -260,10 +260,17 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
     // pass 1 — implied prices (fold per month)
     // pass 1 also folds the v3 RATE SAMPLES and finds the non-amp ⇄ amp MIGRATIONS (same tx, same wallet, same pool, withdraw
     // under one mechanism + deposit under the other) — a segment boundary, never a realized exit
+    // 1.4.0: protocol contracts are never wallets (config/contracts.js — one list, no copy)
+    const CONTRACTS = (() => { const C = require('../config/contracts.js'); const set = new Set(); const add = (a) => { if (a) set.add(typeof a === 'string' ? a : a.addr); };
+      [C.GAUGE_CONTROLLER, C.VOTING_ESCROW, C.BRIBE_MANAGER, C.COMPOUNDER, C.ZAPPER].forEach(add); for (const a of Object.values(C.STAKING_BUCKETS || {})) add(a); set.delete(undefined); return set; })();
+    const splitMeta = { txs_split: 0, extra_events: 0, contract_events_dropped: 0 };
+    const splitAll = (evs, lpOfPair, count) => { const out = []; for (const x of evs) { const parts = PP.splitEvent(x, lpOfPair, CONTRACTS);
+        if (count) { if (parts.length > 1) { splitMeta.txs_split++; splitMeta.extra_events += parts.length - 1; } if (!parts.length) splitMeta.contract_events_dropped++; }
+        for (const p of parts) out.push(p); } return out; };
     const rates = PP.newRates(); const migrations = new Set(); const v3meta = { rate_samples: { events: 0, state_history: 0, participants_now: 0 }, migrations: 0 };
     { let obs = new Map(); for await (const events of eachMonth()) { obs = buildImpliedPricesFold(obs, [events], tokenMap, prices, meta);
         const byTx = new Map();
-        for (const e of events) { v3meta.rate_samples.events += PP.rateSamplesFromEvent(rates, e);
+        for (const e of splitAll(events, null, false)) { v3meta.rate_samples.events += PP.rateSamplesFromEvent(rates, e);
           if (!e.retracted && e.user && e.pool && (e.type === 'deposit' || e.type === 'withdraw')) { const k = `${e.txhash}|${e.pool}|${e.user}`; (byTx.get(k) || byTx.set(k, new Set()).get(k)).add(`${e.type}:${PP.mechOf(e.mechanism)}`); } }
         for (const [k, set] of byTx) { const w = [...set].filter(x => x.startsWith('withdraw:')).map(x => x.split(':')[1]), d = [...set].filter(x => x.startsWith('deposit:')).map(x => x.split(':')[1]); if (w.length && d.length && w.some(m => d.some(n => n !== m))) { const [tx, pool] = k.split('|'); migrations.add(`${tx}|${pool}`); } }
       } prices.implied = finishImpliedPrices(obs, meta); }
@@ -353,8 +360,9 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
 
     for await (const events0 of eachMonth()) {   // pass 2 — wallet ledger, one month resident at a time
         // 1.2.0: stable order — height, then within a tx a withdraw before a deposit (a migration's exit precedes its entry)
-        const events = events0.map((e, i) => [e, i]).sort((a, b) => (a[0].height - b[0].height) || (a[0].txhash === b[0].txhash ? ((a[0].type === 'withdraw' ? 0 : 1) - (b[0].type === 'withdraw' ? 0 : 1)) : 0) || (a[1] - b[1])).map(x => x[0]);
+        const events = splitAll(events0, pools.lpOfPair || null, true).map((e, i) => [e, i]).sort((a, b) => (a[0].height - b[0].height) || (a[0].txhash === b[0].txhash ? ((a[0].type === 'withdraw' ? 0 : 1) - (b[0].type === 'withdraw' ? 0 : 1)) : 0) || (a[1] - b[1])).map(x => x[0]);
         for (const e of events) {
+            if (e.user && CONTRACTS.has(e.user)) { splitMeta.contract_events_dropped++; continue; }   // 1.4.0: a protocol contract is never a wallet
             if (!e.retracted && e.user) { if (e.type === 'claim') PP.applyClaim(BOOK(e.user), ctx, e); else PP.applyEvent(BOOK(e.user), ctx, e, migrations); }
             meta.events_read++;
             const type = e.type;
@@ -464,6 +472,7 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         }
     }
 
+    v3meta.split = splitMeta;   // 1.4.0: txs split into one event per stake, the events added, contract events dropped
     // pass 3 (1.2.0) — bribe income: tla-voting/events/rewards claim_bribes (coins per token), one month resident at a time
     v3meta.bribe_claims = 0; v3meta.bribe_months = [];
     try {
@@ -659,6 +668,37 @@ async function buildPnl(src, { now = () => new Date() } = {}) {
         negative_unit_flag_wallets: negFlagWallets,
         note: 'per-wallet epoch series at ledger/{address}.json — flow counts, segregated LP-unit deltas, Tier-M measured USD legs. Value curve absent by design until the archive state sampler.',
     });
+
+    // 1.4.0 INTEGRITY — the invariants a correct ledger must meet, checked on EVERY build for EVERY wallet and published
+    // (owner 2026-09-30: "there should be no way to have bad data"). A figure that fails one is flagged for the page and the
+    // help bot to show as "under review", never as fact. Checks: a position's cost holds only its own pool's tokens · every LP
+    // position the hourly chain read finds has a costed ledger position · open units == units held on chain · no implausible
+    // cost is counted · no protocol contract is a wallet · lots whose cost could not be measured are named.
+    { const base = (x) => String(x || '').toLowerCase().split('.')[0].replace('amp', '').replace(/usd[ct]/, 'usd');
+      const C = { foreign_tokens_in_cost: [], live_position_without_cost: [], units_differ_from_chain: [], implausible_cost: [], contract_as_wallet: [], cost_not_measured: [] };
+      const perW = {}; const flag = (a, code, ex) => { C[code].push(ex); (perW[a] = perW[a] || new Set()).add(code); };
+      let live = null; try { live = await src.readJson('member-data/participants/current.json'); } catch { live = null; }
+      const liveRows = new Map(); for (const grp of ['treasuries', 'council_treasuries', 'members']) for (const m of (live && live[grp]) || []) liveRows.set(m.wallet, m.lp_positions || []);
+      let nPos = 0;
+      for (const [f, doc] of out.files) { if (!f.startsWith(LEDGER_DIR + '/terra1')) continue; const a = doc.address; const V = doc.v3; if (!V || !V.positions) continue;
+        if (CONTRACTS.has(a)) flag(a, 'contract_as_wallet', a);
+        const TC = V.trip_cols || [];
+        for (const [k, p] of Object.entries(V.positions)) { nPos++; const name = p.name || '';
+          if (name && !/^(cw20|native):/.test(name)) { const pb = new Set(name.split('-').map(base)); const groups = []; if (p.open_tok && p.open_tok.tok_in) groups.push(Object.keys(p.open_tok.tok_in)); for (const t of p.trips || []) { const ti = t[TC.indexOf('tok_in')]; if (ti) groups.push(ti.map(x => x[0])); }
+            for (const g of groups) if (g.length > 2 || g.some(t => !pb.has(base(t)))) { flag(a, 'foreign_tokens_in_cost', [a, name, p.mechanism, g]); break; } }
+          if (p.disputed && p.disputed.reason === 'implausible_cost') flag(a, 'implausible_cost', [a, name, p.mechanism, p.disputed.cost_usd]);
+          if (p.lots_open && !p.disputed && (p.open_value_usd || 0) >= 1 && !(p.open_cost_usd > 0)) flag(a, 'cost_not_measured', [a, name, p.mechanism, p.open_value_usd]); }
+        const rows = liveRows.get(a); if (rows) for (const r of rows) { const key = `${r.pool_gauge_id}|${r.position_type}`; const p = V.positions[key]; const usd = r.estimated_position_usd || 0;
+          if (!p || !p.lots_open) { if (usd >= 1) flag(a, 'live_position_without_cost', [a, r.pool_name, r.position_type, Math.round(usd * 100) / 100]); continue; }
+          const onChain = Number(r.amplp_shares_raw || 0), ours = Number(p.units_open || 0); if (onChain > 0 && Math.abs(ours - onChain) / onChain > 0.01 && usd >= 1) flag(a, 'units_differ_from_chain', [a, r.pool_name, r.position_type, ours, onChain]); } }
+      for (const a of liveRows.keys()) if (!out.files.has(`${LEDGER_DIR}/${a}.json`) && (liveRows.get(a) || []).some(r => (r.estimated_position_usd || 0) >= 1)) for (const r of liveRows.get(a)) if ((r.estimated_position_usd || 0) >= 1) flag(a, 'live_position_without_cost', [a, r.pool_name, r.position_type, Math.round(r.estimated_position_usd * 100) / 100]);
+      const severity = { foreign_tokens_in_cost: 'fault', implausible_cost: 'fault', contract_as_wallet: 'fault', units_differ_from_chain: 'fault', live_position_without_cost: 'check', cost_not_measured: 'check' };
+      const checks = Object.fromEntries(Object.entries(C).map(([k, v]) => [k, { severity: severity[k], count: v.length, status: v.length ? severity[k] : 'ok', examples: v.slice(0, 12) }]));
+      out.files.set(`${OUT_DIR}/integrity.json`, { schemaVersion: 1, builtAt, builder: PNL_VERSION, positions_checked: nPos, wallets_checked: [...out.files.keys()].filter(f => f.startsWith(LEDGER_DIR + '/terra1')).length, live_wallets_compared: liveRows.size,
+        note: 'Invariants every P&L build must meet. fault = a figure is wrong and is shown as under review; check = a figure is incomplete (cost unknown) and says so. per_wallet lists the codes a wallet fails.',
+        checks, per_wallet: Object.fromEntries(Object.entries(perW).map(([a, s2]) => [a, [...s2].sort()]).sort()) });
+      const faults = Object.values(checks).filter(c => c.severity === 'fault').reduce((x, c) => x + c.count, 0);
+      console.log(`  integrity: ${faults ? faults + ' FAULTS' : 'no faults'} · ${Object.entries(checks).map(([k, c]) => k + ' ' + c.count).join(' · ')}`); }
 
     console.log(`OK: ${totals.wallets} wallets, ${meta.events_read} events`);
     console.log(`  ledger: ${ledgerFiles} wallet files, epochs ${epochSpan.min}→${epochSpan.max}, neg-unit-flag wallets: ${negFlagWallets}, pre-calendar events: ${preCalTotal}`);

@@ -38,12 +38,18 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
   console.log('— V1 Phase A/B unchanged —');
   if (process.env.BASE_PNL && fs.existsSync(process.env.BASE_PNL)) {
     const B = require(path.resolve(process.env.BASE_PNL)); const b = await quiet(() => B.buildPnl(localSrc, { now: () => NOW })); const RB = b.files.get('tla-flows/pnl/rollup.json');
-    check('same wallets, same event counts per type', RB.wallets.length === R.wallets.length && JSON.stringify(RB.sources.events_by_type) === JSON.stringify(R.sources.events_by_type));
-    let same = 0, grew = 0, bad = []; for (const wb of RB.wallets) { const w = W.get(wb.address); if (!w) { bad.push(wb.address); continue; }
-      if (JSON.stringify(wb.counts) !== JSON.stringify(w.counts) || JSON.stringify(wb.claims) !== JSON.stringify(w.claims) || JSON.stringify(wb.claimed_yield) !== JSON.stringify(w.claimed_yield)) { bad.push(wb.address); continue; }
+    // 1.4.0: one event per stake — the counts change by EXACTLY the split (events added) minus protocol-contract events (dropped), nothing else
+    const sp = (R.sources.v3 || R.v3 || {}).split || (built.files.get('tla-flows/pnl/heartbeat.json') || {}).split || null;
+    const sum = (o) => Object.values(o || {}).reduce((x, y) => x + y, 0);
+    const dEv = sum(R.sources.events_by_type) - sum(RB.sources.events_by_type);
+    check(`event count changed by exactly the split: ${dEv >= 0 ? '+' : ''}${dEv} = +${sp && sp.extra_events} stakes added by the split − ${sp && sp.contract_events_dropped} protocol-contract events kept out (${sp && sp.txs_split} txs split; ${sp && sp.contract_events_dropped} protocol-contract events kept out of the ledger)`, !!sp && dEv === sp.extra_events - sp.contract_events_dropped, { dEv, sp });
+    const gone = RB.wallets.filter(w => !W.has(w.address)).map(w => w.address);
+    check(`the only wallets that left are protocol contracts (${gone.map(a => a.slice(-6)).join(', ') || 'none'})`, gone.every(a => /terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx|terra1qdjsxsv96aagrdxz83gwtjk8qvf2mrg4y8y3dqjxg556lm79pg5qdgmaxl/.test(a)), gone);
+    let same = 0, grew = 0, bad = []; for (const wb of RB.wallets) { const w = W.get(wb.address); if (!w) { if (!gone.includes(wb.address)) bad.push(wb.address); continue; }   /* 1.4.0: a protocol contract left on purpose */
+      if (JSON.stringify(wb.counts.claim) !== JSON.stringify(w.counts.claim) || w.counts.deposit < wb.counts.deposit || w.counts.withdraw < wb.counts.withdraw || JSON.stringify(wb.claims) !== JSON.stringify(w.claims) || JSON.stringify(wb.claimed_yield) !== JSON.stringify(w.claimed_yield)) { bad.push(wb.address); continue; }
       if (w.zap_input_usd_at_event + 1e-6 < wb.zap_input_usd_at_event || w.fees_usd_at_event + 1e-6 < wb.fees_usd_at_event) { bad.push('shrank ' + wb.address); continue; }
       if (w.zap_input_usd_at_event > wb.zap_input_usd_at_event + 1e-6 || w.fees_usd_at_event > wb.fees_usd_at_event + 1e-6) grew++; else same++; }
-    check(`counts, claims, claimed yield identical on every wallet; zap/fee USD never shrank (${same} same, ${grew} grew from newly priced legs)`, bad.length === 0, bad.slice(0, 5));
+    check(`claims + claimed yield identical on every wallet, deposits / withdraws never fewer (the split only adds); zap/fee USD never shrank (${same} same, ${grew} grew from newly priced legs)`, bad.length === 0, bad.slice(0, 5));
     check(`unpriced fee legs fell ${RB.pricing_meta.unpriced_fee_legs} → ${R.pricing_meta.unpriced_fee_legs} (catalog effective layer)`, R.pricing_meta.unpriced_fee_legs <= RB.pricing_meta.unpriced_fee_legs);
   } else console.log('  (BASE_PNL not given — Phase A/B differential skipped)');
 
@@ -157,6 +163,30 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
   console.log('— V9 determinism —');
   { const b2 = await quiet(() => P.buildPnl(localSrc, { now: () => NOW })); let diff = 0; for (const [p, o] of built.files) if (JSON.stringify(strip(o)) !== JSON.stringify(strip(b2.files.get(p)))) diff++;
     check(`two builds identical minus builtAt (${built.files.size} files)`, diff === 0 && b2.files.size === built.files.size, diff); }
+  console.log('— V16 (pnl 1.4.0 / pnl-positions 1.5.0) one event per stake · every cost holds only its own pool\'s tokens —');
+  { const TREAS = 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm'; const base = (x) => String(x || '').toLowerCase().split('.')[0].replace('amp', '').replace(/usd[ct]/, 'usd');
+    let foreign = [], positions = 0, absurd = [], contracts = [];
+    for (const [f, doc] of built.files) { if (!/\/ledger\/terra1/.test(f)) continue; const a = f.split('/').pop().slice(0, -5);
+      if (/terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx|terra1qdjsxsv96aagrdxz83gwtjk8qvf2mrg4y8y3dqjxg556lm79pg5qdgmaxl/.test(a)) contracts.push(a);
+      const C = doc.v3.trip_cols; for (const p of Object.values(doc.v3.positions || {})) { positions++; const name = p.name || ''; if (!name || /^(cw20|native):/.test(name)) continue;
+        const pb = new Set(name.split('-').map(base)); const groups = []; if (p.open_tok && p.open_tok.tok_in) groups.push(Object.keys(p.open_tok.tok_in)); for (const t of p.trips || []) { const ti = t[C.indexOf('tok_in')]; if (ti) groups.push(ti.map(x => x[0])); }
+        for (const g of groups) { const fb = g.filter(t => !pb.has(base(t))); if (fb.length || g.length > 2) { foreign.push([a.slice(-6), name, p.mechanism.slice(0, 3), g]); break; } }
+        if (!p.disputed && (p.open_cost_usd || 0) > 1e6) absurd.push([a.slice(-6), name, p.open_cost_usd]); } }
+    check(`no position's cost holds a token from outside its pool (${foreign.length} of ${positions})`, foreign.length === 0, foreign.slice(0, 6));
+    check(`no protocol contract is a wallet (${contracts.length})`, contracts.length === 0, contracts);
+    check(`no counted open cost above $1M (an implausible cost is disputed, not totalled: ${absurd.length})`, absurd.length === 0, absurd.slice(0, 4));
+    const L = ledger(TREAS); const pos = L ? Object.values(L.v3.positions) : []; const fuel = pos.find(p => p.name === 'LUNA-FUEL' && p.mechanism === 'amplified');
+    check(`aDAO treasury LUNA-FUEL amp: cost holds only LUNA + FUEL (${fuel && JSON.stringify(fuel.open_tok && fuel.open_tok.tok_in)}; was 11 tokens / 56,641 LUNA)`, !!fuel && fuel.open_tok && Object.keys(fuel.open_tok.tok_in).every(k => /^(LUNA|FUEL)$/.test(k)) && fuel.open_cost_luna < 20000, fuel && { cost: fuel.open_cost_luna, tok: fuel.open_tok });
+    const part = J('member-data/participants/current.json'); const liveT = []; for (const grp of ['treasuries', 'members']) for (const m of part[grp] || []) if (m.wallet === TREAS) for (const r of m.lp_positions || []) liveT.push(`${r.pool_gauge_id}|${r.position_type}`);
+    const noCost = liveT.filter(k => { const p = L && L.v3.positions[k]; return !p || !p.lots_open; });
+    check(`aDAO treasury: every live LP position has a costed ledger position (${liveT.length - noCost.length}/${liveT.length}; was 6/16)`, liveT.length > 0 && noCost.length <= 1, noCost);
+    const bigTx = (L && L.v3 && L.epochs && L.epochs['186'] && L.epochs['186'].c) || {};
+    { let bad = 0, n = 0, unc = 0, uncUsd = 0; for (const [f, doc] of built.files) { if (!/\/ledger\/terra1/.test(f) || !doc.v3 || !doc.v3.totals) continue; n++; let exp = 0, u = 0;
+        for (const p of Object.values(doc.v3.positions || {})) { if (!p.lots_open || p.disputed || p.not_held) continue; if (p.open_cost_usd > 0 || p.open_cost_usd === 0 && false) exp += (p.open_value_usd || 0) - p.open_cost_usd; else if (p.open_cost_usd == null && p.open_value_usd) { u++; uncUsd += p.open_value_usd; } }
+        unc += u; if (Math.abs(exp - doc.v3.totals.open.unrealized_usd) > 0.05 + 1e-6 * Math.abs(exp)) bad++; }
+      check(`unrealized is value − cost over COSTED positions only, on every wallet (${n - bad}/${n}); ${unc} positions with no measured cost ($${Math.round(uncUsd).toLocaleString('en-US')}) are held, never profit`, bad === 0, bad); }
+    check(`the 2026-05-22 proposal books every treasury stake it made (epoch 186 deposits: ${bigTx.dep}; was 1)`, (bigTx.dep || 0) >= 8, bigTx); }
+
 
   console.log('— V10 heap (child process, --max-old-space-size=200) —');
   { const child = `const fs=require('fs'),path=require('path');const P=require(${JSON.stringify(path.resolve(__dirname, 'pnl.js'))});const S=${JSON.stringify(SRC)};const src={readJson:async p=>JSON.parse(fs.readFileSync(path.join(S,p),'utf8')),priceMonths:async()=>{const ms=[];for(const y of fs.readdirSync(path.join(S,'price-history')).filter(d=>/^\\d{4}$/.test(d)).sort())for(const f of fs.readdirSync(path.join(S,'price-history',y)).filter(f=>/^\\d\\d\\.json$/.test(f)).sort())ms.push(y+'/'+f.slice(0,2));return ms;}};(async()=>{console.log=()=>{};const b=await P.buildPnl(src,{now:()=>new Date('2026-09-28T03:31:00Z')});let n=0;for(const [,o] of b.files)n+=P.serialize(o).length;process.stdout.write('OK '+n);})().catch(e=>{process.stdout.write('ERR '+e.message);process.exit(1)});`;
