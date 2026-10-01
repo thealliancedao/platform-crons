@@ -1,6 +1,12 @@
 # member-data — changelog
 
 
+## history-series 1.2.1 — 2026-09-30 — an unpriced row blanks the LP only when it matters
+
+- The aDAO treasury's LP band vanished 08-21 → 09-06: 16 LP rows captured, one $0 xASTRO row unpriced — 1.2.0 blanked the whole day.
+  Now a day keeps its LP when the priced rows hold ≥ 90 % of the last recorded LP, flagged partial (new column `lpu` = unpriced rows).
+  The GMC case (the unpriced row WAS the position) still blanks. Mock 22/22 (+H9 the treasury's 17 days).
+
 ## history-series 1.2.0 — 2026-09-29 — blank, not $0, for an LP the capture could not price
 
 - The GMC backing wallet's chart showed $0 of LP until 09-28 and then a jump to $33K ("1d −99.6 %" on the page): its wBTC.creda.a
