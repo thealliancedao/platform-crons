@@ -1,5 +1,27 @@
 # tla-flows — changelog
 
+## 3.5.7 — 2026-09-30 — one event per stake; a figure that fails its invariants is flagged, never shown as fact (pnl 1.4.0)
+
+- Owner (aDAO treasury portfolio): "I don't feel like we put that much money in … why so many positions in one place and not another"
+  and "there should be no way to have bad data". The builder filed a tx under its FIRST stake only: the treasury's 15-stake DAO proposal
+  of 2026-05-22 became one LUNA-FUEL deposit carrying every token (cost 56,641 LUNA for a 11,056-LUNA position) and 10 of its 16 pools had
+  no cost. DAO-wide 1,044 stakes / unstakes in 247 wallets were never booked.
+- **pnl-positions 1.5.0** `splitEvent()` — one event per (user, pool, mechanism) from the walker's `flows[]`; each gets only its own pool's
+  provide / withdraw legs (pair → LP from state-history; an amplified stake also claims the provide whose share equals its bond amount);
+  tx-wide legs (swap cost, fee, zap-out) stay on the signer's first piece. Protocol contracts (compounder, zapper, buckets, gauge, escrow,
+  bribe manager — config/contracts.js) are never wallets (the compounder had become one with 16 positions).
+- **Cost sanity** — open cost > 100 × both today's value and the held value of its own entry tokens, and > $10K → disputed, out of every
+  total (the live build had an xASTRO cost of $33.8 billion; DAO net read −$33.8B). **Unrealized** counts costed positions only; a
+  position with no measured cost is held (value) but never profit (`open.value_without_cost_usd`; was $151K of "gain" DAO-wide).
+- **`tla-flows/pnl/integrity.json`** on every build: foreign tokens in a cost · live position without a cost · units ≠ chain · implausible
+  cost · contract as wallet (faults) · cost not measured (check), with per_wallet codes for the page and the help bot. First live build
+  (2026-10-01 03:34): every fault check 0 except the 3 xASTRO costs (disputed); 81 positions without a measured cost (incl. the owner's
+  donated ampCAPA to the treasury — cost to the DAO is 0).
+- Gate mock-run-pnl-v3 42/43 (+V16: no foreign token in any of 6,636 positions · no contract wallet · no counted cost > $1M · treasury
+  LUNA-FUEL = LUNA + FUEL only · 16/16 treasury live positions costed · the 05-22 proposal books 9 treasury stakes; V1 rewritten: the
+  event count changes by exactly the split − contract events). The one red is the pre-existing take-rate threshold check.
+- Treasury after: net −$13,467 / +89,104 LUNA (was −$18,695 / +26,878), 18 positions (was 7).
+
 ## 3.5.6 — 2026-09-29 — the P&L builds DAILY (pnl 1.3.1)
 
 - Owner: "should P&L run more often than weekly?" The build is a pure derive over committed files (no chain reads), writes only
