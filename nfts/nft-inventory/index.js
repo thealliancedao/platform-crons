@@ -1,5 +1,15 @@
 // =============================================================================
-// NFT Inventory Cron — Rev D.3
+// NFT Inventory Cron — Rev D.4
+// Rev D.4 (2026-10-04, owner: "fix the staker attribution, so a new stake shows who made it instead of crediting the voting
+//   contract") — NEW STAKERS ARE ATTRIBUTED. Two holes, both seen on 2026-10-04 when a first-time staker staked 15 aDAO at 03:44Z:
+//   (1) hot runs (every 15 min) re-fetch a just-staked token (it was user-held, so it is in the hot set) but skipped staker
+//   resolution — the token sat on real_owner = the voting contract until the nightly warm; (2) warm/full runs resolve stakers only
+//   from the daodao.zone indexer's list — a first-time staker the indexer has not listed yet had every token flipped to
+//   custody-unattributed and DROPPED FROM THE STAKED COUNT. Now: candidates for any staked token no listed staker covers = the
+//   wallet that held it in the PREVIOUS snapshot (a chain fact: it left that wallet into the voting module); each candidate is
+//   verified on chain with staked_nfts{address} (the chain is the authority — a wrong guess resolves nothing). Hot runs resolve
+//   only those new stakes (nothing else changes on a hot run); warm/full runs add the candidates to the indexer list. The log
+//   says how many new stakers / tokens were found this way (summary.staker_resolution).
 // Rev D.3 (2026-09-26, owner: Burning Lions into the fold) — A COLLECTION WITHOUT A STAKING MODULE OR A RARITY MAP. Burning Lions
 //   (7 one-of-ones, no DAODAO module, no rarity) was refused at load ("manifest names no DAO core / DAODAO staking module").
 //   Now: no staking module → Phase 5 (DAODAO stakers) and the pending-claims duty are skipped, said once, and the claims block is
@@ -1287,6 +1297,37 @@ function applyStakerResolution(records, daodaoMap, enterpriseMap, warnings) {
     return { resolved, daodaoStranded, enterpriseStranded };
 }
 
+// D.4 — wallets that may have staked a token no listed staker covers: whoever held it in the PREVIOUS snapshot (base). Only
+// tokens in DAODAO custody that are not pending claims. `exclude` = addresses already being queried (the indexer list on
+// warm/full; empty on hot, where nothing else is resolved). Pure — returns [address].
+function newStakerCandidates(records, base, exclude) {
+    const skip = new Set([...(exclude || [])]);
+    const notWallet = new Set([DAODAO_STAKING_CONTRACT, ENTERPRISE_NFT_STAKING, BBL_MARKETPLACE, ATRIUM_MARKETPLACE, BOOST_MARKETPLACE, ...(STABLE_DAO_OWNERS || [])].filter(Boolean));
+    const prev = new Map((base || []).map(r => [String(r.id), r]));
+    const out = new Set();
+    for (const r of records) {
+        if (r.owner !== DAODAO_STAKING_CONTRACT || r.daodao_pending_claim) continue;
+        if (r.real_owner && r.real_owner !== DAODAO_STAKING_CONTRACT && !r.daodao_custody_unattributed) continue;   // already attributed
+        const b = prev.get(String(r.id)); if (!b) continue;
+        // in custody last time too → the staker we resolved then (if any); otherwise the wallet it left
+        const cand = b.owner === DAODAO_STAKING_CONTRACT ? (b.real_owner !== DAODAO_STAKING_CONTRACT ? b.real_owner : null) : [b.real_owner, b.owner].find(a => a && !notWallet.has(a));
+        if (cand && /^terra1[0-9a-z]{38,58}$/.test(cand) && !notWallet.has(cand) && !skip.has(cand)) out.add(cand);
+    }
+    return [...out];
+}
+// D.4 — a hot run applies ONLY the new stakes it verified on chain (owner = voting module, the chain lists the token under the
+// candidate). Unresolved tokens are left exactly as they are (a hot run has no full staker map to judge them by).
+function applyNewStakes(records, map) {
+    let n = 0; const stakers = new Set();
+    for (const r of records) {
+        const staker = map[String(r.id)];
+        if (!staker || r.owner !== DAODAO_STAKING_CONTRACT) continue;
+        if (r.real_owner === staker && r.daodao_staked) continue;
+        r.real_owner = staker; r.daodao_staked = true; r.daodao_custody_unattributed = false; r.daodao_pending_claim = false; n++; stakers.add(staker);
+    }
+    return { tokens: n, stakers: stakers.size };
+}
+
 // Change 2 — per-record pending-claim flag. in_window + claimable map token_id → unstaker.
 // Marks daodao_pending_claim=true, daodao_staked=false, real_owner=unstaker, so the token
 // attributes to the person (not the contract) and drops out of the "currently staked" filter.
@@ -1641,7 +1682,7 @@ function aggregate(records, daodaoStakers, enterpriseStakers, marketplaces, back
     // DAO membership = DAODAO governance stakers ONLY. The Enterprise NFT-staking
     // contract is abandoned: holding/staking there does NOT make you a DAO member.
     // (`unique_holders` below remains the broader "anyone holding an NFT" figure.)
-    const daoMembersCount = daodaoStakers.length;
+    const daoMembersCount = new Set([...daodaoStakers.map(s => s.address), ...records.filter(r => r.daodao_staked && r.real_owner && r.real_owner !== DAODAO_STAKING_CONTRACT).map(r => r.real_owner)]).size;   // D.4: + stakers the indexer has not listed yet (resolved from the chain)
     // Retained for reference: unique non-custody real owners (≈ all individual holders).
     const excludedFromMembers = new Set([
         DAO_MAIN_WALLET,
@@ -2423,8 +2464,9 @@ async function captureSnapshot() {
     // and merge it onto the last full inventory (base). If the base or hot-set is
     // unreadable, we fall back to a full scan so output is never incomplete.
     let records, captureRate, effectiveMode = runMode;
+    let base = null;   // D.4: kept for new-staker candidates (the previous snapshot)
     if (runMode === 'hot' || runMode === 'warm') {
-        const base = await loadBaseRecords();
+        base = await loadBaseRecords();
         if (!base) {
             console.warn(`  ⚠ ${runMode} mode but base nfts.json unreadable — falling back to FULL scan`);
             effectiveMode = 'full';
@@ -2459,6 +2501,7 @@ async function captureSnapshot() {
         console.log();
         // ── Phase 2: per-NFT info ────────────────────────────────────────────
         records = await fetchAllNftInfo(tokenIds);
+        if (!base) base = await loadBaseRecords();   // D.4: the previous snapshot names whoever moved a token into the voting module (non-fatal)
         captureRate = tokenIds.length > 0 ? records.length / tokenIds.length : 0;
         console.log();
     }
@@ -2512,18 +2555,32 @@ async function captureSnapshot() {
     // so their already-resolved real_owner is carried forward from the last full/warm run.
     const stakerErrors = [];      // hard: query failed / Enterprise truncation → status partial
     const stakerWarnings = [];    // soft: unresolved stragglers (abandoned Enterprise, tracker lag) → status ok
+    const stakerResolution = { new_staker_candidates: 0, new_stakers: 0, new_stake_tokens: 0 };   // D.4 → summary.staker_resolution
     if (effectiveMode === 'full' || effectiveMode === 'warm') {
         console.log('🧩 Resolving staked NFTs → real staker...');
+        const extra = DAODAO_STAKING_CONTRACT ? newStakerCandidates(records, base, daodaoStakers.map(s => s.address)) : [];   // D.4: stakers the indexer has not listed yet
+        stakerResolution.new_staker_candidates = extra.length;
+        if (extra.length) console.log(`  + ${extra.length} wallet(s) moved a token into the voting module and are not in the indexer's list yet — verified on chain below`);
         const [ddRes, entRes] = await Promise.all([
-            resolveDaodaoStakerTokens(daodaoStakers),
+            resolveDaodaoStakerTokens([...daodaoStakers, ...extra.map(a => ({ address: a, count: 0 }))]),
             resolveEnterpriseStakerTokens(enterpriseStakers),
         ]);
+        { const fromExtra = new Set(extra); const toks = Object.entries(ddRes.map).filter(([, a]) => fromExtra.has(a)); stakerResolution.new_stakers = new Set(toks.map(([, a]) => a)).size; stakerResolution.new_stake_tokens = toks.length;
+          if (extra.length) console.log(`  ✓ new stakers: ${stakerResolution.new_stakers} wallet(s), ${toks.length} token(s) attributed from the chain`); }
         applyStakerResolution(records, ddRes.map, entRes.map, stakerWarnings);  // unresolved → warnings (not status-flipping)
         stakerErrors.push(...ddRes.errors, ...entRes.errors);                   // query_failed / truncated → errors
         stakerWarnings.push(...ddRes.warnings, ...entRes.warnings);
         console.log();
     } else {
-        console.log('  ⏭ hot mode: staked real_owner carried from base (no staker re-resolution)');
+        // D.4: a hot run resolves only NEW stakes — tokens just moved into the voting module that no one is credited with yet
+        const cands = DAODAO_STAKING_CONTRACT ? newStakerCandidates(records, base, []) : [];
+        stakerResolution.new_staker_candidates = cands.length;
+        if (cands.length) {
+            const res = await resolveDaodaoStakerTokens(cands.map(a => ({ address: a, count: 0 })));
+            const got = applyNewStakes(records, res.map); stakerResolution.new_stakers = got.stakers; stakerResolution.new_stake_tokens = got.tokens;
+            stakerErrors.push(...res.errors);
+            console.log(`  🧩 hot mode: ${got.tokens} newly staked token(s) attributed to ${got.stakers} staker(s) (verified on chain); other staked real_owner carried from base`);
+        } else console.log('  ⏭ hot mode: staked real_owner carried from base (no new stakes to attribute)');
         console.log();
     }
 
@@ -2639,6 +2696,7 @@ async function captureSnapshot() {
         staker_resolution: {
             mode: effectiveMode,
             resolved_this_run: effectiveMode === 'full' || effectiveMode === 'warm',
+            ...stakerResolution,   // D.4: new stakers the indexer had not listed, found from the previous snapshot + verified on chain
             error_count: stakerErrors.length,
             warning_count: stakerWarnings.length,
             errors: stakerErrors.slice(0, 100),       // capped; full set is in logs
@@ -2955,6 +3013,7 @@ module.exports = {
     classifyOwner,
     applyStakerResolution,
     applyPendingClaimFlags,
+    newStakerCandidates, applyNewStakes,   // D.4
     // Pending-claim tracking (Rev B.3)
     parseUnstakeTxs,
     parseClaimTxs,
