@@ -1,5 +1,9 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.18.0 (2026-10-05, owner: "I asked it a question and then tried to add to the previous question … it wouldn't let me"): FOLLOW-UPS — /ask takes
+//   `history` ([{role:'user'|'assistant', content}], the last 6 turns, each ≤ 1,500 chars) and sends it ahead of the question, so "what about
+//   last epoch?" knows what "it" is. A wallet named earlier in the conversation is still the wallet a follow-up asks about. The site's
+//   chat sends it (site-footer); a client that sends none gets exactly the old behaviour.
 // v1.17.1 (2026-09-30): rule 17 — the Solid card is LIVE (debt with no collateral explained); deep history CAPTURED but private and not
 //   on the page yet (never estimated from it); no identity guessing. Corpus unchanged (its sources carry the new material).
 // v1.17.0 (2026-09-28, owner: "the bot should answer questions about their portfolio or others', who to follow or copy for a
@@ -950,9 +954,21 @@ async function flushQlog() {
 }
 
 // ---- the ask flow -------------------------------------------------------------
-async function ask(question, explicitWallet, page, mode) {
+// v1.18.0: the conversation so far — alternating turns, oldest first, clipped; anything malformed is dropped (never trusted as instructions beyond chat text)
+function cleanHistory(h) {
+  if (!Array.isArray(h)) return [];
+  const turns = h.filter(t => t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string' && t.content.trim()).slice(-6)
+    .map(t => ({ role: t.role, content: t.content.slice(0, 1500) }));
+  while (turns.length && turns[0].role !== 'user') turns.shift();   // the API wants user first
+  const out = []; for (const t of turns) { if (out.length && out[out.length - 1].role === t.role) out[out.length - 1].content += '\n\n' + t.content; else out.push(t); }
+  if (out.length && out[out.length - 1].role === 'user') out.pop();   // the new question is the next user turn
+  return out;
+}
+async function ask(question, explicitWallet, page, mode, history) {
   const corpus = await grounding();
-  const walletBlock = await walletExtract(question, explicitWallet);
+  const past = cleanHistory(history);
+  const priorWallet = !/terra1[a-z0-9]{38,58}/.test(question) ? ((past.filter(t => t.role === 'user').map(t => t.content.match(/terra1[a-z0-9]{38,58}/)).filter(Boolean).pop() || [])[0] || null) : null;
+  const walletBlock = await walletExtract(question, explicitWallet || priorWallet);
   const pageBlock = page ? `<visitor_context>The visitor is currently viewing: ${String(page).replace(/[^\w\-\/#.?=]/g,'').slice(0,100)} — tailor the answer to what that page shows.</visitor_context>\n` : '';
   let addendum = MODE_ADDENDA[mode] || null;
   // v1.9.0: pasted proposal messages → deterministic audit first, then the model explains it
@@ -972,7 +988,7 @@ async function ask(question, explicitWallet, page, mode) {
       { type: 'text', text: 'CORPUS:\n' + corpus, cache_control: { type: 'ephemeral' } },
       ...(addendum ? [{ type: 'text', text: addendum }] : []),
     ],
-    messages: [{ role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + question.slice(0, auditBlock ? 9000 : 2000) + auditBlock }],
+    messages: [...past, { role: 'user', content: pageBlock + (walletBlock ? walletBlock + '\n\n' : '') + (past.length ? '(follow-up to the conversation above)\n' : '') + question.slice(0, auditBlock ? 9000 : 2000) + auditBlock }],
   };
   body.tools = CHAIN_TOOLS;
   const track = (d) => { const u = d.usage || {};
@@ -1058,7 +1074,7 @@ const server = http.createServer(async (req, res) => {
     if (!rl.ok) return send(429, { error: 'Rate limit reached: ' + RATE + ' questions per hour per visitor — it keeps the shared budget available for everyone. The FAQ and docs carry most answers; the report form always works.', rate_used: rl.used, rate_limit: RATE });
     if (!budgetOk()) return send(503, { error: 'The assistant hit its monthly budget cap — deliberately, so it can never surprise anyone with a bill. The report form and docs remain fully available.' });
     let raw = '';
-    req.on('data', c => { raw += c; if (raw.length > 20000) req.destroy(); });   // v1.10.0: proposal pastes are long
+    req.on('data', c => { raw += c; if (raw.length > 32000) req.destroy(); });   // v1.10.0: proposal pastes are long; v1.18.0: + up to 6 history turns
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(raw || '{}');
@@ -1071,11 +1087,11 @@ const server = http.createServer(async (req, res) => {
         if (!q) return send(400, { error: 'No question provided.' });
         const mode = (parsed.mode === 'report' || parsed.mode === 'request') ? parsed.mode : null;
         const t0 = Date.now();
-        const out = await ask(q, parsed.wallet, parsed.page, mode);
+        const out = await ask(q, parsed.wallet, parsed.page, mode, parsed.history);
         out.rate_used = rl.used; out.rate_limit = RATE;
         send(200, out);
         logQuestion({ at: new Date().toISOString(), page: String(parsed.page || '').slice(0, 80) || null, mode: mode || (/"contract_addr"|"wasm"\s*:/.test(q) ? 'audit' : 'chat'),
-          question: redact(q), wallet_pinned: !!parsed.wallet, answer_chars: (out.answer || '').length, chain_queries: out.chain_queries || 0, ms: Date.now() - t0 });
+          question: redact(q), follow_up: Array.isArray(parsed.history) && parsed.history.length > 0, wallet_pinned: !!parsed.wallet, answer_chars: (out.answer || '').length, chain_queries: out.chain_queries || 0, ms: Date.now() - t0 });
       } catch (e) { send(500, { error: 'Assistant error: ' + e.message }); }
     });
     return;
