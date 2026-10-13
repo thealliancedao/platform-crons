@@ -162,7 +162,39 @@ const TLA_TOKENS = {
     bLUNA:   'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml',
 };
 
+// ── Holdings: what a wallet holds OUTSIDE TLA, read once a day for every participant (member-data holdings.js, 2026-10-13) ──
+// Owner (2026-10-13): "for data on wallets and history … build out the alliance DAO repo as the data layer and history layer so rallies and
+// the aDAO dashboard read a single source of truth". Rallies' Home chart counts every place a token sits; these are the places the TLA
+// capture (capture-engine) does not read. Query shapes: tla-core docs/queries.md §21 (proven by the Rallies stakes / capagov probes).
+//   cw20: the tokens Rallies' registry lists (symbol → contract, decimals). Natives come from the bank in full (named by the token catalog).
+//   gov:  token stakes for governance — still the wallet's tokens. capa_gov: `staker {address}` → balance (CAPA) ·
+//         cw20_stake: `staked_balance_at_height {address}` → balance, + `claims {address}` (unstaking) — both counted.
+//   nft:  the aDAO collection's backing: unbroken NFTs the wallet holds or has staked (the inventory's real_owner) × the backing per NFT
+//         (summary.backing.per_nft_ampluna). Listed NFTs are counted apart (not in backing) — Rallies counts held + staked.
+const HOLDINGS = {
+    cw20: {
+        ampLUNA:     { addr: 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct', decimals: 6 },
+        arbLUNA:     { addr: 'terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490', decimals: 6 },
+        bLUNA:       { addr: 'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml', decimals: 6 },
+        LunaX:       { addr: 'terra14xsm2wzvu7xaf567r693vgfkhmvfs08l68h4tjj5wjgyn5ky8e2qvzyanh', decimals: 6 },
+        CAPA:        { addr: 'terra1t4p3u8khpd7f8qzurwyafxt648dya6mp6vur3vaapswt6m24gkuqrfdhar', decimals: 6 },
+        ROAR:        { addr: 'terra1lxx40s29qvkrcj8fsa3yzyehy7w50umdvvnls2r830rys6lu2zns63eelv', decimals: 6 },
+        SOLID:       { addr: 'terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst', decimals: 6 },
+        VKR:         { addr: 'terra1gy73st560m2j0esw5c5rjmr899hvtv4rhh4seeajt3clfhr4aupszjss4j', decimals: 6 },
+        'ASTRO.cw20':{ addr: 'terra1nsuqsk6kh58ulczatwev87ttq2z6r3pusulg9r24mfj2fvtzd4uq3exn26', decimals: 6 },
+        'wBNB.wh':   { addr: 'terra1xc7ynquupyfcn43sye5pfmnlzjcw2ck9keh0l2w2a4rhjnkp64uq4pr388', decimals: 8 },
+        wETH:        { addr: 'terra15hhqg8gyz04zapynqtk7uvlsp7lzay7etrt9ann0276v94yae63sxygeat', decimals: 8 },
+        'wSOL.wh':   { addr: 'terra1ctelwayk6t2zu30a8v9kdg3u2gr0slpjdfny5pjp7m3tuquk32ysugyjdg', decimals: 8 },
+    },
+    gov: [
+        { key: 'capa-gov', label: 'CAPA governance', token: 'CAPA', decimals: 6, kind: 'capa_gov', contract: 'terra1sf66d5vap897xlvv2hlcp4l20y4pp42r6ala4snk8mgd246jvufqwe0cnm' },
+        { key: 'roar-stake', label: 'ROAR staking (Lion DAO)', token: 'ROAR', decimals: 6, kind: 'cw20_stake', contract: 'terra1xuqh84yz35h70p3ppt76dz5kgwwtwmsv34pg0gw6ld4ntptgjcrqe2e70t' },
+    ],
+    nft: { slug: 'adao', repo: 'thealliancedao/nft-collections', inventory: 'adao/snapshots/nfts.json', summary: 'adao/snapshots/summary.json', backing_token: 'ampLUNA' },
+};
+
 module.exports = {
+    HOLDINGS,
     GAUGE_CONTROLLER,
     VOTING_ESCROW,
     BRIBE_MANAGER,

@@ -1,6 +1,22 @@
 # member-data — changelog
 
 
+## 1.7.0 — 2026-10-13 — the wallet data + history layer Rallies and the aDAO dashboard both read
+
+- Owner: "rallies is its own repo … for data on wallets and history build out the alliance DAO repo as the data layer and history layer
+  so rallies and the aDAO dashboard are reading a single source of truth." Contract + reader notes: README "The wallet data + history layer".
+- `holdings.js` 1.0.0 (tla-participants phase 8, the 23:xx run): every participant's wallet tokens (bank in full, named by the token
+  catalog; the Rallies-registry cw20s), LUNA delegated + unbonding, CAPA governance (`staker`), ROAR staking (`staked_balance_at_height`
+  + `claims`), aDAO NFT backing (a join on the NFT inventory: held + staked unbroken × per-NFT backing). Failed read = null + reason.
+- `history-tokens.js` 1.0.0: tokens by place per wallet per day, folded from the participants / member / holdings / Votion archives,
+  the CAPA census and the LST ratio history. Seeds 2026-08-11 → today; then refolds the last day (its archive may have been rewritten
+  since) → today. 246 wallets × 64 days, 2.7 MB.
+- tla-participants: source 3, followed wallets (`tla-core docs/curated/followed-wallets.json`, addresses only, ≤ FOLLOWED_MAX).
+- Finding: one plain-LUNA lock reports 1 LUNA in the lock but 899 at lock (token 765); the capture's `total_locked_luna_equivalent`
+  takes the amount at lock, history-tokens takes the chain's amount in the lock. Left for a look at the escrow's lock_info.
+- Gate `mock-run-tokens.js` 9/9 on real data (locks = the capture's own LUNA for 197/197 wallets; Votion to the unit; DAO custody exact).
+
+
 ## history-series 1.2.1 — 2026-09-30 — an unpriced row blanks the LP only when it matters
 
 - The aDAO treasury's LP band vanished 08-21 → 09-06: 16 LP rows captured, one $0 xASTRO row unpriced — 1.2.0 blanked the whole day.

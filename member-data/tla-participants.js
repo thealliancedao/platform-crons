@@ -214,10 +214,35 @@ async function discoverBribeProviders() {
 // -----------------------------------------------------------------------------
 // DISCOVERY — union + PFPK names
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// DISCOVERY — source 3: followed wallets (2026-10-13)
+// -----------------------------------------------------------------------------
+// Wallets that asked to be followed without holding a TLA lock (a Rallies user who only LPs or only holds tokens), listed in
+// tla-core docs/curated/followed-wallets.json { wallets: [{ address, since, via }] }. Only addresses — no names, no people. Captured exactly
+// like every participant (same engine, same products), tagged source 'followed'. A missing or unreadable list = no followed wallets.
+const FOLLOWED_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/followed-wallets.json';
+const FOLLOWED_MAX = parseInt(process.env.FOLLOWED_MAX || '500', 10);   // a bound on the list's cost: ~40 reads a wallet an hour
+function parseFollowed(doc) {
+    const out = [];
+    for (const w of (doc && Array.isArray(doc.wallets) ? doc.wallets : [])) {
+        const a = typeof w === 'string' ? w : w && w.address;
+        if (typeof a === 'string' && /^terra1[0-9a-z]{38}$/.test(a) && !out.includes(a)) out.push(a);
+        if (out.length >= FOLLOWED_MAX) break;
+    }
+    return out;
+}
+async function discoverFollowed() {
+    const doc = await fetchJson(FOLLOWED_URL, 'followed-wallets').catch(() => null);
+    const list = parseFollowed(doc);
+    console.log(`👣 ${list.length} followed wallet(s)${doc ? '' : ' (no list)'}`);
+    return list;
+}
+
 async function resolveParticipants() {
-    const [lockResult, bribeResult] = await Promise.all([
+    const [lockResult, bribeResult, followed] = await Promise.all([
         discoverLockHolders(),
         discoverBribeProviders(),
+        process.env.FOLLOWED === '0' ? [] : discoverFollowed(),
     ]);
 
     // Union the two sources, tagging provenance.
@@ -236,8 +261,14 @@ async function resolveParticipants() {
         }
     }
 
+    for (const addr of followed) {
+        const cur = participants.get(addr);
+        if (cur) cur.sources.push('followed');
+        else participants.set(addr, { address: addr, sources: ['followed'], lock_count: 0, bribe_count: 0, briber_label: null });
+    }
+
     const list = [...participants.values()];
-    console.log(`👥 ${list.length} total participants (lock holders ∪ bribe providers)`);
+    console.log(`👥 ${list.length} total participants (lock holders ∪ bribe providers ∪ followed)`);
 
     // PFPK name resolution (per-address, non-critical — failures leave name null).
     let named = 0;
@@ -424,6 +455,7 @@ async function run() {
             members_with_errors: withErrors,
             lock_holders: [...new Set(participants.filter(p => p.sources.includes('tla_lock')).map(p=>p.address))].length,
             bribe_providers: participants.filter(p => p.sources.includes('bribe_provider')).length,
+            followed: participants.filter(p => p.sources.includes('followed')).length,
             lock_complete: lock_discovery.complete,
             bribe_source_ok: bribe_ok,
         },
@@ -456,6 +488,19 @@ async function run() {
         console.log(`  ✓ member-data/participants/daily/${dateStr}.json`);
     }
 
+    // Phase 8 (2026-10-13, holdings.js 1.0.0): once a day (the 23:xx run) — what every participant holds OUTSIDE TLA: wallet tokens,
+    // LUNA staked with validators, CAPA / ROAR governance stakes, aDAO NFT backing → member-data/holdings/. Isolated; HOLDINGS=0 disables.
+    const HD = require('./holdings.js');
+    if (HD.due(process.env, startedAt.getUTCHours())) {
+        try {
+            const E = require('../lib/capture-engine.js');
+            const lcd = async (p) => { for (const base of [E.TERRA_LCD_PRIMARY, E.TERRA_LCD_PRIMARY, E.TERRA_LCD_FALLBACK]) { try { return await E.fetchJson(base + p, 'holdings lcd'); } catch (e) { await new Promise(r => setTimeout(r, 250)); } } return null; };
+            const q = async (c, m) => { try { return await queryContract(c, m); } catch (e) { return null; } };
+            await HD.run({ wallets: valid.map(p => p.wallet), q, lcd, fetchJson: (u) => fetchJson(u, 'holdings'), parallel: parallelMap, concurrency: BATCH_CONCURRENCY,
+                publish: GITHUB_TOKEN ? (p, c, m) => publishFile(p, c, m) : (p, c) => { fs.mkdirSync(require('path').dirname('out/' + p), { recursive: true }); fs.writeFileSync('out/' + p, c); } });
+        } catch (e) { console.warn('  ⚠ holdings failed (isolated):', e.message); }
+    }
+
     console.log(`\n✅ Done — status ${status} — ${valid.length} participants captured\n`);
     if (status === 'error') process.exit(2);
 }
@@ -468,4 +513,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main: run, discoverLockHolders, discoverBribeProviders, resolveParticipants, attachCredia, attachSolid };
+module.exports = { main: run, discoverLockHolders, discoverBribeProviders, discoverFollowed, parseFollowed, resolveParticipants, attachCredia, attachSolid };

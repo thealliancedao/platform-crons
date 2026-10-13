@@ -77,6 +77,41 @@ vp_voting_per_bucket }` + `wallets[] { address, rank, total_vp_held_human,
 vp_from_locks_human, lock_count, buckets{<bucket>{ allocations, utilization_pct,
 idle_bps }}, unvoted_buckets, avg_utilization_pct, fully_utilized, influence }`.
 
+## The wallet data + history layer (1.7.0, 2026-10-13) — the ONE place apps read a wallet's past
+
+Rallies (rallies.money) and the aDAO dashboard both read these products; neither keeps its own wallet history. Each app reads
+**now** live from the chain and **the past** from here. This section is that contract's only home — the apps link here.
+
+```
+member-data/participants/daily/<date>.json   every participant's TLA position (hourly, the day's last run kept)
+member-data/holdings/daily/<date>.json        what each participant holds OUTSIDE TLA (once a day, 23:xx UTC) — holdings.js
+member-data/holdings/current.json · heartbeat.json
+member-data/history/series/<c>.json + index    one USD row per wallet per day (history-series.js)
+member-data/history/tokens/<c>.json + index    tokens BY PLACE per wallet per day (history-tokens.js)
+```
+
+**Who is covered.** Participants = TLA lock holders ∪ bribe providers ∪ **followed wallets** (`tla-core docs/curated/followed-wallets.json`,
+addresses only; a wallet that asks to be followed without a lock — e.g. a Rallies user who only LPs). Registered aDAO members come from
+the positions archive. A wallet's history starts the day it is first covered — no archive, no row (never back-filled by guess).
+
+**holdings rec** (per wallet): `tokens {SYM: amount}` liquid in the wallet (all natives named by the token catalog + the `HOLDINGS.cw20`
+tokens) · `unknown {denom: raw}` · `staked.LUNA {delegated, unbonding}` · `gov {capa-gov|roar-stake: {token, staked, unstaking}}` ·
+`nft {held, staked, listed, unbroken, broken, backing {token: ampLUNA, amount}}` (backing = held + staked unbroken × the inventory's
+per-NFT backing; listed NFTs apart) · `errors[]` (a failed read is null + a reason — never 0). Queries: tla-core `docs/queries.md` §22.
+
+**history/tokens row**: `[day, cov, { SYM: { place: amount } }]` — human units of the BASE token after that day's LST ratio
+(`price-history/ratios`: ampLUNA / arbLUNA / bLUNA → LUNA, ampCAPA → CAPA, ampROAR → ROAR; any other token stays itself).
+Places: `w` wallet · `ls` wallet, liquid-staked · `st` with validators · `lk` TLA locks · `lp` TLA LPs (pool share) · `dao` held by a
+custodian (the ampCAPA DAO) · `gov` governance stakes · `nft` aDAO backing · `rw` pending rewards / rebase / bribes · `vt` Votion ·
+`cs` CAPA elsewhere per the CAPA census (≥10K CAPA wallets, only on a day without holdings). `cov` says what the day covered:
+`p` TLA capture · `h` holdings · `v` Votion · `c` CAPA census. **A place a day did not cover is absent — read cov, never assume 0.**
+Before 2026-10-13 (no holdings) a wallet's LUNA has no `st` / `nft` and only LUNA-family natives in `w`; an app should show those
+days as partial, not as a drop. index.json maps each symbol to its denom (null = the pool snapshot's loose name, e.g. `WBTC`).
+
+**Cost.** holdings ≈ 19 reads a wallet once a day (~4,000 at 210 wallets, concurrency 5); history-tokens is a fold (no chain reads).
+Env: `HOLDINGS=0|1` (off / force now), `HOLDINGS_HOUR` (23), `HISTORY_TOKENS=0|force|1`, `FOLLOWED=0`, `FOLLOWED_MAX` (500).
+Gate: `TLA_CORE_DIR=<tla-core checkout> node member-data/mock-run-tokens.js` (9/9 on real data).
+
 ## Render setup
 
 - Repo: `thealliancedao/platform-crons` · Root dir: `member-data`
@@ -89,6 +124,9 @@ idle_bps }}, unvoted_buckets, avg_utilization_pct, fully_utilized, influence }`.
   concurrency (5) protects publicnode LCD.
 
 ## Recent changes
+
+- **1.7.0 (2026-10-13)** — the wallet data + history layer (section above): `holdings.js` 1.0.0, `history-tokens.js` 1.0.0,
+  followed wallets as a participants source. Seeded fold: 246 wallets × 64 days (2026-08-11 → 10-13), 2.7 MB in 32 shards.
 
 - **1.1.0 (2026-07-14)** — VP definition fix (SPEC-vp-definition-fix). Held VP
   = **boost + fixed** everywhere (`lib/vp.js` doctrine header corrected);
