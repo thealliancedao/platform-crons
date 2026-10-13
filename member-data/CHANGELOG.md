@@ -11,6 +11,9 @@
 - `history-tokens.js` 1.0.0: tokens by place per wallet per day, folded from the participants / member / holdings / Votion archives,
   the CAPA census and the LST ratio history. Seeds 2026-08-11 → today; then refolds the last day (its archive may have been rewritten
   since) → today. 246 wallets × 64 days, 2.7 MB.
+- tla-participants: `member-data/participants/debt.json` every run — loans only (Credia + Solid: collateral, debt, health, liquidation), ~25 KB
+  for a phone (Rallies' Home "Debt" row). nft-inventory `earn.js` 1.0.0: `<slug>/snapshots/earn.json` (value = avg of the last 3 sales of
+  NFTs unbroken today; yield = backing growth per NFT over ~30 days → APR on value and on backing).
 - tla-participants: source 3, followed wallets (`tla-core docs/curated/followed-wallets.json`, addresses only, ≤ FOLLOWED_MAX).
 - Finding: one plain-LUNA lock reports 1 LUNA in the lock but 899 at lock (token 765); the capture's `total_locked_luna_equivalent`
   takes the amount at lock, history-tokens takes the chain's amount in the lock. Left for a look at the escrow's lock_info.

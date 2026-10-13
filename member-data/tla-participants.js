@@ -99,6 +99,31 @@ async function attachSolid(portfolios, deps) {
     return { stats, protocol: SR.protocolSummary(census) };
 }
 
+// debt.json (2026-10-13) — loans only, per wallet (pure). A wallet with nothing in Credia or Solid is absent; a failed Credia read is
+// { error } (unknown, never "no loan").
+function debtDoc(portfolios, at) {
+    const r2 = (x) => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100;
+    const wallets = {};
+    for (const p of portfolios) {
+        const w = p && (p.wallet || p.address); if (!w) continue; const o = {};
+        const c = p.credia;
+        if (c && c.error) o.credia = { error: c.error };
+        else if (c && ((c.supplied_usd || 0) > 0 || (c.debt_usd || 0) > 0)) o.credia = { supplied_usd: r2(c.supplied_usd), debt_usd: r2(c.debt_usd), net_usd: r2(c.net_usd),
+            lt_health_factor: c.health ? c.health.lt_health_factor : null, ltv_health_factor: c.health ? c.health.ltv_health_factor : null,
+            collateral_usd: c.health ? r2(c.health.total_collateral_usd) : null, borrow_limit_usd: c.health ? r2(c.health.total_ltv_usd) : null, liquidation_at_usd: c.health ? r2(c.health.total_lt_usd) : null,
+            supplied: (c.supplied || []).map(x => ({ symbol: x.symbol, amount: x.amount_human, usd: r2(x.usd_value), collateral: !!x.collateral })),
+            debt: (c.debt || []).map(x => ({ symbol: x.symbol, amount: x.amount_human, usd: r2(x.usd_value) })) };
+        const s = p.solid;
+        if (s) o.solid = { collateral_usd: r2(s.collateral_usd), idle_usd: r2(s.idle_usd), debt_solid: s.debt_solid, debt_usd: r2(s.debt_usd), borrow_limit_solid: s.borrow_limit_solid,
+            health: s.health, band: s.band, liquidation: s.liquidation || null, unpriced: s.unpriced && s.unpriced.length ? s.unpriced : undefined,
+            collateral: (s.collateral || []).map(x => ({ symbol: x.symbol, locked: x.locked, idle: x.idle, usd: r2(x.locked_usd), max_ltv: x.max_ltv })) };
+        if (Object.keys(o).length) wallets[w] = o;
+    }
+    return { schemaVersion: 1, product: 'member-data/participants/debt', capturedAt: at.toISOString(),
+        note: 'Credia: health = Credia\'s own factor (under 1 = liquidatable; 100 = no debt), USD at its oracle. Solid: health = borrow limit ÷ loan, band safe ≥ 1.5 · watch · at risk < 1.2 · liquidatable < 1. A wallet with neither is absent.',
+        wallets };
+}
+
 // -----------------------------------------------------------------------------
 // CONFIG
 // -----------------------------------------------------------------------------
@@ -478,6 +503,10 @@ async function run() {
         await publishFile('member-data/participants/participants.json', lightContent, `participants list epoch ${epochInfo.number}`);
         console.log('  ✓ member-data/participants/participants.json');
         await publishFile('member-data/participants/heartbeat.json', hbContent, `heartbeat ${status} epoch ${epochInfo.number}`);
+        // debt.json (2026-10-13): every participant's loans in one small file — Credia + Solid: collateral, debt, health, liquidation.
+        // Read by Rallies' Home "Debt" row (the full record stays in current.json, ~3 MB — too heavy for a phone's every visit).
+        try { const d = debtDoc(valid, startedAt); await publishFile('member-data/participants/debt.json', JSON.stringify(d) + '\n', `participants debt ${Object.keys(d.wallets).length} wallets`); console.log(`  ✓ member-data/participants/debt.json (${Object.keys(d.wallets).length} wallets)`); }
+        catch (e) { console.warn('  ⚠ debt.json failed (isolated):', e.message); }
         console.log('  ✓ member-data/participants/heartbeat.json');
 
         // Daily archive — one snapshot per calendar day (same-day overwrite). The
@@ -513,4 +542,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main: run, discoverLockHolders, discoverBribeProviders, discoverFollowed, parseFollowed, resolveParticipants, attachCredia, attachSolid };
+module.exports = { main: run, debtDoc, discoverLockHolders, discoverBribeProviders, discoverFollowed, parseFollowed, resolveParticipants, attachCredia, attachSolid };

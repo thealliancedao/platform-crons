@@ -88,6 +88,8 @@ member-data/holdings/daily/<date>.json        what each participant holds OUTSID
 member-data/holdings/current.json · heartbeat.json
 member-data/history/series/<c>.json + index    one USD row per wallet per day (history-series.js)
 member-data/history/tokens/<c>.json + index    tokens BY PLACE per wallet per day (history-tokens.js)
+member-data/participants/debt.json             loans only, every run: Credia + Solid collateral, debt, health, liquidation (~25 KB)
+nft-collections <slug>/snapshots/earn.json     one unbroken NFT's value (avg of the last 3 unbroken sales) + backing APR (nft-inventory earn.js)
 ```
 
 **Who is covered.** Participants = TLA lock holders ∪ bribe providers ∪ **followed wallets** (`tla-core docs/curated/followed-wallets.json`,

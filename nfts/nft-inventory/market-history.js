@@ -481,5 +481,5 @@ async function main() {
   console.log('  done');
 }
 
-module.exports = { main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, ledgerToEvents, marketOfEvent, DENOM_MAP, symbolFor, _setResolver: (r) => { RESOLVE = r; }, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, LEDGER_PATH, PRICE_PATH, RAW, RAW_DATA } };
+module.exports = { _io: { fetchJson, publish, RAW }, main, fillDailyFromPriceHistory, appendEnrichedSales, maintainListingHistory, findUnresolvedExits, ledgerToEvents, marketOfEvent, DENOM_MAP, symbolFor, _setResolver: (r) => { RESOLVE = r; }, PATHS: { GITHUB_REPO, DATA_REPO, NFT_ROOT, NFT_PATH, LEDGER_PATH, PRICE_PATH, RAW, RAW_DATA } };
 if (require.main === module) main().catch(e => { console.error('market-history failed:', e.message); process.exit(1); });
