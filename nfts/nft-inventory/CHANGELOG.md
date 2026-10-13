@@ -1,5 +1,13 @@
 # nfts/nft-inventory — changelog
 
+
+## earn.js 1.0.0 + watch.js 1.0.0 — 2026-10-13 — small per-collection files for Rallies' Home
+- `snapshots/earn.json` (collections with backing): one unbroken NFT's value = avg of the last 3 sales of NFTs unbroken today (USD at
+  each sale), and its yield = backing growth per NFT over ~30 days → APR on value and on backing.
+- `snapshots/watch.json` (every collection): per tier (broken / base / collection.json named tiers) — floor now, 7-day average, 24 h
+  change, `new_floor` (floor fell and a listing of that tier was first seen in the last 36 h), listed count, last-3-sales average.
+- Both are joins over this job's own files (no chain reads), isolated, after market-history; NFT_EARN=0 / NFT_WATCH=0 disable. Seeded once by hand.
+
 ## market-history 1.6.0 — 2026-09-19 — sourced from the ledger · seeds a new collection (B.2 leg + B.6)
 
 - sales-enriched / listing-history are maintained from `<root>/ledger/YYYY/MM.json` (org-nft-flows) instead of the tla-flows

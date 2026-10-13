@@ -2949,6 +2949,12 @@ async function runWithAnalytics() {
     if (NO_RARITY) {   // D.3: market-history only — analytics and compact-bundle need a rarity map (they would fall back to aDAO's)
         try { console.log('\n=== market-history (same job; no rarity map → analytics + compact-bundle skipped) ==='); await require('./market-history.js').main(); console.log('=== market-history done ==='); }
         catch (e) { console.error('market-history failed (isolated, inventory unaffected):', e.message); process.exitCode = 1; }
+    // watch (2026-10-13, watch.js 1.0.0): each tier's floor, 7-day average, 24 h change, new-floor flag and last-3-sales average →
+    // snapshots/watch.json, read by Rallies' Home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
+    if (process.env.NFT_WATCH !== '0') {
+        try { const MH = require('./market-history.js'); await require('./watch.js').run({ readJson: (p) => MH._io.fetchJson(MH._io.RAW(p)), publish: MH._io.publish, root: MH.PATHS.NFT_ROOT }); }
+        catch (e) { console.error('watch failed (isolated, inventory unaffected):', e.message); }
+    }
         return result;
     }
     try {
@@ -2982,6 +2988,12 @@ async function runWithAnalytics() {
             await require('./earn.js').run({ readJson: (p) => MH._io.fetchJson(MH._io.RAW(p)), publish: MH._io.publish, root: MH.PATHS.NFT_ROOT });
             console.log('=== earn done ===');
         } catch (e) { console.error('earn failed (isolated, inventory unaffected):', e.message); }
+    }
+    // watch (2026-10-13, watch.js 1.0.0): each tier's floor, 7-day average, 24 h change, new-floor flag and last-3-sales average →
+    // snapshots/watch.json, read by Rallies' Home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
+    if (process.env.NFT_WATCH !== '0') {
+        try { const MH = require('./market-history.js'); await require('./watch.js').run({ readJson: (p) => MH._io.fetchJson(MH._io.RAW(p)), publish: MH._io.publish, root: MH.PATHS.NFT_ROOT }); }
+        catch (e) { console.error('watch failed (isolated, inventory unaffected):', e.message); }
     }
     // compact-bundle: the explorer's first-paint product (437KB vs the 16MB the
     // page loads today). Runs LAST — it's a derived view of everything above.
