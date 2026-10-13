@@ -18,6 +18,8 @@ const ARB_CW20 = 'terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz4
 const V_AMP_MAX = 'terra1v7aw9ear_vault_amp_max', V_ARB_MAX = 'terra13aae4fut_vault_arb_max';
 const DAILY = { [V_AMP_MAX]: 0.0015, [V_ARB_MAX]: 0.0018, [AMP_HUB]: 0.00042 };   // per-day growth (vault ≈ 73% APY, hub ≈ 16.6% APY)
 const FEE = 0.05;
+const B_HUB = 'terra1l2nd99yze5fszmhl5svyh5fky9wm4nz4etlgnztfu4e8809gd52q04n3ea';
+let B_RATE_NOW = null;   // set from the ratio fixture below (the last bLUNA ratio — unchanged since)
 
 function series(daily, days, start = 1.5) { // REAL shape: [[day_index, {exchange_rate, time_s}]] newest first + apr = (end/start − 1)/span (simple)
   const t0 = Math.floor(NOW.getTime() / 1000); const out = [];
@@ -35,12 +37,16 @@ M.T.queryContract = async (addr, q) => {
     const n = q.exchange_rates.limit || 30; if (addr === V_ARB_MAX && n === 30) return FIX; return series(d, n);
   }
   if (q.config && addr === AMP_HUB) return { protocol_reward_fee: String(FEE) };
+  // bLUNA's steak hub (bluna-probe 1.0 shapes): state + config; rate frozen at the ratio series' last value
+  if (q.state && addr === B_HUB) return { total_usteak: '1379001253958', total_native: '2440630170617', exchange_rate: B_RATE_NOW, unlocked_coins: [] };
+  if (q.config && addr === B_HUB) return { fee_rate: '0.1', steak_token: 'terra17aj4ty4sz4yhgm08na8drc0v03v2jwr3waxcqrwhajj729zhl7zqnpc0ml' };
   throw new Error('unexpected query ' + JSON.stringify(q));
 };
 // ratio series (price-history/ratios) — arbLUNA + bLUNA fallback; bLUNA stale by 41 days (the real 2026-07-16 hole)
 const RATIOS = {};
 for (let i = 0; i < 90; i++) { const d = new Date(NOW.getTime() - i * 86400000).toISOString().slice(0, 10); const ym = d.slice(0, 7);
   (RATIOS[ym] = RATIOS[ym] || { days: {} }).days[d] = { arbLUNA: { ratio: 2.98 * Math.pow(1.0004, 90 - i) }, ...(i >= 41 ? { bLUNA: { ratio: 1.76 * Math.pow(1.0003, 90 - i) } } : {}) }; }
+{ const last = Object.values(RATIOS).flatMap((m) => Object.entries(m.days)).filter(([, r]) => r.bLUNA).sort().pop(); B_RATE_NOW = String(last[1].bLUNA.ratio); }
 const REPO = {}; const WRITES = {};
 M.T.githubApiRequest = async (method, apiPath, body, accept) => {
   const m = apiPath.match(/\/contents\/([^?]+)/); const path = m && decodeURIComponent(m[1]);
@@ -57,6 +63,12 @@ M.T.lcdGet = async (path) => {   // chain staking inputs: provisions 96.46M LUNA
   if (path.includes('/cosmos/mint/v1beta1/annual_provisions')) return { annual_provisions: '96455271678637.83' };
   if (path.includes('/cosmos/staking/v1beta1/pool')) return { pool: { bonded_tokens: '255306000000000', not_bonded_tokens: '1' } };
   if (path.includes('/cosmos/distribution/v1beta1/params')) return { params: { community_tax: '0.000000000000000000' } };
+  if (path.includes(`/delegations/${B_HUB}`)) return { delegation_responses: [{ delegation: { validator_address: 'valA' }, balance: { amount: '1000000000000' } }, { delegation: { validator_address: 'valB' }, balance: { amount: '1000000000000' } }, { delegation: { validator_address: 'valC' }, balance: { amount: '440630170617' } }] };
+  if (path.endsWith('/validators/valA')) return { validator: { status: 'BOND_STATUS_BONDED', jailed: false, description: { moniker: 'A' }, commission: { commission_rates: { rate: '0.05' } } } };
+  if (path.endsWith('/validators/valB')) return { validator: { status: 'BOND_STATUS_UNBONDED', jailed: true, description: { moniker: 'B' }, commission: { commission_rates: { rate: '0.05' } } } };
+  if (path.endsWith('/validators/valC')) return { validator: { status: 'BOND_STATUS_BONDED', jailed: false, description: { moniker: 'C' }, commission: { commission_rates: { rate: '0.20' } } } };
+  if (path.includes(`/delegators/${B_HUB}/rewards`)) return { total: [{ denom: 'uluna', amount: '8801124179.36' }] };
+  if (path.includes(`/balances/${B_HUB}/by_denom`)) return { balance: { denom: 'uluna', amount: '282467774857' } };
   if (path.includes('/terra/alliances')) return { alliances: [ ...Array.from({ length: 8 }, (_, i) => ({ denom: 'a' + i, reward_weight: String(0.398 / 8), reward_start_time: '2025-01-01T00:00:00Z' })), { denom: 'future', reward_weight: '0.5', reward_start_time: '2027-01-01T00:00:00Z' } ] };
   return null;
 };
@@ -77,9 +89,14 @@ M.T.lcdGet = async (path) => {   // chain staking inputs: provisions 96.46M LUNA
   const hub30 = doc.assets.ampLUNA.windows[30];
   check('D5 ampLUNA asset from hub exchange_rates, agrees', doc.assets.ampLUNA.source === 'hub_exchange_rates' && hub30.agree === true, hub30);
   const h = doc.vaults[0].headline[30];
+  const bl = doc.assets.bLUNA, sk = bl && bl.steak;
+  const aprS = doc.native_staking.apr_stakers, expPot = (1e6 * 0.95 + 440630.170617 * 0.80) * aprS * 0.9 / 2440630.170617;
+  check('D14 bLUNA read as a steak hub: source steak_state, rate from state, 1 of 3 validators jailed', bl.source === 'steak_state' && sk.rate_now === Number(B_RATE_NOW) && sk.jailed_luna === 1000000 && sk.bonded_luna === 1440630, sk);
+  check('D15 steak: realised 0 (rate unchanged ≥ 41 d), potential = Σ bonded (1 − commission) × apr_stakers × 0.9 ÷ native', sk.realised_apr === 0 && sk.rate_unchanged_days >= 41 && Math.abs(sk.potential_apr - expPot) < 1e-7, { r: sk.realised_apr, d: sk.rate_unchanged_days, p: sk.potential_apr, expPot });
+  check('D16 steak: idle LUNA + waiting rewards published', sk.idle_luna === 282468 && sk.pending_rewards_luna === 8801, sk);
   check('D6 headline = asset + votion (additive, Eris UI)', Math.abs(h.total_apy - (hub30.apy_contract + amp30.apy_contract)) < 1e-9, h);
   check('D7 arbLUNA asset → ratio_series fallback, labeled, fresh', doc.assets.arbLUNA.source === 'ratio_series' && doc.assets.arbLUNA.windows[30].apy_measured > 0.1 && doc.assets.arbLUNA.windows[30].apr_daily_contract === null, doc.assets.arbLUNA);
-  check('D8 bLUNA → ratio_series_stale (41d), value still measured, staleness stated', doc.assets.bLUNA.source === 'ratio_series_stale' && doc.assets.bLUNA.stale_days >= 40 && doc.assets.bLUNA.windows[30].source === 'ratio_series_stale', doc.assets.bLUNA);
+  check('D8 bLUNA: ratio-series windows still published with their staleness label; the asset is read from its hub state (steak, 1.6.0)', doc.assets.bLUNA.source === 'steak_state' && doc.assets.bLUNA.windows[30].source === 'ratio_series_stale' && !!doc.assets.bLUNA.steak, doc.assets.bLUNA);
   const n = doc.native_staking;
   check('D9 native: ampLUNA realized 30d carried as the reference, gap vs provisions leg in pp, take-rate leg named as unmeasured', Math.abs(n.ampluna_realized_apy_30d - hub30.apy_contract) < 1e-12 && typeof n.gap_vs_ampluna_pp === 'number' && n.take_rate_leg.status === 'unmeasured' && /NOT INCLUDED/.test(n.method), n);
   check('D9b native PRIMARY from chain: apr_gross = provisions ÷ bonded = 37.78% (the Allnodes number), apr_stakers = gross ÷ 1.398 = 27.02% (the SmartStake number), future-start alliance excluded', Math.abs(n.apr_gross - 0.3778) < 5e-4 && Math.abs(n.apr_stakers - 0.3778 / 1.398) < 5e-4 && Math.abs(n.inputs.total_reward_weight - 1.398) < 1e-9 && n.inputs.alliances_active === 8 && n.references.allnodes_2026_08_26 === 0.3778, n);

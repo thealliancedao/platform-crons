@@ -111,6 +111,51 @@ async function assetYields(sym, hubAddr, T, readMonth, nowMs, errors) {
     return out;
 }
 
+// ── "steak" hubs (bLUNA — Backbone, 2026-10-13) ─────────────────────────────
+// No exchange_rates history: `state` → { total_usteak, total_native, exchange_rate }, and the rate rises ONLY when someone calls
+// `harvest` (rewards withdrawn by bonds / unbonds sit in the hub's bank balance until then). Proven by rally's bluna-probe 1.0
+// (2026-10-13): rate 1.769853 unchanged since at least 2026-08-01, 4 of 8 validators jailed (1.05M of 2.44M LUNA), 282k LUNA idle.
+// So two numbers, both published, never one for the other:
+//   realised_apr  — what holders actually got: the rate's own growth (ratio series, rate now from `state`) over 30 days
+//   potential_apr — what it would pay if harvested: Σ bonded delegation × (1 − commission) × apr_stakers × (1 − hub fee) ÷ total_native
+//                   (provisions leg only, like apr_stakers — the alliance take-rate leg is unmeasured)
+async function steakHub(sym, hubAddr, T, readMonth, nowMs, aprStakers, errors) {
+    const st = await T.queryContract(hubAddr, { state: {} });
+    const native = num(st && st.total_native), shares = num(st && st.total_usteak), rate = num(st && st.exchange_rate);
+    if (native == null || shares == null || rate == null) throw new Error('not a steak hub (no total_native / total_usteak / exchange_rate)');
+    const out = { kind: 'steak', rate_now: rate, total_native_luna: native / 1e6, fee_rate: null, realised_apr: null, rate_unchanged_days: null, potential_apr: null,
+        delegated_luna: null, bonded_luna: null, jailed_luna: null, idle_luna: null, pending_rewards_luna: null, validators: [],
+        method: 'realised_apr = (rate_now ÷ rate 30 days ago − 1) ÷ span × 365.25 (rate history: price-history/ratios; now: hub state). potential_apr = Σ bonded (1 − commission) × apr_stakers × (1 − fee_rate) ÷ total_native — provisions leg only; what holders would get if the hub harvested.' };
+    try { const c = await T.queryContract(hubAddr, { config: {} }); out.fee_rate = num(c && c.fee_rate); } catch (e) { errors.push({ where: `yields:${sym}:steak:config`, error: e.message }); }
+    // rate history: when did it last move, and the 30-day realised rate
+    const { pts } = await ratioSeriesWindow(sym, 90, readMonth, nowMs);
+    const all = [...pts, { t_ms: nowMs, rate }];
+    let changed = null; for (let i = all.length - 1; i > 0; i--) if (Math.abs(all[i].rate - all[i - 1].rate) > 1e-9) { changed = all[i].t_ms; break; }
+    out.rate_unchanged_days = changed == null ? (pts.length ? round((nowMs - pts[0].t_ms) / 86400000, 0) : null) : round((nowMs - changed) / 86400000, 1);
+    out.rate_unchanged_since_at_least = changed == null && pts.length ? new Date(pts[0].t_ms).toISOString().slice(0, 10) : null;
+    const old = pts.filter(p => p.t_ms <= nowMs - 30 * 86400000).pop() || pts[0];
+    if (old && nowMs - old.t_ms >= 7 * 86400000) out.realised_apr = round((rate / old.rate - 1) / ((nowMs - old.t_ms) / 86400000) * DAYS_IN_YEAR, 8);
+    if (!T.lcdGet) return out;
+    try {
+        const d = await T.lcdGet(`/cosmos/staking/v1beta1/delegations/${hubAddr}?pagination.limit=100`);
+        let bondedNet = 0, delegated = 0, bonded = 0, jailed = 0;
+        for (const x of (d && d.delegation_responses) || []) {
+            const v = x.delegation && x.delegation.validator_address, amt = (num(x.balance && x.balance.amount) || 0) / 1e6; if (!v) continue; delegated += amt;
+            const vi = await T.lcdGet(`/cosmos/staking/v1beta1/validators/${v}`); const val = vi && vi.validator;
+            const ok = !!val && val.status === 'BOND_STATUS_BONDED' && !val.jailed, com = num(val && val.commission && val.commission.commission_rates && val.commission.commission_rates.rate);
+            out.validators.push({ validator: v, moniker: val && val.description ? val.description.moniker : null, luna: round(amt, 0), bonded: ok, jailed: !!(val && val.jailed), commission: com });
+            if (ok) { bonded += amt; bondedNet += amt * (1 - (com || 0)); } else jailed += amt;
+        }
+        out.delegated_luna = round(delegated, 0); out.bonded_luna = round(bonded, 0); out.jailed_luna = round(jailed, 0);
+        if (aprStakers != null && native > 0) out.potential_apr = round(bondedNet * aprStakers * (1 - (out.fee_rate || 0)) / (native / 1e6), 8);
+    } catch (e) { errors.push({ where: `yields:${sym}:steak:delegations`, error: e.message }); }
+    try { const r = await T.lcdGet(`/cosmos/distribution/v1beta1/delegators/${hubAddr}/rewards`); const l = ((r && r.total) || []).find(x => x.denom === 'uluna'); out.pending_rewards_luna = l ? round(num(l.amount) / 1e6, 0) : 0; }
+    catch (e) { errors.push({ where: `yields:${sym}:steak:rewards`, error: e.message }); }
+    try { const b = await T.lcdGet(`/cosmos/bank/v1beta1/balances/${hubAddr}/by_denom?denom=uluna`); out.idle_luna = b && b.balance ? round(num(b.balance.amount) / 1e6, 0) : null; }
+    catch (e) { errors.push({ where: `yields:${sym}:steak:balance`, error: e.message }); }
+    return out;
+}
+
 async function vaultYields(v, T, errors) {
     const out = { address: v.address, label: v.label || null, lst_contract: v.lst_contract || null, lst_symbol: v.lst_symbol || null, windows: {} };
     for (const w of WINDOWS) {
@@ -161,6 +206,12 @@ async function buildYields({ T, vaults, hubs, lstSymbolOf, readRatioMonth, now, 
     const errors = []; const nowMs = now.getTime();
     const assets = {};
     for (const [sym, hub] of Object.entries(hubs)) assets[sym] = await assetYields(sym, hub, T, readRatioMonth, nowMs, errors);
+    const chain = await nativeFromChain(T, nowMs, errors);
+    // a hub with no exchange_rates history may be a steak hub (bLUNA): read its state — realised vs potential, both published
+    for (const [sym, hub] of Object.entries(hubs)) if (hub && assets[sym].source !== 'hub_exchange_rates') {
+        try { assets[sym].steak = await steakHub(sym, hub, T, readRatioMonth, nowMs, chain.apr_stakers, errors); assets[sym].source = 'steak_state'; assets[sym].stale_days = null; }
+        catch (e) { errors.push({ where: `yields:${sym}:steak`, error: e.message }); }
+    }
     const vaultRows = [];
     for (const v of vaults) {
         const row = await vaultYields({ ...v, lst_symbol: lstSymbolOf(v.lst_contract) }, T, errors);
@@ -175,7 +226,6 @@ async function buildYields({ T, vaults, hubs, lstSymbolOf, readRatioMonth, now, 
     }
     // native staking — PRIMARY: chain-derived (provisions, bonded, community tax, alliance weights);
     // CROSS-CHECK: ampLUNA net daily rate grossed up by the hub fee (an estimate, said so).
-    const chain = await nativeFromChain(T, nowMs, errors);
     // First live run (2026-08-26 18:47): bonded 316.1M → gross 30.5%, provisions leg to stakers 21.8% — BELOW every
     // published figure, while ampLUNA's realized 30d APY is 36.9%, ABOVE gross. Staking provisions alone cannot do
     // that: LUNA delegators also receive the Alliance module's TAKE-RATE rewards, paid in the alliance assets, which

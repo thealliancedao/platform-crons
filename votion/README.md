@@ -57,3 +57,18 @@ vaults resolve. All failures in heartbeat `_errors`. null ≠ [] throughout.
 ## Run
 Render cron `org-votion`, hourly at :20. Env: `GITHUB_TOKEN` (rw tla-core).
 Node stdlib only. Mock gate (binding): `node mock-run.js` — 28 checks.
+
+## Yields — bLUNA is a "steak" hub (1.6.0, 2026-10-13)
+
+`votion/yields/current.json → assets.bLUNA.steak`. bLUNA's hub (Backbone, code 3116) has no `exchange_rates` history and its rate
+rises **only when someone calls `harvest`** — staking rewards withdrawn on bonds / unbonds wait in the hub's bank balance until then.
+So the yields product publishes two numbers and never swaps one for the other:
+
+- `realised_apr` — what holders actually got: the rate's own growth over ~30 days (history from `price-history/ratios`, today from
+  the hub's `state`). 0 while nobody harvests. `rate_unchanged_days` / `rate_unchanged_since_at_least` say for how long.
+- `potential_apr` — what it would pay if harvested: Σ bonded delegations × (1 − validator commission) × `native_staking.apr_stakers`
+  × (1 − hub `fee_rate`) ÷ `total_native`. Provisions leg only (the alliance take-rate leg is unmeasured, as for `apr_stakers`).
+- `validators` (bonded / jailed, commission, LUNA each), `jailed_luna`, `idle_luna` (hub bank balance), `pending_rewards_luna`.
+
+First read (rally `bluna-probe` 1.0, 2026-10-13): rate 1.769853 unchanged since at least 2026-08-01; 4 of 8 validators jailed
+(≈1.05M of 2.44M LUNA earning nothing); ≈282k LUNA idle in the hub; ≈8.8k LUNA rewards waiting. Gate: `mock-run-yields.js` D14–D16.
