@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.5.9';   // v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.5.10';   // v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -398,15 +398,24 @@ function classifyFlowTx(txr) {
 // Entry/exit cost: collect EVERY swap leg (a non-LUNA exit is multi-hop) plus
 // any provide_liquidity slippage (imbalanced "Tokens" deposits). Cross-denom
 // legs kept raw — the cron records receipt truth; analysis prices the rollup.
+// v3.5.10: a MAKE — LUNA turned into a liquid-staked token by its maker instead of swapped — is a leg too, in tx order, marked
+// kind:'make' (Rallies routes LUNA → arbLUNA through Eris' arb vault when it pays more; without it the P&L read the minted arbLUNA as
+// sent from the wallet). Proven shape (wallet-txs probe 2026-10-14): {action:'arb/execute_deposit', deposit_amount (uluna), share}
+// + the token's {action:'mint', amount: share}.
 function flowsExtractCost(wasm) {
-  const swaps = wasm
-    .filter(w => w.action === 'swap' && w.offer_amount !== undefined && w.return_amount !== undefined)
-    .map(w => {
+  const swaps = [];
+  for (const w of wasm) {
+    if (w.action === 'swap' && w.offer_amount !== undefined && w.return_amount !== undefined) {
       const ret = Number(w.return_amount || 0), spr = Number(w.spread_amount || 0), com = Number(w.commission_amount || 0), d = ret + spr + com;
-      return { offer_asset: w.offer_asset, offer_amount: w.offer_amount, ask_asset: w.ask_asset,
+      swaps.push({ offer_asset: w.offer_asset, offer_amount: w.offer_amount, ask_asset: w.ask_asset,
                return_amount: w.return_amount, spread_amount: w.spread_amount, commission_amount: w.commission_amount,
-               maker_fee_amount: w.maker_fee_amount, leg_cost_pct: d > 0 ? +(100 * (spr + com) / d).toFixed(4) : null };
-    });
+               maker_fee_amount: w.maker_fee_amount, leg_cost_pct: d > 0 ? +(100 * (spr + com) / d).toFixed(4) : null });
+    } else if (w.action === 'arb/execute_deposit' && /^\d+$/.test(String(w.deposit_amount || '')) && /^\d+$/.test(String(w.share || ''))) {
+      const mint = wasm.find(m => m.action === 'mint' && String(m.amount) === String(w.share) && m._contract_address);
+      if (mint) swaps.push({ kind: 'make', maker: w._contract_address || null, offer_asset: 'uluna', offer_amount: String(w.deposit_amount), ask_asset: mint._contract_address,
+        return_amount: String(w.share), spread_amount: '0', commission_amount: '0', leg_cost_pct: 0 });
+    }
+  }
   const prov = wasm.find(w => w.action === 'provide_liquidity' && w.slippage !== undefined);
   const provide_slippage_pct = prov ? +(100 * Number(prov.slippage)).toFixed(4) : null;
   if (!swaps.length && provide_slippage_pct == null) return null;

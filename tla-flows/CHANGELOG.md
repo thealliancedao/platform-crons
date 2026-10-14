@@ -1,5 +1,16 @@
 # tla-flows — changelog
 
+## 3.5.10 — 2026-10-14 — a make is a cost leg too
+
+- The maintainer's first Rallies LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA, one tx) turned 963.5 LUNA into 309.25 arbLUNA at Eris'
+  arb vault (Rallies routes LUNA → arbLUNA there when it pays more than a swap). The walker kept only `action: swap` legs, so the P&L
+  would have read that arbLUNA as sent from the wallet. `flowsExtractCost` now records a **make** in tx order: `{kind:'make',
+  offer_asset:'uluna', offer_amount: deposit_amount, ask_asset: <the minted token>, return_amount: share}` from
+  `arb/execute_deposit` + the token's `mint` (shape proven by the wallet-txs probe of that tx). pnl-positions undoes it like a swap.
+- Gate mock-run-pnl-zap 17/17 (+Z12: the real tx's legs — 3 swaps + the make — undo to the refund tokens that went in: 58.29 USDC.inj
+  + 51.78 SOLID; the 0.13 USDC.inj that stayed in the wallet isn't charged).
+- Not yet: Eris' amp hub bond (LUNA → ampLUNA) and other makers — same treatment once a real tx proves their event shape.
+
 ## 3.5.9 — 2026-10-14 — started-with tokens, both sides (pnl 1.6.0)
 
 - Owner: "what I'm trying to show is the token amounts you started with for both sides vs what it is today … the yield growing the token
