@@ -155,13 +155,14 @@ const COLLECTION = String(process.env.COLLECTION || '').trim();   // '' | 'adao'
 const IS_DEFAULT_COLLECTION = !COLLECTION || COLLECTION === 'adao';
 let COL = ADAO_DEFAULT_CONFIG;
 let ADAO_NFT_CONTRACT, DAO_MAIN_WALLET, DAODAO_STAKING_CONTRACT, DAO_TREASURY_CONTRACT, ENTERPRISE_NFT_STAKING, DAO_WALLET_8YWV, AMPLUNA_CW20, ENTERPRISE_OPERATOR_WALLET;
-let PHOENIX_TOKEN_IDS, STABLE_DAO_OWNERS, STAKING_OWNERS, DAODAO_INDEXER_URL;
+let PHOENIX_TOKEN_IDS, NAMED_TIER = 'phoenix', STABLE_DAO_OWNERS, STAKING_OWNERS, DAODAO_INDEXER_URL;
 function applyCollection(cfg) {
     COL = cfg;
     ADAO_NFT_CONTRACT = cfg.NFT_CONTRACT; DAO_MAIN_WALLET = cfg.DAO_MAIN_WALLET; DAODAO_STAKING_CONTRACT = cfg.DAODAO_STAKING_CONTRACT;
     DAO_TREASURY_CONTRACT = cfg.DAO_TREASURY_CONTRACT || null; ENTERPRISE_NFT_STAKING = cfg.ENTERPRISE_NFT_STAKING || null; DAO_WALLET_8YWV = cfg.DAO_WALLET_8YWV || null;
     AMPLUNA_CW20 = cfg.BACKING_CW20 || null; ENTERPRISE_OPERATOR_WALLET = cfg.ENTERPRISE_OPERATOR_WALLET || null;
     PHOENIX_TOKEN_IDS = new Set((cfg.PHOENIX_TOKEN_IDS || []).map(String));
+    NAMED_TIER = cfg.NAMED_TIER || 'phoenix';   // the collection's one named tier (aDAO: phoenix · pixeLions: rank1 — 2026-10-14)
     STABLE_DAO_OWNERS = [DAO_MAIN_WALLET, DAO_TREASURY_CONTRACT, DAO_WALLET_8YWV].filter(Boolean);
     STAKING_OWNERS    = [DAODAO_STAKING_CONTRACT, ENTERPRISE_NFT_STAKING].filter(Boolean);
     DAODAO_INDEXER_URL = `https://indexer.daodao.zone/phoenix-1/contract/${DAODAO_STAKING_CONTRACT}/daoVotingCw721Staked/topStakers`;
@@ -175,7 +176,9 @@ function configFromManifest(cj, venuesDoc) {
     const backing = cj && cj.backing && cj.backing.token && cj.backing.token.type === 'cw20' && cj.backing.token.address ? cj.backing.token.address : null;
     const known = new Set(Object.keys((venuesDoc && venuesDoc.venues) || {}));
     const venues = (cj.marketplaces || []).map(m => m.key).filter(k => k && (!known.size || known.has(k)));
-    const tiers = (cj.tiers && cj.tiers.phoenix && Array.isArray(cj.tiers.phoenix.token_ids)) ? cj.tiers.phoenix.token_ids : [];
+    // the manifest's named tier: `phoenix` (aDAO) or the first tier it lists (pixeLions: `rank1`, rarity rank 1 — the explorer's and nft-flows' name) — one per collection
+    const namedKey = cj.tiers ? (cj.tiers.phoenix ? 'phoenix' : Object.keys(cj.tiers)[0]) : null;
+    const tiers = (namedKey && Array.isArray(cj.tiers[namedKey].token_ids)) ? cj.tiers[namedKey].token_ids : [];
     const custody = (cj && cj.custody) || {};
     return {
         slug: cj.slug, label: cj.name, supply: Number(cj.supply) || null,
@@ -190,7 +193,7 @@ function configFromManifest(cj, venuesDoc) {
         BREAK_MECHANISM: !!(cj.backing && cj.backing.break_mechanism),
         HAS_CUSTODY: !!(cj.custody && Object.keys(cj.custody).length),   // D.2: no custody block → no dao-controlled product (PL fired aDAO's ids_total / operator guards on its first run)
         VENUES: venues,
-        PHOENIX_TOKEN_IDS: tiers.map(String),
+        PHOENIX_TOKEN_IDS: tiers.map(String), NAMED_TIER: namedKey || 'phoenix',
     };
 }
 // Marketplaces — shared venue contracts (the same three across every collection; a collection lists on a subset: COL.VENUES)
@@ -1801,7 +1804,7 @@ function aggregate(records, daodaoStakers, enterpriseStakers, marketplaces, back
 
 function tierOf(record) {
     if (record.broken) return 'broken';
-    if (PHOENIX_TOKEN_IDS.has(String(record.id))) return 'phoenix';
+    if (PHOENIX_TOKEN_IDS.has(String(record.id))) return NAMED_TIER;
     return 'base';
 }
 
@@ -1853,10 +1856,10 @@ function buildFloorHistoryRow(records, sales, firstSeenEntries, backing, nowIso)
     const recordById = new Map(records.map(r => [String(r.id), r]));
     const nowMs = new Date(nowIso).getTime();
     const perTier = {};
-    for (const tier of ['broken', 'base', 'phoenix']) {
+    for (const tier of ['broken', 'base', NAMED_TIER]) {
         const listed = records.filter(r => r.listing && r.listing.marketplace && tierOf(r) === tier);
         const priced = listed.filter(r => r.listing.price_usd != null).map(r => r.listing.price_usd);
-        const sf = sales ? salesFloorForTier(sales, tier, recordById, SALES_FLOOR_K[tier]) : { floor: null, n: 0 };
+        const sf = sales ? salesFloorForTier(sales, tier, recordById, SALES_FLOOR_K[tier] ?? SALES_FLOOR_K.phoenix) : { floor: null, n: 0 };
         // Days-on-market: mean age of currently-listed items with a first-seen entry.
         const ages = [];
         for (const r of listed) {
@@ -2653,7 +2656,7 @@ async function captureSnapshot() {
         const row = buildFloorHistoryRow(records, sales, firstSeenDoc.entries, summary.backing, nowIso);
         floorHistoryDoc = upsertFloorHistory(priorFloorHistory, row, nowIso);
         console.log(`  ✓ first-seen: +${fs2.stats.added} new / ${fs2.stats.kept} kept / ${fs2.stats.pruned} pruned`);
-        for (const t of ['broken', 'base', 'phoenix']) {
+        for (const t of ['broken', 'base', NAMED_TIER]) {
             const x = row.per_tier[t];
             console.log(`  ${t.padEnd(7)}: listed ${x.listed_count}, listing floor $${x.listing_floor_usd ?? '—'}, sales floor $${x.sales_floor_usd ?? '—'} (n=${x.sales_floor_n}), DOM ${x.avg_days_on_market ?? '—'}d`);
         }
