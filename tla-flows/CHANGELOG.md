@@ -2,7 +2,7 @@
 
 ## 3.5.12 — 2026-10-14 — a partly amplified add still owns its legs (pnl 1.7.0)
 
-- The maintainer's first Rallies LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA) showed "started 2,362 LUNA", ~16 short. Cause: Rallies
+- The first app-built LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA) showed "started 2,362 LUNA", ~16 short. Cause: the app
   amplifies the expected LP **minus the slippage limit** (the on-chain minimum; the rest stays in the wallet), so the stake's bond
   (742,429,213) never equals the add's share (745,915,125); `splitEvent` matched amplified stakes to provides by exact share only, so the
   deposit got no provide legs and fell back to the pool's basket — cost in LUNA + arbLUNA (1,583 + 308.5) instead of the USDC.inj + SOLID
@@ -15,7 +15,7 @@
 
 ## 3.5.11 — 2026-10-14 — P&L follows new activity (pnl 1.6.1)
 
-- Owner: "boost the run frequency on the crons that power the data in Rallies, make this stuff show up sooner". The walker already files
+- Owner: "boost the run frequency on the crons that power the app data, make this stuff show up sooner". The walker already files
   new events every hour; the P&L built once a day, so a deposit / convert / exit showed its cost the next morning.
 - **`PNL_CADENCE=events` (the new default):** the daily build, plus a rebuild as soon as the walker's `events/index.json` total has moved
   since the last build and that build is at least `PNL_MIN_GAP_MIN` old (default 120, floor 30). New activity shows within ~2 h; quiet
@@ -25,8 +25,8 @@
 
 ## 3.5.10 — 2026-10-14 — a make is a cost leg too
 
-- The maintainer's first Rallies LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA, one tx) turned 963.5 LUNA into 309.25 arbLUNA at Eris'
-  arb vault (Rallies routes LUNA → arbLUNA there when it pays more than a swap). The walker kept only `action: swap` legs, so the P&L
+- The first app-built LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA, one tx) turned 963.5 LUNA into 309.25 arbLUNA at Eris'
+  arb vault (the app routes LUNA → arbLUNA there when it pays more than a swap). The walker kept only `action: swap` legs, so the P&L
   would have read that arbLUNA as sent from the wallet. `flowsExtractCost` now records a **make** in tx order: `{kind:'make',
   offer_asset:'uluna', offer_amount: deposit_amount, ask_asset: <the minted token>, return_amount: share}` from
   `arb/execute_deposit` + the token's `mint` (shape proven by the wallet-txs probe of that tx). pnl-positions undoes it like a swap.
@@ -50,7 +50,7 @@
 
 ## 3.5.8 — 2026-10-14 — a deposit costs what left the wallet: zaps and conversions count their swaps (pnl 1.5.0)
 
-- Owner (Rallies → Positions): a zap of LUNA into LUNA-arbLUNA / PAXG-WBTC "shows the LUNA in but not the swaps to zap in … when we are
+- Owner (wallet app → Positions): a zap of LUNA into LUNA-arbLUNA / PAXG-WBTC "shows the LUNA in but not the swaps to zap in … when we are
   swapping LPs … we need to make sure we are seeing all the swaps". The walker already records every swap leg of a tx (`cost.swaps`), but
   the book costed a deposit from the PROVIDED legs only — post-swap. A zap of 5,000 LUNA into USDC-SOLID was booked as "224.96 USDC in"
   (cost $224.96) and the swap's loss was nowhere; an LP → LP conversion lost it between the two positions.

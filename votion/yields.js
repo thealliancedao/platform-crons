@@ -113,7 +113,7 @@ async function assetYields(sym, hubAddr, T, readMonth, nowMs, errors) {
 
 // ── "steak" hubs (bLUNA — Backbone, 2026-10-13) ─────────────────────────────
 // No exchange_rates history: `state` → { total_usteak, total_native, exchange_rate }, and the rate rises ONLY when someone calls
-// `harvest` (rewards withdrawn by bonds / unbonds sit in the hub's bank balance until then). Proven by rally's bluna-probe 1.0
+// `harvest` (rewards withdrawn by bonds / unbonds sit in the hub's bank balance until then). Proven by the bluna-probe 1.0 chain probe
 // (2026-10-13): rate 1.769853 unchanged since at least 2026-08-01, 4 of 8 validators jailed (1.05M of 2.44M LUNA), 282k LUNA idle.
 // So two numbers, both published, never one for the other:
 //   realised_apr  — what holders actually got: the rate's own growth (ratio series, rate now from `state`) over 30 days

@@ -2,7 +2,7 @@
 // =============================================================================
 // nfts/nft-inventory / earn.js 1.0.0 (2026-10-13) — what ONE unbroken NFT of a backed collection is worth and what it earns.
 // -----------------------------------------------------------------------------
-// Owner (2026-10-13, Rallies' Home "Earning" row): "for an aDAO NFT we could use the avg of the last 3 sales in USD for unbroken base to
+// Owner (2026-10-13, a wallet dashboard's home "Earning" row): "for an aDAO NFT we could use the avg of the last 3 sales in USD for unbroken base to
 // identify the value staked, then calculate avg rewards to backing to figure out aDAO NFTs APR". One small file the apps read; the math
 // lives here, once.
 //   value  = the average USD of the last 3 sales of NFTs that are unbroken today (sales-enriched notional_usd — the oracle's USD that day)

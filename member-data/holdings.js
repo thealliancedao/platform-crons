@@ -2,10 +2,10 @@
 // =============================================================================
 // member-data / holdings.js 1.0.0 (2026-10-13) — what every participant holds OUTSIDE TLA, once a day.
 // -----------------------------------------------------------------------------
-// Why (owner 2026-10-13: "for data on wallets and history … build out the alliance DAO repo as the data layer and history layer so
-// rallies and the aDAO dashboard are reading a single source of truth"): the TLA capture (capture-engine) reads locks, LPs, rewards and
+// Why (owner 2026-10-13: build out the alliance DAO repo as the data layer and history layer for wallets, so
+// the aDAO dashboard and other apps read a single source of truth): the TLA capture (capture-engine) reads locks, LPs, rewards and
 // the LUNA-family natives in a wallet — not the wallet's cw20 tokens, LUNA staked with validators, CAPA / ROAR staked for governance, or
-// the LUNA backing inside aDAO NFTs. Rallies read those live for "now"; this records them per day so the past has them too.
+// the LUNA backing inside aDAO NFTs. Apps read those live for "now"; this records them per day so the past has them too.
 //
 // Reads per wallet (bounded concurrency, publicnode): bank balances (all natives, named by the token catalog) · one cw20 `balance` per
 // HOLDINGS.cw20 token · delegations + unbonding (staking LCD) · CAPA governance `staker` · ROAR `staked_balance_at_height` + `claims`.
@@ -34,7 +34,7 @@ const num = (x) => (x == null || x === '' || !isFinite(Number(x))) ? null : Numb
 const human = (raw, dec) => { const n = num(raw); return n == null ? null : n / Math.pow(10, dec); };
 const r8 = (x) => (x == null || !isFinite(x)) ? null : Number(x.toPrecision(10));
 
-// ── pure parsers (gated on the Rallies probe fixtures' shapes) ──────────────────────────────────────────────────────
+// ── pure parsers (gated on the chain probe fixtures' shapes) ──────────────────────────────────────────────────────
 function parseCw20Balance(d) { const b = d && d.balance; return /^\d+$/.test(String(b)) ? String(b) : null; }
 function parseCapaGov(d) { const b = d && d.balance; return /^\d+$/.test(String(b)) ? String(b) : null; }
 function parseCw20Stake(staked, claims) {

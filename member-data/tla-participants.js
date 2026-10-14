@@ -242,7 +242,7 @@ async function discoverBribeProviders() {
 // -----------------------------------------------------------------------------
 // DISCOVERY — source 3: followed wallets (2026-10-13)
 // -----------------------------------------------------------------------------
-// Wallets that asked to be followed without holding a TLA lock (a Rallies user who only LPs or only holds tokens), listed in
+// Wallets that asked to be followed without holding a TLA lock (a followed wallet that only LPs or only holds tokens), listed in
 // tla-core docs/curated/followed-wallets.json { wallets: [{ address, since, via }] }. Only addresses — no names, no people. Captured exactly
 // like every participant (same engine, same products), tagged source 'followed'. A missing or unreadable list = no followed wallets.
 const FOLLOWED_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/followed-wallets.json';
@@ -504,7 +504,7 @@ async function run() {
         console.log('  ✓ member-data/participants/participants.json');
         await publishFile('member-data/participants/heartbeat.json', hbContent, `heartbeat ${status} epoch ${epochInfo.number}`);
         // debt.json (2026-10-13): every participant's loans in one small file — Credia + Solid: collateral, debt, health, liquidation.
-        // Read by Rallies' Home "Debt" row (the full record stays in current.json, ~3 MB — too heavy for a phone's every visit).
+        // Read by a wallet dashboard's home "Debt" row (the full record stays in current.json, ~3 MB — too heavy for a phone's every visit).
         try { const d = debtDoc(valid, startedAt); await publishFile('member-data/participants/debt.json', JSON.stringify(d) + '\n', `participants debt ${Object.keys(d.wallets).length} wallets`); console.log(`  ✓ member-data/participants/debt.json (${Object.keys(d.wallets).length} wallets)`); }
         catch (e) { console.warn('  ⚠ debt.json failed (isolated):', e.message); }
         console.log('  ✓ member-data/participants/heartbeat.json');

@@ -1,18 +1,18 @@
 # member-data — changelog
 
 
-## 1.7.0 — 2026-10-13 — the wallet data + history layer Rallies and the aDAO dashboard both read
+## 1.7.0 — 2026-10-13 — the wallet data + history layer the aDAO dashboard and other apps read
 
-- Owner: "rallies is its own repo … for data on wallets and history build out the alliance DAO repo as the data layer and history layer
-  so rallies and the aDAO dashboard are reading a single source of truth." Contract + reader notes: README "The wallet data + history layer".
+- Owner: wallet data and history get built out in the alliance DAO repo as the data layer and history layer, so the aDAO dashboard
+  and other apps read a single source of truth. Contract + reader notes: README "The wallet data + history layer".
 - `holdings.js` 1.0.0 (tla-participants phase 8, the 23:xx run): every participant's wallet tokens (bank in full, named by the token
-  catalog; the Rallies-registry cw20s), LUNA delegated + unbonding, CAPA governance (`staker`), ROAR staking (`staked_balance_at_height`
+  catalog; the wallet-app registry cw20s), LUNA delegated + unbonding, CAPA governance (`staker`), ROAR staking (`staked_balance_at_height`
   + `claims`), aDAO NFT backing (a join on the NFT inventory: held + staked unbroken × per-NFT backing). Failed read = null + reason.
 - `history-tokens.js` 1.0.0: tokens by place per wallet per day, folded from the participants / member / holdings / Votion archives,
   the CAPA census and the LST ratio history. Seeds 2026-08-11 → today; then refolds the last day (its archive may have been rewritten
   since) → today. 246 wallets × 64 days, 2.7 MB.
 - tla-participants: `member-data/participants/debt.json` every run — loans only (Credia + Solid: collateral, debt, health, liquidation), ~25 KB
-  for a phone (Rallies' Home "Debt" row). nft-inventory `earn.js` 1.0.0: `<slug>/snapshots/earn.json` (value = avg of the last 3 sales of
+  for a phone (a wallet dashboard's home "Debt" row). nft-inventory `earn.js` 1.0.0: `<slug>/snapshots/earn.json` (value = avg of the last 3 sales of
   NFTs unbroken today; yield = backing growth per NFT over ~30 days → APR on value and on backing).
 - tla-participants: source 3, followed wallets (`tla-core docs/curated/followed-wallets.json`, addresses only, ≤ FOLLOWED_MAX).
 - Finding: one plain-LUNA lock reports 1 LUNA in the lock but 899 at lock (token 765); the capture's `total_locked_luna_equivalent`

@@ -2953,7 +2953,7 @@ async function runWithAnalytics() {
         try { console.log('\n=== market-history (same job; no rarity map → analytics + compact-bundle skipped) ==='); await require('./market-history.js').main(); console.log('=== market-history done ==='); }
         catch (e) { console.error('market-history failed (isolated, inventory unaffected):', e.message); process.exitCode = 1; }
     // watch (2026-10-13, watch.js 1.0.0): each tier's floor, 7-day average, 24 h change, new-floor flag and last-3-sales average →
-    // snapshots/watch.json, read by Rallies' Home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
+    // snapshots/watch.json, read by a wallet dashboard's home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
     if (process.env.NFT_WATCH !== '0') {
         try { const MH = require('./market-history.js'); await require('./watch.js').run({ readJson: (p) => MH._io.fetchJson(MH._io.RAW(p)), publish: MH._io.publish, root: MH.PATHS.NFT_ROOT }); }
         catch (e) { console.error('watch failed (isolated, inventory unaffected):', e.message); }
@@ -2982,7 +2982,7 @@ async function runWithAnalytics() {
         process.exitCode = 1;
     }
     // earn (2026-10-13, earn.js 1.0.0): one unbroken NFT's value (avg of the last 3 sales of NFTs unbroken today) and what its backing
-    // earns (growth per NFT over ~30 days) → snapshots/earn.json, read by Rallies' Home "Earning" row. A join over this job's own files;
+    // earns (growth per NFT over ~30 days) → snapshots/earn.json, read by a wallet dashboard's home "Earning" row. A join over this job's own files;
     // isolated; skipped for a collection without backing; NFT_EARN=0 disables.
     if (process.env.NFT_EARN !== '0') {
         try {
@@ -2993,7 +2993,7 @@ async function runWithAnalytics() {
         } catch (e) { console.error('earn failed (isolated, inventory unaffected):', e.message); }
     }
     // watch (2026-10-13, watch.js 1.0.0): each tier's floor, 7-day average, 24 h change, new-floor flag and last-3-sales average →
-    // snapshots/watch.json, read by Rallies' Home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
+    // snapshots/watch.json, read by a wallet dashboard's home NFT tiles. A join over this job's own files; isolated; NFT_WATCH=0 disables.
     if (process.env.NFT_WATCH !== '0') {
         try { const MH = require('./market-history.js'); await require('./watch.js').run({ readJson: (p) => MH._io.fetchJson(MH._io.RAW(p)), publish: MH._io.publish, root: MH.PATHS.NFT_ROOT }); }
         catch (e) { console.error('watch failed (isolated, inventory unaffected):', e.message); }

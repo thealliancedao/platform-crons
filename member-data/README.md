@@ -79,7 +79,7 @@ idle_bps }}, unvoted_buckets, avg_utilization_pct, fully_utilized, influence }`.
 
 ## The wallet data + history layer (1.7.0, 2026-10-13) — the ONE place apps read a wallet's past
 
-Rallies (rallies.money) and the aDAO dashboard both read these products; neither keeps its own wallet history. Each app reads
+The aDAO dashboard and other apps read these products; none keeps its own wallet history. Each app reads
 **now** live from the chain and **the past** from here. This section is that contract's only home — the apps link here.
 
 ```
@@ -93,7 +93,7 @@ nft-collections <slug>/snapshots/earn.json     one unbroken NFT's value (avg of 
 ```
 
 **Who is covered.** Participants = TLA lock holders ∪ bribe providers ∪ **followed wallets** (`tla-core docs/curated/followed-wallets.json`,
-addresses only; a wallet that asks to be followed without a lock — e.g. a Rallies user who only LPs). Registered aDAO members come from
+addresses only; a wallet that asks to be followed without a lock — e.g. one that only LPs). Registered aDAO members come from
 the positions archive. A wallet's history starts the day it is first covered — no archive, no row (never back-filled by guess).
 
 **holdings rec** (per wallet): `tokens {SYM: amount}` liquid in the wallet (all natives named by the token catalog + the `HOLDINGS.cw20`

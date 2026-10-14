@@ -2,9 +2,9 @@
 // =============================================================================
 // member-data / history-tokens.js 1.0.0 (2026-10-13) — every wallet's tokens BY PLACE, one row a day.
 // -----------------------------------------------------------------------------
-// Why (owner 2026-10-13, Rallies' Home chart): "LUNA — luna held liquid, staked on chain, underlying in locks, in Votion, backing aDAO
+// Why (owner 2026-10-13, a wallet dashboard's home chart): "LUNA — luna held liquid, staked on chain, underlying in locks, in Votion, backing aDAO
 // NFTs, staked in LPs … if you select CAPA, ROAR it will track ALL the balances". history-series (one USD row a day) answers "how much";
-// this answers "of what, and where". It is the one history both Rallies and the aDAO dashboard read — the live point stays live in each app.
+// this answers "of what, and where". It is the one history the aDAO dashboard and other apps read — the live point stays live in each app.
 //
 // Folded, never captured: every input is an archive another duty already writes.
 //   member-data/participants/daily/<d>  locks · TLA LPs (pool share of each token) · pending rewards / rebase / bribes · LUNA-family natives

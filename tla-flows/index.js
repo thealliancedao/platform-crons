@@ -399,7 +399,7 @@ function classifyFlowTx(txr) {
 // any provide_liquidity slippage (imbalanced "Tokens" deposits). Cross-denom
 // legs kept raw — the cron records receipt truth; analysis prices the rollup.
 // v3.5.10: a MAKE — LUNA turned into a liquid-staked token by its maker instead of swapped — is a leg too, in tx order, marked
-// kind:'make' (Rallies routes LUNA → arbLUNA through Eris' arb vault when it pays more; without it the P&L read the minted arbLUNA as
+// kind:'make' (the app routes LUNA → arbLUNA through Eris' arb vault when it pays more; without it the P&L read the minted arbLUNA as
 // sent from the wallet). Proven shape (wallet-txs probe 2026-10-14): {action:'arb/execute_deposit', deposit_amount (uluna), share}
 // + the token's {action:'mint', amount: share}.
 function flowsExtractCost(wasm) {

@@ -3,7 +3,7 @@
 // nfts/nft-inventory / watch.js 1.0.0 (2026-10-13) — one small file per collection for a phone: each tier's floor, its 7-day average,
 // the 24 h change, whether a fresh listing just set a new floor, and the average of the tier's last 3 sales (USD at the time of each sale).
 // -----------------------------------------------------------------------------
-// Owner (2026-10-13, Rallies' Home NFT tiles): "follow the floor price of these collections in a compact way — 7d avg and 24 hr change,
+// Owner (2026-10-13, a wallet dashboard's home NFT tiles): "follow the floor price of these collections in a compact way — 7d avg and 24 hr change,
 // highlight if it was recently listed new FP … values based on FP of holdings … and avg of past 3 sales in USD at the time of the sale".
 // A pure join over this job's own files — floor-history.json (daily per-tier listing floors), sales-enriched.json, listing-first-seen.json,
 // nfts.json (each token's tier today) and collection.json (tier id sets). No chain reads.

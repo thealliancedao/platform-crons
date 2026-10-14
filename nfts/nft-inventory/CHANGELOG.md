@@ -1,7 +1,7 @@
 # nfts/nft-inventory — changelog
 
 
-## earn.js 1.0.0 + watch.js 1.0.0 — 2026-10-13 — small per-collection files for Rallies' Home
+## earn.js 1.0.0 + watch.js 1.0.0 — 2026-10-13 — small per-collection files for a wallet dashboard's home
 - `snapshots/earn.json` (collections with backing): one unbroken NFT's value = avg of the last 3 sales of NFTs unbroken today (USD at
   each sale), and its yield = backing growth per NFT over ~30 days → APR on value and on backing.
 - `snapshots/watch.json` (every collection): per tier (broken / base / collection.json named tiers) — floor now, 7-day average, 24 h

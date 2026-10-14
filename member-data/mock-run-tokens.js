@@ -8,7 +8,7 @@
 //   T5 a holdings day: wallet tokens come from holdings ONLY (no double count of the TLA capture's wallet natives); st / gov / nft land
 //      in their places; ampLUNA backing converted to LUNA at the day's ratio; cov carries 'h'
 //   T6 a token with no ratio stays itself (zluna) — never converted at a guessed rate; a place not covered is absent, never 0
-//   T7 holdings parsers on the proven chain shapes (Rallies stakes / capagov probes): cw20 balance, CAPA gov staker, cw20_stake + claims,
+//   T7 holdings parsers on the proven chain shapes (stakes / capagov chain probes): cw20 balance, CAPA gov staker, cw20_stake + claims,
 //      delegations + unbonding; a failed read is null (blank), an empty one is 0
 //   T8 nftIndex: listed NFTs apart; broken never backs; staked = real owner ≠ holder
 //   T9 shards: one file per first address character + index; the whole product stays small (< 6 MB)

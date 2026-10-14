@@ -163,14 +163,14 @@ const TLA_TOKENS = {
 };
 
 // ── Holdings: what a wallet holds OUTSIDE TLA, read once a day for every participant (member-data holdings.js, 2026-10-13) ──
-// Owner (2026-10-13): "for data on wallets and history … build out the alliance DAO repo as the data layer and history layer so rallies and
-// the aDAO dashboard read a single source of truth". Rallies' Home chart counts every place a token sits; these are the places the TLA
-// capture (capture-engine) does not read. Query shapes: tla-core docs/queries.md §21 (proven by the Rallies stakes / capagov probes).
-//   cw20: the tokens Rallies' registry lists (symbol → contract, decimals). Natives come from the bank in full (named by the token catalog).
+// Owner (2026-10-13): build out the alliance DAO repo as the data layer and history layer for wallets, so the aDAO dashboard and
+// other apps read a single source of truth. A wallet dashboard's home chart counts every place a token sits; these are the places the TLA
+// capture (capture-engine) does not read. Query shapes: tla-core docs/queries.md §21 (proven by the stakes / capagov chain probes).
+//   cw20: the tokens a wallet app's registry lists (symbol → contract, decimals). Natives come from the bank in full (named by the token catalog).
 //   gov:  token stakes for governance — still the wallet's tokens. capa_gov: `staker {address}` → balance (CAPA) ·
 //         cw20_stake: `staked_balance_at_height {address}` → balance, + `claims {address}` (unstaking) — both counted.
 //   nft:  the aDAO collection's backing: unbroken NFTs the wallet holds or has staked (the inventory's real_owner) × the backing per NFT
-//         (summary.backing.per_nft_ampluna). Listed NFTs are counted apart (not in backing) — Rallies counts held + staked.
+//         (summary.backing.per_nft_ampluna). Listed NFTs are counted apart (not in backing) — the home chart counts held + staked.
 const HOLDINGS = {
     cw20: {
         ampLUNA:     { addr: 'terra1ecgazyd0waaj3g7l9cmy5gulhxkps2gmxu9ghducvuypjq68mq2s5lvsct', decimals: 6 },

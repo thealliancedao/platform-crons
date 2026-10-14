@@ -70,5 +70,5 @@ So the yields product publishes two numbers and never swaps one for the other:
   × (1 − hub `fee_rate`) ÷ `total_native`. Provisions leg only (the alliance take-rate leg is unmeasured, as for `apr_stakers`).
 - `validators` (bonded / jailed, commission, LUNA each), `jailed_luna`, `idle_luna` (hub bank balance), `pending_rewards_luna`.
 
-First read (rally `bluna-probe` 1.0, 2026-10-13): rate 1.769853 unchanged since at least 2026-08-01; 4 of 8 validators jailed
+First read (chain `bluna-probe` 1.0, 2026-10-13): rate 1.769853 unchanged since at least 2026-08-01; 4 of 8 validators jailed
 (≈1.05M of 2.44M LUNA earning nothing); ≈282k LUNA idle in the hub; ≈8.8k LUNA rewards waiting. Gate: `mock-run-yields.js` D14–D16.
