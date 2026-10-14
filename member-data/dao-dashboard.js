@@ -382,7 +382,7 @@ function aggregateUnclaimed({ bucketResps, rebaseResp, voteResp, connectorRates 
         for (const item of (resp || [])) z += parseFloat(item?.reward_asset?.amount) || 0;
         zTotal += z;
         const rate = connectorRates[bucket];
-        if (z > 0 && rate) depositLuna += (z / 1e6) / rate;
+        if (z > 0 && rate) depositLuna += (z / 1e6) * rate;   // 2026-10-14: rate = LUNA per zLUNA (share × last exchange rate) — it was divided
     }
     const lunaPrice = prices.LUNA || 0;
     const unclaimed_rewards = {
@@ -459,8 +459,8 @@ async function captureUnclaimed(prices, ampRatio) {
     // ever isn't, those buckets contribute via the project rate as a proxy is
     // WRONG, so instead we query them lazily only when needed:
     const connectorRates = {
-        project: Number(prConn?.share_exchange_rate) || null,
-        single:  Number(snConn?.share_exchange_rate) || null,
+        project: lunaPerZluna(prConn),
+        single:  lunaPerZluna(snConn),
         bluechip: null, stable: null,
     };
     const bucketResps = { bluechip: bc, project: pr, single: sn, stable: st };
@@ -469,12 +469,16 @@ async function captureUnclaimed(prices, ampRatio) {
         for (const item of (bucketResps[b] || [])) z += parseFloat(item?.reward_asset?.amount) || 0;
         if (z > 0) {
             const conn = await queryChain(ZLUNA_CONNECTORS[b], { state: {} });
-            connectorRates[b] = Number(conn?.share_exchange_rate) || null;
+            connectorRates[b] = lunaPerZluna(conn);
             if (!connectorRates[b]) throw new Error(`zLUNA in ${b} but connector rate unavailable`);
         }
     }
     return aggregateUnclaimed({ bucketResps, rebaseResp, voteResp, connectorRates }, prices, ampRatio);
 }
+
+// LUNA per zLUNA from a ve3-connector-alliance state: share_exchange_rate (ampLUNA per zLUNA) × last_exchange_rate (LUNA per ampLUNA) —
+// the same rule as lib/capture-engine.js and proven on chain (2026-10-13 probe)
+function lunaPerZluna(c) { const r = Number(c?.share_exchange_rate) * Number(c?.last_exchange_rate); return r > 0 ? r : null; }
 
 // ── Section: DAO treasury (main-wallet balances, legacy shape) ──────────────
 // ── Section: last claims (2026-08-24) ────────────────────────────────────────
