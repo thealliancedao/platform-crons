@@ -1,5 +1,18 @@
 # tla-flows — changelog
 
+## 3.5.12 — 2026-10-14 — a partly amplified add still owns its legs (pnl 1.7.0)
+
+- The maintainer's first Rallies LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA) showed "started 2,362 LUNA", ~16 short. Cause: Rallies
+  amplifies the expected LP **minus the slippage limit** (the on-chain minimum; the rest stays in the wallet), so the stake's bond
+  (742,429,213) never equals the add's share (745,915,125); `splitEvent` matched amplified stakes to provides by exact share only, so the
+  deposit got no provide legs and fell back to the pool's basket — cost in LUNA + arbLUNA (1,583 + 308.5) instead of the USDC.inj + SOLID
+  that went in, no swaps undone, and a derived start.
+- **pnl-positions 1.8.0:** when no add matches exactly, an amplified stake takes the one unused add of its own pool whose share covers
+  the bond; its legs are scaled to bond ÷ share. The convert now costs 57.77 USDC.inj + 51.78 SOLID (what went in, swaps and the
+  arb-vault make undone) and starts at exactly the provided legs × that share (1,591.6 LUNA + 306.2 arbLUNA, tier M).
+- Builder bump (tla-flows-pnl-1.7.0): every ledger rebuilds on the next run. Gates: mock-run-pnl-zap 19/19 (+Z13, the real tx);
+  mock-run-pnl-v3 37/39 (same two pre-existing reds).
+
 ## 3.5.11 — 2026-10-14 — P&L follows new activity (pnl 1.6.1)
 
 - Owner: "boost the run frequency on the crons that power the data in Rallies, make this stuff show up sooner". The walker already files

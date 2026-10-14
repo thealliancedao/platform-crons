@@ -83,4 +83,21 @@ console.log('— 3.5.10 a make (LUNA → arbLUNA at the arb vault) is a leg; the
   // only for the part that went on: 51.912365 × 52.314296 / 52.445348 = 51.783
   check('Z12 the new position cost = the old one\'s refund tokens that went in (≈ 58.29 USDC.inj + 51.78 SOLID), no LUNA / arbLUNA left over', Object.keys(o).sort().join() === [USDC, SOLID].sort().join() && Math.abs(o[USDC] / 1e6 - 58.29) < 0.05 && Math.abs(o[SOLID] / 1e6 - 51.783) < 0.005, o); }
 
+console.log('— 1.8.0 an amplify of less than the add minted (Rallies stakes the minimum) still owns that add —');
+{ const { flowsExtractCost } = require('./index.js');
+  const A = 'native:factory/terra1a/uLP', B = 'cw20:terra1phz6qdzszgwj303rp5cfpfgcgfq0wwg0na2he980t58mryz69hyqsjkfc0';
+  const W = [{"_contract_address": "terra1heml6j6ewfmjj845vmhm27a4xt9hfgs67uv8qfsjkyza0auelyksmm6cxv", "action": "swap", "offer_asset": "ibc/E8481AD838C31D4FC12A504B10F9B4E2F830F8818D2735C2FFC707579B5FA60B", "offer_amount": "58581772", "ask_asset": "uluna", "return_amount": "1354959427"}, {"_contract_address": "terra1mkt8nv7q2u0aj4zpndh23642cnkztg66x65dlj0vhluyk95m8lys9lp2cv", "action": "swap", "offer_asset": "terra10aa3zdkrc7jwuf8ekl3zq7e7m42vmzqehcmu74e4egc7xkm5kr2s0muyst", "offer_amount": "51912365", "ask_asset": "ibc/E8481AD838C31D4FC12A504B10F9B4E2F830F8818D2735C2FFC707579B5FA60B", "return_amount": "52445348"}, {"_contract_address": "terra1heml6j6ewfmjj845vmhm27a4xt9hfgs67uv8qfsjkyza0auelyksmm6cxv", "action": "swap", "offer_asset": "ibc/E8481AD838C31D4FC12A504B10F9B4E2F830F8818D2735C2FFC707579B5FA60B", "offer_amount": "52314296", "ask_asset": "uluna", "return_amount": "1209334937"}, {"_contract_address": "terra1r9gls56glvuc4jedsvc3uwh6vj95mqm9efc7hnweqxa2nlme5cyqxygy5m", "action": "arb/execute_deposit", "deposit_amount": "963509973", "share": "309247836"}, {"_contract_address": "terra1se7rvuerys4kd2snt6vqswh9wugu49vhyzls8ymc02wl37g2p2ms5yz490", "action": "mint", "amount": "309247836"}, {"_contract_address": "terra1p9lcjw8knxhtv2pyr9wa8e2ushjnjllljvsuu9cugv7trqynjzasz4x52j", "action": "provide_liquidity", "share": "745915125"}, {"_contract_address": "terra1phz6qdzszgwj303rp5cfpfgcgfq0wwg0na2he980t58mryz69hyqsjkfc0", "action": "mint", "amount": "745915125"}, {"_contract_address": "terra1eywh4av8sln6r45pxq45ltj798htfy0cfcf7fy3pxc2gcv6uc07se4ch9x", "action": "deposit", "amount": "742429213"}];
+  const e = { ...base, txhash: 'T5', type: 'withdraw', pool: A, amount: '54504069', cost: flowsExtractCost(W),
+    withdraw_liqs: [{ pair: 'pa', refund_assets: [{ denom: USDC, amount: '58700000' }, { denom: SOLID, amount: '52000000' }] }],
+    provides: [{ pair: 'pb', assets: [{ denom: 'uluna', amount: '1599032741' }, { denom: ARB, amount: '307651942' }], share: '745915125' }],
+    flows: [{ type: 'withdraw', mechanism: 'amplified', user: 'u', pool: A, amount: '54504069', amplp_burned: '54504069' }, { type: 'deposit', mechanism: 'amplified', user: 'u', pool: B, amount: '742429213', bond_amount: '742429213' }] };
+  const pieces = PP.splitEvent(e, new Map([['pa', 'factory/terra1a/uLP'], ['pb', B.slice(5)]]), new Set());
+  const dep = pieces.find((x) => x.type === 'deposit');
+  check('Z13 the deposit owns the add, scaled to bond ÷ share (742,429,213 / 745,915,125)', dep && dep.provides && dep.provides.length === 1 && Math.abs(dep.provides[0].bond_of_share - 742429213 / 745915125) < 1e-12, dep && dep.provides);
+  const cx = { ...ctx, amountDisplay: (d, raw) => (d === 'uluna' || d === ARB || d === USDC || d === SOLID ? raw / 1e6 : null), priceUsd: (d) => (d === 'uluna' ? 0.045 : d === ARB ? 0.14 : 1) };
+  const book = PP.newBook(); for (const x of pieces) PP.applyEvent(book, cx, x, new Set());
+  const lot = book.positions.get(PP.keyOf(B, 'amplified')).lots[0];
+  const it = Object.fromEntries(lot.items.map((i) => [i.denom, +i.amount.toFixed(3)]));
+  check('Z13 its cost is the USDC.inj + SOLID that went in (no LUNA / arbLUNA), its start the provided legs × that share (exact)', !it.uluna && !it[ARB] && it[USDC] > 57 && it[USDC] < 58.6 && lot.start_tier === 'M' && Math.abs(lot.start.find((x) => x.denom === 'uluna').amount - 1599.032741 * 742429213 / 745915125) < 0.01, { it, start: lot.start, tier: lot.start_tier }); }
+
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
