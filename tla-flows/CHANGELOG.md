@@ -1,5 +1,15 @@
 # tla-flows — changelog
 
+## 3.5.11 — 2026-10-14 — P&L follows new activity (pnl 1.6.1)
+
+- Owner: "boost the run frequency on the crons that power the data in Rallies, make this stuff show up sooner". The walker already files
+  new events every hour; the P&L built once a day, so a deposit / convert / exit showed its cost the next morning.
+- **`PNL_CADENCE=events` (the new default):** the daily build, plus a rebuild as soon as the walker's `events/index.json` total has moved
+  since the last build and that build is at least `PNL_MIN_GAP_MIN` old (default 120, floor 30). New activity shows within ~2 h; quiet
+  hours cost nothing. The heartbeat records `events_index_total` (what the build saw). `daily` / `weekly` still available.
+- Why not every hour flat: each build re-reads every event month and price month from GitHub raw (~270 MB) — fine every couple of hours
+  when something happened, wasteful hourly on quiet days. Lower `PNL_MIN_GAP_MIN` on Render if fresher is worth it.
+
 ## 3.5.10 — 2026-10-14 — a make is a cost leg too
 
 - The maintainer's first Rallies LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA, one tx) turned 963.5 LUNA into 309.25 arbLUNA at Eris'
