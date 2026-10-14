@@ -1,5 +1,19 @@
 # tla-flows — changelog
 
+## 3.5.9 — 2026-10-14 — started-with tokens, both sides (pnl 1.6.0)
+
+- Owner: "what I'm trying to show is the token amounts you started with for both sides vs what it is today … the yield growing the token
+  amounts and what IL has done by balancing … USD P&L is almost always driven by token prices". `tok_in` (3.5.8) is what left the wallet —
+  for a zap, one token — so there was no "both sides at entry" to compare with.
+- **pnl-positions 1.7.0:** every lot keeps `start` — the pool's tokens it held the moment it went in. Both sides provided (a balanced add,
+  or a zap's optimal swap) → those legs, exact (`start_tier: 'M'`); one side only (single-sided provide) or no provide leg → the LP it got ×
+  the pool's basket per LP at the nearest epoch read (`'D'`). Carried through partial exits and migrations like the cost.
+  `open_tok.tok_start` + `start_tier` sit next to `tok_in` and `tok_now`. With `open_lp.lp_in_raw` vs the LP now, a page can split
+  started → now into **compounding** (more LP) and **rebalancing** (each LP holding a different mix).
+- Example (a 2025 LUNA-SOLID amplified position): started 159.7 LUNA + 43.3 SOLID → now 472.2 LUNA + 22.0 SOLID.
+- Gates: mock-run-pnl-zap 15/15 (+Z10 single-sided start from the basket, +Z11 a zap's provided legs as start). mock-run-pnl-v3 37/39 (same
+  two pre-existing reds).
+
 ## 3.5.8 — 2026-10-14 — a deposit costs what left the wallet: zaps and conversions count their swaps (pnl 1.5.0)
 
 - Owner (Rallies → Positions): a zap of LUNA into LUNA-arbLUNA / PAXG-WBTC "shows the LUNA in but not the swaps to zap in … when we are

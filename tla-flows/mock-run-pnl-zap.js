@@ -10,6 +10,7 @@
 //   Z6 part of a swap's output not provided (returned to the wallet): only the provided share counts
 //   Z7 a swap whose output isn't in this basket (another pool's leg): ignored
 //   Z8 exit to one token: refund 100 LUNA + 20 X, swap 20 X → 160 LUNA ⇒ out = 260 LUNA; in a conversion tx the exit stays at the refund
+//   Z10/Z11 (1.7.0) start = the pool's tokens at entry: single-sided → LP × basket (D); both sides provided → the legs (M)
 //   Z9 the book: a zap deposit's lot carries LUNA as its tokens in and costs the LUNA at that day's price; split pieces all see the swaps
 const PP = require('./lib/pnl-positions');
 let pass = 0, fail = 0; const check = (n, ok, x) => { if (ok) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n + (x != null ? ' — ' + JSON.stringify(x) : '')); } };
@@ -51,4 +52,23 @@ const base = { txhash: 'T1', timestamp: '2026-10-14T02:15:43Z', user: 'u', pool:
   const book = PP.newBook(); for (const x of pieces) PP.applyEvent(book, ctx, x, new Set());
   const pb = book.positions.get(PP.keyOf(B, 'non_amplified'));
   check('Z9 conversion: the new position\'s tokens in are the old position\'s refund (100 LUNA + 20 X), not the swapped USDC', pb && JSON.stringify(pb.lots[0].items.map((i) => [i.denom, i.amount]).sort()) === JSON.stringify([['X', 20], ['uluna', 100]]), pb && pb.lots[0].items); }
+console.log('— 1.7.0 start: the pool\'s tokens at entry, both sides —');
+{ // single-sided zap of 1,250 LUNA into LUNA-arbLUNA: LP minted 365.105152 (bond), pool basket 2 LUNA + 0.5 ARB per LP (raw per raw)
+  const P = PP.newPools(); PP.addEpochState(P, { complete: true, epoch: 207, start_time: '2026-10-12T00:00:00Z', pairs: { [POOL]: { ok: true, total_share: '1000000', assets: [{ denom: 'uluna', amount: '2000000' }, { denom: ARB, amount: '500000' }] } } });
+  const c2 = { ...ctx, pools: PP.finishPools(P), amountDisplay: (d, raw) => (d === 'uluna' || d === ARB || d === USDC || d === 'X' ? raw / 1e6 : null), priceUsd: (d) => (d === 'uluna' ? 0.045 : d === ARB ? 0.14 : 1) };
+  const book = PP.newBook();
+  const e = { ...base, txhash: 'T3', type: 'deposit', amount: '1', provides: [{ pair: 'p', assets: [{ denom: 'uluna', amount: '1250000000' }, { denom: ARB, amount: '0' }], share: '365105152' }], cost: { swaps: [] },
+    flows: [{ type: 'deposit', mechanism: 'amplified', user: 'u', pool: POOL, amount: '1', bond_amount: '365105152' }] };
+  for (const x of PP.splitEvent(e, null, new Set())) PP.applyEvent(book, c2, x, new Set());
+  const lot = book.positions.get(PP.keyOf(POOL, 'amplified')).lots[0];
+  const st = Object.fromEntries((lot.start || []).map((i) => [i.denom, +i.amount.toFixed(4)]));
+  check('Z10 single-sided: start = LP × basket (730.2103 LUNA + 182.5526 arbLUNA), tier D; in = 1,250 LUNA', st.uluna === 730.2103 && st[ARB] === 182.5526 && lot.start_tier === 'D' && lot.items[0].amount === 1250, { st, tier: lot.start_tier, items: lot.items }); }
+{ // optimal-swap zap: 1,000 LUNA → 400 swapped to 50 X, provided 600 LUNA + 50 X ⇒ in = 1,000 LUNA, start = 600 LUNA + 50 X (exact, M)
+  const book = PP.newBook();
+  const e = { ...base, txhash: 'T4', type: 'deposit', amount: '1', provides: [{ pair: 'p', assets: [{ denom: 'uluna', amount: '600000000' }, { denom: 'X', amount: '50000000' }] }], cost: { swaps: [sw('uluna', 400000000, 'X', 50000000)] },
+    flows: [{ type: 'deposit', mechanism: 'amplified', user: 'u', pool: POOL, amount: '1', bond_amount: '77' }] };
+  for (const x of PP.splitEvent(e, null, new Set())) PP.applyEvent(book, ctx, x, new Set());
+  const lot = book.positions.get(PP.keyOf(POOL, 'amplified')).lots[0];
+  check('Z11 two-sided after a swap: start = the provided legs (exact), in = what left the wallet', lot.start_tier === 'M' && JSON.stringify(lot.start.map((i) => [i.denom, i.amount])) === JSON.stringify([['uluna', 600], ['X', 50]]) && lot.items.length === 1 && lot.items[0].amount === 1000, { start: lot.start, items: lot.items }); }
+
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
