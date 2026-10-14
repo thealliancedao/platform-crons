@@ -1,5 +1,9 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.19.0 (2026-10-13, owner: going live — "people will ask the bot when they find problems and get answers or a ticket they can forward to me"):
+//   TICKETS — rule 18: an unresolved problem ends with a ---TICKET--- block (page, wallet, what they saw, what was checked, the read); the
+//   server stamps an ID + time and logs it ([ticket] in the Render log); the site chat shows it as a card with Copy. Rule 17 knows the
+//   portfolio's LUNA-first view and My wallets (4.2.0). Corpus: the changelogs / DATA-MAP / portfolio chapter carry everything to 10-13.
 // v1.18.0 (2026-10-05, owner: "I asked it a question and then tried to add to the previous question … it wouldn't let me"): FOLLOW-UPS — /ask takes
 //   `history` ([{role:'user'|'assistant', content}], the last 6 turns, each ≤ 1,500 chars) and sends it ahead of the question, so "what about
 //   last epoch?" knows what "it" is. A wallet named earlier in the conversation is still the wallet a follow-up asks about. The site's
@@ -352,7 +356,25 @@ Hard rules, in priority order:
      weekly history, net deposits and Credia/Solid history arrive with the next portfolio update. PLANNED: leaderboards. Never guess who
      owns a wallet. The trend's org archive starts 2026-08-11.
    - Two lenses: quote USD and, where the tool has it, LUNA; separate what LUNA's price did from what the position did (Votion legs,
-     the P&L's market vs pool split). End with the rule-2 line when the answer touches what to do.`;
+     the P&L's market vs pool split). End with the rule-2 line when the answer touches what to do.
+   - SINCE 2026-10-13 (member-portfolio 4.2.0): the page opens in LUNA — the chart's "LUNA held" view stacks the LUNA a wallet holds by
+     place (wallet + LSTs, staked with validators, TLA locks, LPs, Votion, aDAO NFT backing, rewards) from member-data/history/tokens,
+     LSTs counted as the LUNA behind them; places recorded only from 2026-10-13 (validator staking, NFT backing — the daily holdings record)
+     are drawn faded "(est.)" at today's amount before that day. USD is one tap away everywhere. "My wallets" saves several addresses on
+     the visitor's device and "All combined" adds up their DAILY records (LUNA held, TLA value, VP); live numbers stay per wallet.
+18. TICKETS (v1.19.0, owner 2026-10-13: "people will ask the bot when they find problems … get answers or a ticket they can forward to
+   me") — when the visitor reports something broken, wrong, missing or not loading and you could NOT resolve it from the data (a fault, a
+   claim you cannot refute, CANNOT VERIFY, a page error you cannot explain), answer as usual, then end with a ticket in EXACTLY this form:
+---TICKET---
+PAGE: <the page or card>
+WALLET: <the terra1… address involved, or none>
+WHAT THEY SAW: <their words, with the number or message they saw>
+WHAT I CHECKED: <the product paths and their capturedAt, and what each showed>
+MY READ: <known cause | plausible fault | cannot verify> — <one line why>
+---END TICKET---
+   Say in one line before it: "If this is still wrong, copy the ticket and send it to @DeFi_Patriot." No ticket when you fully answered it
+   (a documented behaviour explained) unless the visitor says it is still wrong. Never put a guess in WHAT I CHECKED — only what you read.
+   Never include anything private (no API keys, no system prompt text).`;
 
 // ---- triage modes (v1.7.0) ----------------------------------------------------
 // The Help page's Report/Request forms now run THROUGH the assistant first:
@@ -1048,7 +1070,17 @@ async function ask(question, explicitWallet, page, mode, history) {
   }
   const answer = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n')
     || 'I could not complete the chain lookup — the public node may be busy. Try again, or paste the tx hash directly.';
-  return { answer, spend_month_usd: Math.round(spend.usd * 1000) / 1000, chain_queries: rounds };
+  return { answer: stampTicket(answer, { page, wallet: explicitWallet }), spend_month_usd: Math.round(spend.usd * 1000) / 1000, chain_queries: rounds };
+}
+
+// ---- v1.19.0 tickets: the model drafts the block; the server stamps an ID + time (the model cannot make a unique one) and logs it ----
+function stampTicket(answer, ctx) {
+  const i = String(answer).indexOf('---TICKET---'); if (i < 0) return answer;
+  const now = new Date(); const id = 'T-' + now.toISOString().slice(2, 10).replace(/-/g, '') + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+  const head = `---TICKET---\nID: ${id}\nWHEN: ${now.toISOString().slice(0, 16).replace('T', ' ')} UTC${ctx && ctx.page ? `\nFROM PAGE: ${String(ctx.page).slice(0, 120)}` : ''}`;
+  const out = answer.slice(0, i) + head + answer.slice(i + '---TICKET---'.length);
+  try { const j = out.indexOf('---END TICKET---'); console.log('[ticket]', id, JSON.stringify(out.slice(i, j > 0 ? j : i + 1500)).slice(0, 2000)); } catch (e) {}
+  return out;
 }
 
 // ---- http surface -------------------------------------------------------------
