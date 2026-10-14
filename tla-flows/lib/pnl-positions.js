@@ -40,7 +40,7 @@
  *                sampler did not read, or tokens with no price, are listed in `missing` — the total is then a lower bound.
  */
 
-const VERSION = 'pnl-positions-1.5.0';   // 1.5.0 (2026-09-30, owner: the aDAO treasury's LUNA-FUEL cost held every token of a 15-stake DAO proposal and 10 of its 16 pools had no cost): ONE EVENT PER STAKE — splitEvent() turns a tx's flows[] (every stake / unstake the walker saw) into one event per (user, pool, mechanism); each gets only the provides / withdraw_liquidity legs of its OWN pool (pair → LP from state-history; an amplified stake also claims the provide whose share equals its bond amount); the tx-wide legs (swap cost, fee, zap-out) stay on the signer's first piece only, so nothing is counted twice. Before: only a tx's FIRST stake was booked (1,044 member stakes / unstakes in 247 wallets were never booked) and every provide in the tx was charged to it. Protocol contracts (the compounder, zapper, buckets, gauge, escrow) are never wallets · 1.4.0 (2026-09-28, owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — see how things did in token amounts in and out?"): every trip carries the TOKENS it put in and took out (tok_in / tok_out: [[symbol, amount], …] — the provided / refunded legs when measured, else the derived basket); positions carry token totals in / out and, for open lots, tokens in vs tokens now plus what the entry tokens would be worth held (hold_usd / hold_luna: the LP-vs-hold figure for open positions) · 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
+const VERSION = 'pnl-positions-1.6.0';   // 1.6.0 (2026-10-14, owner: a zap of 5,000 LUNA into USDC-SOLID booked as "225 USDC in" — "it shows the LUNA in but not the swaps to zap in … we need to make sure we are seeing all the swaps"): a deposit's cost is WHAT LEFT THE WALLET — the provided legs with the same tx's swaps undone (each swap's output that was provided is replaced by what was offered for it, multi-hop in reverse), so a zap's swap loss is part of the cost and tok_in shows the LUNA that went in. A withdraw in a tx with no provide (zap-out to one token) is booked as what came back after the swaps. An LP → LP conversion (withdraw + swaps + provide in one tx) books the old position's exit at its refund and the new position's cost as those refund tokens: the swap loss lands once, on the new position. Every piece of a split tx sees the tx's swaps (tx_swaps) — only the signer's first still carries them as cost · 1.5.0 (2026-09-30, owner: the aDAO treasury's LUNA-FUEL cost held every token of a 15-stake DAO proposal and 10 of its 16 pools had no cost): ONE EVENT PER STAKE — splitEvent() turns a tx's flows[] (every stake / unstake the walker saw) into one event per (user, pool, mechanism); each gets only the provides / withdraw_liquidity legs of its OWN pool (pair → LP from state-history; an amplified stake also claims the provide whose share equals its bond amount); the tx-wide legs (swap cost, fee, zap-out) stay on the signer's first piece only, so nothing is counted twice. Before: only a tx's FIRST stake was booked (1,044 member stakes / unstakes in 247 wallets were never booked) and every provide in the tx was charged to it. Protocol contracts (the compounder, zapper, buckets, gauge, escrow) are never wallets · 1.4.0 (2026-09-28, owner: "when you shift from USD to LUNA shouldn't this be USD to Tokens — see how things did in token amounts in and out?"): every trip carries the TOKENS it put in and took out (tok_in / tok_out: [[symbol, amount], …] — the provided / refunded legs when measured, else the derived basket); positions carry token totals in / out and, for open lots, tokens in vs tokens now plus what the entry tokens would be worth held (hold_usd / hold_luna: the LP-vs-hold figure for open positions) · 1.3.1 (2026-09-28): a ceiling dispute the transfer record fully explains is a moved receipt (not_held, named), not "disputed" · 1.3.0 (2026-09-28): positions carry moves[] (where their receipts went, named) and held_in when a not-held receipt sits with a custodian (kept open and counted) · 1.2.0 (2026-09-28): a referee answer {reason:'not_held'} marks the position not_held — its open lots stay listed but leave the open totals, unrealized, net and the curve's now point; realized trips and claims are kept (unlike a dispute, which drops the whole position) · 1.1.0 (2026-09-28, owner: LPs "how much the take rate has taken compared to entry so they know how much to top it up with" + realised APRs): every lot keeps the LP tokens it put in (lp_in); positions export open LP in vs now (take-rate drag for non-amplified, compounding growth for amplified, both valued now) and open capital × days for APR
 const DAY = 86400000;
 const MAX_BASKET_DAYS = 10;           // an event more than 10 days from any epoch read of its pool gets no derived basket
 const RATE_BOUNDS = [0.05, 20];       // a sample outside these is a parse error, not a rate — dropped and counted
@@ -163,6 +163,36 @@ function legsItems(ctx, assets) {   // [{denom, amount raw}] → display items, 
 }
 const tierCount = (p, k) => { p.tiers[k] = (p.tiers[k] || 0) + 1; };
 
+// 1.6.0: what left the wallet for a deposit = the provided legs with the tx's swaps undone. raw: Map(norm denom → raw amount).
+// Swaps undone newest first (multi-hop LUNA → X → Y unwinds Y → X → LUNA); a swap counts only for the part of its output that is
+// still in the basket (an output that went elsewhere — another pool's provide, back to the wallet — is not this deposit's).
+function undoSwaps(raw, swaps) {
+  let undone = 0;
+  for (const sw of [...(swaps || [])].reverse()) {
+    const ask = norm(sw.ask_asset), off = norm(sw.offer_asset), ret = num(sw.return_amount), offer = num(sw.offer_amount);
+    if (!ask || !off || !(ret > 0) || !(offer > 0)) continue;
+    const have = raw.get(ask) || 0; if (!(have > 0)) continue;
+    const f = Math.min(1, have / ret);
+    raw.set(ask, have - ret * f); raw.set(off, (raw.get(off) || 0) + offer * f); undone++;
+  }
+  return undone;
+}
+// … and for a withdraw with no provide in its tx (exit to one token): the refund with the tx's swaps applied, oldest first
+function applySwaps(raw, swaps) {
+  let done = 0;
+  for (const sw of swaps || []) {
+    const ask = norm(sw.ask_asset), off = norm(sw.offer_asset), ret = num(sw.return_amount), offer = num(sw.offer_amount);
+    if (!ask || !off || !(ret > 0) || !(offer > 0)) continue;
+    const have = raw.get(off) || 0; if (!(have > 0)) continue;
+    const f = Math.min(1, have / offer);
+    raw.set(off, have - offer * f); raw.set(ask, (raw.get(ask) || 0) + ret * f); done++;
+  }
+  return done;
+}
+const legsRaw = (assets) => { const m = new Map(); for (const a of assets || []) { const d = norm(a.denom), v = num(a.amount); if (d && v > 0) m.set(d, (m.get(d) || 0) + v); } return m; };
+const rawLegs = (m) => [...m].filter(([, v]) => v > 0.5).map(([denom, amount]) => ({ denom, amount: String(Math.round(amount)) }));
+const txSwaps = (e) => (Array.isArray(e.tx_swaps) ? e.tx_swaps : e.cost && Array.isArray(e.cost.swaps) ? e.cost.swaps : []);
+
 // one flow event into the book (pass 2, chronological within a month; months in order). migrations: Set of `${tx}|${pool}`.
 function applyEvent(book, ctx, e, migrations) {
   if (!e || e.retracted || !e.user || !e.pool || !(e.type === 'deposit' || e.type === 'withdraw')) return;
@@ -171,7 +201,12 @@ function applyEvent(book, ctx, e, migrations) {
   if (e.type === 'deposit') {
     const units = num(e.amount); if (!(units > 0)) return; p.deposits++;
     let items = null, tier = null;
-    if (Array.isArray(e.provides) && e.provides.length) { items = legsItems(ctx, e.provides.flatMap(pr => pr.assets || [])); tier = items ? 'M' : null; }
+    if (Array.isArray(e.provides) && e.provides.length) {
+      const raw = legsRaw(e.provides.flatMap(pr => pr.assets || []));
+      const undone = undoSwaps(raw, txSwaps(e));   // 1.6.0: what left the wallet, not what reached the pool
+      items = legsItems(ctx, rawLegs(raw)); tier = items ? 'M' : null;
+      if (undone && items) p.zap_in = (p.zap_in || 0) + 1;
+    }
     if (!items) {
       let lpRaw = null;
       if (mech === 'amplified') { const f = (e.flows || []).find(x => x.user === e.user && mechOf(x.mechanism) === 'amplified' && num(x.bond_amount) > 0); if (f) lpRaw = num(f.bond_amount); }
@@ -195,7 +230,13 @@ function applyEvent(book, ctx, e, migrations) {
   if (!(units > 0)) return; p.withdraws++;
   // what came out
   let outItems = null, outTier = null;
-  if (Array.isArray(e.withdraw_liqs) && e.withdraw_liqs.length) { outItems = legsItems(ctx, e.withdraw_liqs.flatMap(w => w.refund_assets || [])); outTier = outItems ? 'M' : null; }
+  if (Array.isArray(e.withdraw_liqs) && e.withdraw_liqs.length) {
+    const raw = legsRaw(e.withdraw_liqs.flatMap(w => w.refund_assets || []));
+    // 1.6.0: an exit to one token (no provide anywhere in the tx) is what came back after the swaps; in a conversion the swaps belong to
+    // the new position's cost (its deposit undoes them), so the exit stays at the refund
+    if (!e.tx_has_provide && applySwaps(raw, txSwaps(e))) p.zap_out = (p.zap_out || 0) + 1;
+    outItems = legsItems(ctx, rawLegs(raw)); outTier = outItems ? 'M' : null;
+  }
   if (!outItems) { const lpRaw = mech === 'amplified' ? num(e.amount) : units * rateAt(ctx.rates, key, t).r; const b = basketAt(ctx.pools, e.pool, t); if (b) { outItems = basketItemsFromLp(ctx, b.basket, lpRaw); outTier = outItems ? 'D' : null; } }
   const outV = outItems ? valueBasket(ctx, outItems, day) : null;
   // consume FIFO — each consumed piece is split off its lot first (partial lots consumed proportionally)
@@ -353,7 +394,7 @@ function walletOutput(book, ctx, address) {
         take_rate: p.mech === 'non_amplified' && !measured ? { unmeasured: true, why: 'no share-rate sample near when these lots went in — the LP they started with is not known, so the drag is not guessed' } : p.mech === 'non_amplified' && d != null && d > 0 ? { lp_raw: r6(d), pct: lpIn > 0 ? r6(d / lpIn) : null, usd: perLpUsd != null ? r2(d * perLpUsd) : null, luna: perLpLuna != null ? r6(d * perLpLuna) : null, note: 'LP tokens the take rate removed since these lots went in = the top-up that restores them' } : undefined,
         amp_growth: p.mech === 'amplified' && measured && d != null && d < 0 ? { lp_raw: r6(-d), pct: lpIn > 0 ? r6(-d / lpIn) : null, usd: perLpUsd != null ? r2(-d * perLpUsd) : null } : undefined,
         open_since: p.lots.reduce((m, l) => (m == null || l.day < m ? l.day : m), null), capital_days_usd: capUsd != null ? r2(capUsd) : null, capital_days_luna: capLuna != null ? r6(capLuna) : null, as_of_day: latest.day }; }
-    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, held_in: heldIn || undefined, moves: moves && moves.length ? moves : undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
+    positions[key] = { pool: p.pool, name: (ctx.pools.names && ctx.pools.names.get(p.pool)) || undefined, mechanism: p.mech, disputed: dispute || undefined, not_held: notHeld || undefined, held_in: heldIn || undefined, moves: moves && moves.length ? moves : undefined, open_lp: lpBlock, deposits: p.deposits, withdraws: p.withdraws, zap_in: p.zap_in || undefined, zap_out: p.zap_out || undefined, units_open: p.units_open > 0 ? p.units_open : 0, lots_open: p.lots.length,
       open_cost_usd: p.lots.length ? (costOk ? r2(cost_usd) : null) : 0, open_cost_luna: p.lots.length ? (costOk ? r6(cost_luna) : null) : 0,
       open_value_usd: value ? r2(value.usd) : (p.units_open > 0 ? null : 0), open_value_luna: value ? r6(value.luna) : (p.units_open > 0 ? null : 0), rate_tier: value ? value.rate_tier : undefined,
       realized: { trips: trips.length, valued: tv.length, suspect: ts || undefined, in_usd: r2(R.in_usd), out_usd: r2(R.out_usd), delta_usd: r2(R.delta_usd), in_luna: r6(R.in_luna), out_luna: r6(R.out_luna), delta_luna: r6(R.delta_luna), market_usd: r2(R.market_usd), lp_usd: r2(R.lp_usd),
@@ -393,7 +434,8 @@ function walletOutput(book, ctx, address) {
 function splitEvent(e, lpOfPair, contracts) {
   if (!e || e.retracted || (e.type !== 'deposit' && e.type !== 'withdraw')) return [e];
   const flows = (Array.isArray(e.flows) ? e.flows : []).filter(f => f && f.user && f.pool && (f.type === 'deposit' || f.type === 'withdraw') && !(contracts && contracts.has(f.user)));
-  if (!flows.length) return (contracts && contracts.has(e.user)) ? [] : [e];
+  const whole = { ...e, tx_swaps: e.cost && Array.isArray(e.cost.swaps) ? e.cost.swaps : undefined, tx_has_provide: Array.isArray(e.provides) && e.provides.length > 0 };
+  if (!flows.length) return (contracts && contracts.has(e.user)) ? [] : [whole];
   const P = norm; const provs = (e.provides || []).map(pr => ({ pr, pool: lpOfPair && pr.pair ? lpOfPair.get(pr.pair) || null : null, used: false }));
   const wls = (e.withdraw_liqs || []).map(wl => ({ wl, pool: lpOfPair && wl.pair ? lpOfPair.get(wl.pair) || null : null, used: false }));
   const out = []; let signerFirst = true;
@@ -412,9 +454,20 @@ function splitEvent(e, lpOfPair, contracts) {
     }
     legsFor.set(i, mine);
   }
+  // 1.6.0: the tx's swaps for undoing (what left the wallet). With several deposits in one tx, a swap whose output token sits in two or more
+  // of their baskets can't be placed (a DAO proposal swapping into LUNA for several LUNA pools) — it's left out and those deposits keep
+  // their provided legs, as before; a swap into a token only one deposit holds (or an intermediate hop) stays.
+  const allSwaps = e.cost && Array.isArray(e.cost.swaps) ? e.cost.swaps : [];
+  let txSwapsOk = allSwaps;
+  const depLegs = flows.map((f, i) => (f.type === 'deposit' ? legsFor.get(i) || [] : null)).filter(Boolean);
+  if (depLegs.length > 1 && allSwaps.length) {
+    const holders = new Map(); for (const legs of depLegs) { const seen = new Set(); for (const pr of legs) for (const a of pr.assets || []) if (num(a.amount) > 0) seen.add(norm(a.denom)); for (const d of seen) holders.set(d, (holders.get(d) || 0) + 1); }
+    txSwapsOk = allSwaps.filter(sw => (holders.get(norm(sw.ask_asset)) || 0) < 2);
+  }
   for (let i = 0; i < flows.length; i++) {
     const f = flows[i]; const mine = legsFor.get(i) || []; const isSigner = f.user === e.user;
     const ev = { ...e, type: f.type, mechanism: f.mechanism, user: f.user, pool: f.pool, amount: f.amount, amount_unit: f.unit || e.amount_unit, flows: [f],
+      tx_swaps: txSwapsOk.length ? txSwapsOk : undefined, tx_has_provide: Array.isArray(e.provides) && e.provides.length > 0,
       provides: f.type === 'deposit' ? (mine.length ? mine : undefined) : undefined, withdraw_liqs: f.type === 'withdraw' ? (mine.length ? mine : undefined) : undefined };
     if (!(isSigner && signerFirst)) { ev.cost = undefined; ev.fee = undefined; ev.zap_out_assets = undefined; ev.claims = undefined; ev.claimed_coins = undefined; }
     else signerFirst = false;
@@ -424,5 +477,5 @@ function splitEvent(e, lpOfPair, contracts) {
   return out;
 }
 
-module.exports = { splitEvent, TRIP_COLS, VERSION, norm, keyOf, mechOf, newRates, addRate, finishRates, rateAt, rateSamplesFromEvent, rateSamplesFromEpoch, rateSamplesFromParticipants,
+module.exports = { undoSwaps, applySwaps, splitEvent, TRIP_COLS, VERSION, norm, keyOf, mechOf, newRates, addRate, finishRates, rateAt, rateSamplesFromEvent, rateSamplesFromEpoch, rateSamplesFromParticipants,
   newPools, addEpochState, finishPools, basketAt, newBook, applyEvent, applyClaim, applyBribe, valueCurve, walletOutput, MAX_BASKET_DAYS };

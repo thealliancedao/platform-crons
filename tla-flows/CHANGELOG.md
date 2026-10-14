@@ -1,5 +1,27 @@
 # tla-flows — changelog
 
+## 3.5.8 — 2026-10-14 — a deposit costs what left the wallet: zaps and conversions count their swaps (pnl 1.5.0)
+
+- Owner (Rallies → Positions): a zap of LUNA into LUNA-arbLUNA / PAXG-WBTC "shows the LUNA in but not the swaps to zap in … when we are
+  swapping LPs … we need to make sure we are seeing all the swaps". The walker already records every swap leg of a tx (`cost.swaps`), but
+  the book costed a deposit from the PROVIDED legs only — post-swap. A zap of 5,000 LUNA into USDC-SOLID was booked as "224.96 USDC in"
+  (cost $224.96) and the swap's loss was nowhere; an LP → LP conversion lost it between the two positions.
+- **pnl-positions 1.6.0:** a deposit's tokens in / cost = the provided legs with that tx's swaps undone (each provided swap output is
+  replaced by what was offered for it; multi-hop unwinds newest first; only the share of a swap's output that this deposit provided).
+  The zap above now books **5,000 LUNA in**, valued that day — the swap loss is in the cost. A single-sided provide with no swap (LUNA into
+  LUNA-arbLUNA) is unchanged: that LUNA really went in alone. A **withdraw with no provide in its tx** (exit to one token) is booked as what
+  came back after the swaps. In a **conversion** (withdraw + swaps + provide in one tx) the old position exits at its refund and the new
+  one's cost is those refund tokens — the swap loss lands once, on the new position.
+- Every piece of a split tx now sees the tx's swaps (`tx_swaps`, used only for this — the signer's first piece still carries them as
+  cost). With several deposits in one tx, a swap into a token two or more of them hold can't be placed and is left out (the treasury's
+  15-stake proposal keeps LUNA + FUEL only).
+- Positions carry `zap_in` / `zap_out` counts. The builder bump (tla-flows-pnl-1.5.0) rebuilds every ledger on the next daily run, history
+  included — no `PNL=force`.
+- Gates: new **mock-run-pnl-zap.js** 13/13 (legs from real 2026-10-14 zapper txs + hand-computed multi-hop, partial, foreign-swap,
+  exit and conversion cases). mock-run-pnl-v3 37/39 — the same two reds as before this change (take-rate threshold, owner curve now-point);
+  its foreign-token check now exempts positions entered by a zap or carrying one's cost (2,687 — they cost what left the wallet: LUNA,
+  ampLUNA, ASTRO …) and holds every other position to its pool's tokens (0 foreign).
+
 ## 3.5.7 — 2026-09-30 — one event per stake; a figure that fails its invariants is flagged, never shown as fact (pnl 1.4.0)
 
 - Owner (aDAO treasury portfolio): "I don't feel like we put that much money in … why so many positions in one place and not another"

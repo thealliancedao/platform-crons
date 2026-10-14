@@ -165,14 +165,18 @@ const strip = (o) => { if (Array.isArray(o)) return o.map(strip); if (o && typeo
     check(`two builds identical minus builtAt (${built.files.size} files)`, diff === 0 && b2.files.size === built.files.size, diff); }
   console.log('— V16 (pnl 1.4.0 / pnl-positions 1.5.0) one event per stake · every cost holds only its own pool\'s tokens —');
   { const TREAS = 'terra1sffd4efk2jpdt894r04qwmtjqrrjfc52tmj6vkzjxqhd8qqu2drs3m5vzm'; const base = (x) => String(x || '').toLowerCase().split('.')[0].replace('amp', '').replace(/usd[ct]/, 'usd');
-    let foreign = [], positions = 0, absurd = [], contracts = [];
+    let foreign = [], positions = 0, absurd = [], contracts = [], zapPos = 0;
     for (const [f, doc] of built.files) { if (!/\/ledger\/terra1/.test(f)) continue; const a = f.split('/').pop().slice(0, -5);
       if (/terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx|terra1qdjsxsv96aagrdxz83gwtjk8qvf2mrg4y8y3dqjxg556lm79pg5qdgmaxl/.test(a)) contracts.push(a);
       const C = doc.v3.trip_cols; for (const p of Object.values(doc.v3.positions || {})) { positions++; const name = p.name || ''; if (!name || /^(cw20|native):/.test(name)) continue;
         const pb = new Set(name.split('-').map(base)); const groups = []; if (p.open_tok && p.open_tok.tok_in) groups.push(Object.keys(p.open_tok.tok_in)); for (const t of p.trips || []) { const ti = t[C.indexOf('tok_in')]; if (ti) groups.push(ti.map(x => x[0])); }
-        for (const g of groups) { const fb = g.filter(t => !pb.has(base(t))); if (fb.length || g.length > 2) { foreign.push([a.slice(-6), name, p.mechanism.slice(0, 3), g]); break; } }
+        // 1.6.0: a position entered by a zap (or carrying the cost of one it migrated from) costs what LEFT THE WALLET — LUNA, ampLUNA, ASTRO
+        // into USDC-SOLID is right, not a foreign leg; mock-run-pnl-zap.js checks those. Everything else must still hold only its pool's tokens.
+        if (p.zap_in || p.carried_in) zapPos++;
+        else for (const g of groups) { const fb = g.filter(t => !pb.has(base(t))); if (fb.length || g.length > 2) { foreign.push([a.slice(-6), name, p.mechanism.slice(0, 3), g]); break; } }
         if (!p.disputed && (p.open_cost_usd || 0) > 1e6) absurd.push([a.slice(-6), name, p.open_cost_usd]); } }
-    check(`no position's cost holds a token from outside its pool (${foreign.length} of ${positions})`, foreign.length === 0, foreign.slice(0, 6));
+    if (process.env.DIAG) { console.log('  foreign non-zap', foreign.filter(x => !x[4]).length, JSON.stringify(foreign.filter(x => !x[4]).slice(0, 12))); console.log('  foreign zap', JSON.stringify(foreign.filter(x => x[4]).map(x => x[3].length).reduce((m, k) => (m[k] = (m[k] || 0) + 1, m), {})), JSON.stringify(foreign.filter(x => x[4]).slice(0, 10))); }
+    check(`no position's cost holds a token from outside its pool (${foreign.length} of ${positions}; ${zapPos} entered by zap / carried — they cost what left the wallet)`, foreign.length === 0, foreign.slice(0, 6));
     check(`no protocol contract is a wallet (${contracts.length})`, contracts.length === 0, contracts);
     check(`no counted open cost above $1M (an implausible cost is disputed, not totalled: ${absurd.length})`, absurd.length === 0, absurd.slice(0, 4));
     const L = ledger(TREAS); const pos = L ? Object.values(L.v3.positions) : []; const fuel = pos.find(p => p.name === 'LUNA-FUEL' && p.mechanism === 'amplified');
