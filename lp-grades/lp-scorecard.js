@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.0.0 (2026-10-15) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.1.0 (2026-10-15) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.0.0';
+  var VERSION = 'lp-scorecard-1.1.0';   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -101,6 +101,12 @@
   function presetOf(cfg, id) { var sc = cfg.scorecard || cfg; var ps = sc.presets || []; return ps.filter(function (p) { return p.id === id; })[0] || ps.filter(function (p) { return p.default; })[0] || ps[0]; }
   function letterOf(c, bands) { return c == null ? null : c >= bands.A ? 'A' : c >= bands.B ? 'B' : c >= bands.C ? 'C' : c >= bands.D ? 'D' : 'F'; }
 
+  var BUCKET_ORDER = ['stable', 'project', 'bluechip', 'single'];
+  function groupOf(sc) { return (sc.rank_within === 'bucket') ? function (f) { return f.bucket || 'other'; } : function () { return 'all'; }; }
+  function groupOrder(sc, gs) { var u = []; gs.forEach(function (g) { if (u.indexOf(g) < 0) u.push(g); }); var order = sc.bucket_order || BUCKET_ORDER; return u.sort(function (a, b) { var ia = order.indexOf(a), ib = order.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); }); }
+  // position in its group, 1 = top, 0 = bottom — comparable across groups of different sizes
+  function standing(r) { return r.of > 1 ? 1 - (r.rank - 1) / (r.of - 1) : 1; }
+
   /** base field: TLA pools with trading facts in the window (single-asset gauges carry no trading facts). */
   function inField(f, opt) { if (!f.tla || f.liquidity == null) return false; if (opt && opt.activeOnly && !f.active) return false; return f.liquidity >= ((opt && opt.min_liquidity) || 1000); }
 
@@ -115,20 +121,24 @@
       return true;
     });
     var meta = sc.metrics || {};
-    var cols = {}; Object.keys(w).forEach(function (m) { cols[m] = field.map(function (f) { return f[m]; }); });
-    var scored = field.map(function (f) {
+    // 1.1.0: pools are graded against the other pools IN THEIR BUCKET (config rank_within: "bucket") — emissions are split per
+    // bucket, so a stable pool competes with stable pools, not with project pools. rank_within: "all" grades the whole field.
+    var byB = groupOf(sc);
+    var cols = {}; Object.keys(w).forEach(function (m) { cols[m] = {}; field.forEach(function (f) { var g = byB(f); (cols[m][g] = cols[m][g] || []).push(f[m]); }); });
+    var scored = field.map(function (f) { var g = byB(f);
       var parts = {}, ws = 0, acc = 0, wAll = 0;
       Object.keys(w).forEach(function (m) {
         var dir = meta[m] && meta[m].dir != null ? meta[m].dir : 1;
-        var v = m === 'purpose' ? f.purpose : pctile(cols[m], f[m], dir);
+        var v = m === 'purpose' ? f.purpose : pctile(cols[m][g], f[m], dir);
         parts[m] = v; wAll += w[m]; if (v != null) { ws += w[m]; acc += w[m] * v; }
       });
       var composite = (ws > 0 && ws >= 0.5 * wAll) ? Math.round(acc / ws) : null;
-      return { f: f, parts: parts, composite: composite, weight_present: wAll ? ws / wAll : 0, letter: letterOf(composite, sc.letter_bands || { A: 75, B: 60, C: 45, D: 30 }) };
+      return { f: f, group: g, parts: parts, composite: composite, weight_present: wAll ? ws / wAll : 0, letter: letterOf(composite, sc.letter_bands || { A: 75, B: 60, C: 45, D: 30 }) };
     });
     scored.sort(function (a, b) { return (b.composite == null ? -1 : b.composite) - (a.composite == null ? -1 : a.composite); });
-    scored.forEach(function (s, i) { s.rank = s.composite == null ? null : i + 1; });
-    return { preset: pr, weights: w, field: scored, excluded: wf.pools.filter(function (f) { return f.tla && field.indexOf(f) < 0; }) };
+    var seen = {}, ofG = {}; scored.forEach(function (s) { if (s.composite != null) ofG[s.group] = (ofG[s.group] || 0) + 1; });
+    scored.forEach(function (s) { if (s.composite == null) { s.rank = null; return; } seen[s.group] = (seen[s.group] || 0) + 1; s.rank = seen[s.group]; s.of = ofG[s.group]; });
+    return { preset: pr, weights: w, field: scored, groups: groupOrder(sc, scored.map(function (x) { return x.group; })), rank_within: sc.rank_within || 'all', excluded: wf.pools.filter(function (f) { return f.tla && field.indexOf(f) < 0; }) };
   }
 
   /** rank of each pool on one metric (or 'allround' = the default preset composite) in each window, at one date. */
@@ -143,13 +153,14 @@
   function rankMap(wf, cfg, criterion, opt) {
     var sc = cfg.scorecard || cfg; var m = {};
     if (criterion === 'allround' || (sc.presets || []).some(function (p) { return p.id === criterion; })) {
-      var s = scoreField(wf, cfg, criterion === 'allround' ? 'allround' : criterion, opt); s.field.forEach(function (x) { if (x.rank != null) m[x.f.id] = { rank: x.rank, value: x.composite, of: s.field.filter(function (y) { return y.rank != null; }).length }; });
+      var s = scoreField(wf, cfg, criterion === 'allround' ? 'allround' : criterion, opt); s.field.forEach(function (x) { if (x.rank != null) m[x.f.id] = { rank: x.rank, value: x.composite, of: x.of, group: x.group }; });
       return m;
     }
-    var dir = ((sc.metrics || {})[criterion] || {}).dir || 1;
+    var dir = ((sc.metrics || {})[criterion] || {}).dir || 1; var byB = groupOf(sc);
     var field = wf.pools.filter(function (f) { return inField(f, opt) && isNum(f[criterion]); });
     field.sort(function (a, b) { return dir * (b[criterion] - a[criterion]); });
-    field.forEach(function (f, i) { m[f.id] = { rank: i + 1, value: f[criterion], of: field.length }; });
+    var seen = {}, ofG = {}; field.forEach(function (f) { var g = byB(f); ofG[g] = (ofG[g] || 0) + 1; });
+    field.forEach(function (f) { var g = byB(f); seen[g] = (seen[g] || 0) + 1; m[f.id] = { rank: seen[g], value: f[criterion], of: ofG[g], group: g }; });
     return m;
   }
 
@@ -174,13 +185,14 @@
       (bc.criteria || ['efficiency']).forEach(function (c) {
         var rm = rankMap(wf, cfg, c, opt); var ids = Object.keys(rm);
         if (ids.length < 3) { rows.push({ criterion: c, window: wk, rho: null, n: ids.length }); return; }
-        var xs = ids.map(function (id) { return -rm[id].rank; }), ys = ids.map(function (id) { return alloc[id] || 0; });
+        var xs = ids.map(function (id) { return standing(rm[id]); }), ys = ids.map(function (id) { return alloc[id] || 0; });
         var rho = spearman(xs, ys);
         var ranked = bribedIds.filter(function (id) { return rm[id]; }); var N = ranked.length;
-        var topN = ids.filter(function (id) { return rm[id].rank <= N; }); var overlap = topN.filter(function (id) { return alloc[id]; }).length;
-        var half = Math.ceil(ids.length / 2); var lunaRanked = ranked.reduce(function (s, id) { return s + alloc[id]; }, 0);
-        var lunaTopHalf = ranked.filter(function (id) { return rm[id].rank <= half; }).reduce(function (s, id) { return s + alloc[id]; }, 0);
-        var passed = ids.filter(function (id) { return !alloc[id] && ranked.some(function (b) { return rm[b].rank > rm[id].rank; }); });
+        var nIn = {}; ranked.forEach(function (id) { nIn[rm[id].group] = (nIn[rm[id].group] || 0) + 1; });   // top-N is per group: N = pools bribed in that bucket
+        var overlap = ids.filter(function (id) { return alloc[id] && rm[id].rank <= (nIn[rm[id].group] || 0); }).length;
+        var lunaRanked = ranked.reduce(function (s, id) { return s + alloc[id]; }, 0);
+        var lunaTopHalf = ranked.filter(function (id) { return rm[id].rank <= Math.ceil(rm[id].of / 2); }).reduce(function (s, id) { return s + alloc[id]; }, 0);
+        var passed = ids.filter(function (id) { return !alloc[id] && ranked.some(function (b) { return rm[b].group === rm[id].group && rm[b].rank > rm[id].rank; }); });
         rows.push({ criterion: c, window: wk, rho: rho == null ? null : Math.round(rho * 100) / 100, n: ids.length, bribed_ranked: N, bribed_unranked: bribedIds.length - N, overlap_topN: overlap, luna_ranked_pct: total ? lunaRanked / total * 100 : null, luna_top_half_pct: lunaRanked ? lunaTopHalf / lunaRanked * 100 : null, passed_over: passed.length });
         fields[c + '|' + wk] = rm;
       });
@@ -223,8 +235,8 @@
     for (var E = w.start - 1; E <= w.end + k; E++) {
       var em = series.epochs[String(E)]; if (!em || !em.end) continue; var d = addDays(em.end, -1); if (d > lastDay) { if (em.start <= lastDay) d = lastDay; else break; }
       var rm = rankMap(windowFacts(series, cfg, { asOf: d, window: windowKey || '7d' }), cfg, criterion, opt); var of = 0; for (var id in rm) { of = rm[id].of; break; }
-      var ranks = {}; Object.keys(alloc).forEach(function (id) { ranks[id] = rm[id] ? rm[id].rank : null; });
-      path.push({ epoch: E, asOf: d, of: of, ranks: ranks, phase: E < w.start ? 'before' : E <= w.end ? 'paid' : 'after' });
+      var ranks = {}, ofs = {}; Object.keys(alloc).forEach(function (id) { ranks[id] = rm[id] ? rm[id].rank : null; ofs[id] = rm[id] ? rm[id].of : null; });
+      path.push({ epoch: E, asOf: d, of: of, ranks: ranks, ofs: ofs, phase: E < w.start ? 'before' : E <= w.end ? 'paid' : 'after' });
     }
     return path;
   }
@@ -236,5 +248,5 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, epochOf: epochOf, addDays: addDays, median: median };
+  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });
