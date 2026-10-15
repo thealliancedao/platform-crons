@@ -73,7 +73,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const VERSION = 'lp-grades-2.1.0';   // 2.1.0 (2026-09-17): curated alerts — a pool inherits `alerts` from its underlyings' token-catalog `alert` stamp (kind asset, upstream) and from forum entries naming it; grades untouched · 2.0.0: five-lens v2 grade per pool (v2.js, SPEC-lp-grades-v2 §2) alongside v1
+const VERSION = 'lp-grades-2.2.0';   // 2.2.0 (2026-10-15): LP Scorecard step — builds lp-grades/series/pools.json (address-keyed facts) and re-grades every completed epoch from it under grading_config.json `scorecard` (lp-scorecard.js, identical to the site's lib); five-lens v2 settings read from config `five_lens_v2` · 2.1.0 (2026-09-17): curated alerts — a pool inherits `alerts` from its underlyings' token-catalog `alert` stamp (kind asset, upstream) and from forum entries naming it; grades untouched · 2.0.0: five-lens v2 grade per pool (v2.js, SPEC-lp-grades-v2 §2) alongside v1
 const GITHUB_REPO = process.env.GITHUB_REPO || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
@@ -674,7 +674,8 @@ async function main() {
     for (const b of (pdFit && pdFit.batches) || []) if (b.window && b.window.start <= votedPeriod && b.window.end >= votedPeriod) for (const l of b.legs || []) pdShareByGauge[String(l.gauge).toLowerCase() + '|' + String(l.gauge_pool_id).replace(/^(cw20|native):/, '')] = (pdShareByGauge[String(l.gauge).toLowerCase() + '|' + String(l.gauge_pool_id).replace(/^(cw20|native):/, '')] || 0) + l.luna_per_epoch;
     const archive = [];
     for (let e = currentEpoch - 1; e >= currentEpoch - 8; e--) { const a = await readRepoJson(`lp-grades/epochs/${e}.json`, { required: false }); if (!a) break; const byGauge = {}; for (const r of a.pools || []) if (r.v2 && r.v2.letter) byGauge[r.gauge_pool_id] = { letter: r.v2.letter, basis: 'v2' }; else if (r.grade) byGauge[r.gauge_pool_id] = { letter: r.grade, basis: 'v1' }; archive.push({ epoch: e, byGauge }); }
-    v2 = computeV2(rows, { snapshotPools: snapshot.pools || [], psHistory, votionByGauge, votionRate, runwayPots, votedPeriod, pdShareByGauge, lunaUsd: px('LUNA'), archive });
+    const { CONFIG_V2 } = require('./v2.js'); const cfgV2 = config.five_lens_v2 ? Object.assign({}, CONFIG_V2, config.five_lens_v2) : CONFIG_V2;   // 2.2.0: the five-lens settings live in grading_config.json `five_lens_v2`
+    v2 = computeV2(rows, { snapshotPools: snapshot.pools || [], psHistory, votionByGauge, votionRate, runwayPots, votedPeriod, pdShareByGauge, lunaUsd: px('LUNA'), archive }, cfgV2);
     for (const r of rows) r.v2 = v2.byGauge[r.gauge_pool_id] || null;
     console.log(`  v2: ${v2.meta.graded} graded · distribution ${JSON.stringify(v2.meta.distribution)} · Votion rate ${votionRate == null ? 'n/a' : '$' + votionRate.toFixed(2)}/1M VP · archive epochs ${archive.length}`);
   } catch (e) { console.warn('  ⚠ v2 grade failed (v1 unaffected):', e.message); }
@@ -746,8 +747,54 @@ async function main() {
     console.log(`epoch archive written: ${epRel}`);
   } else console.log(`epoch archive exists, untouched (write-once): ${epRel}`);
 
+  // ---- 8. LP SCORECARD (2.2.0) — facts series + full re-grade under the current config; isolated ----
+  try { await runScorecard(JSON.parse(configText), configSha); }
+  catch (e) { console.warn('  ⚠ scorecard step failed (grades above unaffected):', e.message); }
+
   console.log(`${VERSION} done in ${((Date.now() - out.capturedAtUnix) / 1000).toFixed(1)}s`);
 }
 
+// Lists a repo directory (names only) — gate mode reads disk.
+async function listRepoDir(relDir) {
+  if (LOCAL_DATA_DIR) { const p = path.join(LOCAL_DATA_DIR, relDir); return fs.existsSync(p) ? fs.readdirSync(p) : []; }
+  const res = await githubApiRequest('GET', `/repos/${GITHUB_REPO}/contents/${relDir}?ref=${GITHUB_BRANCH}`);
+  if (res.status === 404) return [];
+  if (res.status < 200 || res.status >= 300 || !Array.isArray(res.body)) throw new Error(`list ${relDir}: HTTP ${res.status}`);
+  return res.body.map(x => x.name);
+}
+
+// The scorecard grades from FACTS (series) + the config — so a config edit re-grades the whole history on the
+// next run, and the page (same lib) re-grades its past views on the next load. Nothing here is write-once:
+// history.json is a pure function of (series, config) and says which config produced it.
+async function runScorecard(fullConfig, configSha) {
+  const { buildSeries } = require('./pool-series.js');
+  const LPS = require('./lp-scorecard.js');
+  const errs = LPS.validate(fullConfig);
+  if (!fullConfig.scorecard) throw new Error('config has no `scorecard` block');
+  if (errs.length) throw new Error('CONFIG HALT (scorecard): ' + errs.join('; '));
+  const io = { listDir: listRepoDir, readText: (r) => readRepoText(r, { required: false }), readJson: (r) => readRepoJson(r, { required: false }) };
+  const series = await buildSeries(io, parseCsv);
+  const sc = fullConfig.scorecard;
+  // current: every preset × the default window, as of the last captured day
+  const asOf = series.days[series.days.length - 1];
+  const presets = {};
+  for (const p of sc.presets) { const s = LPS.scoreField(LPS.windowFacts(series, fullConfig, { asOf, window: sc.default_window }), fullConfig, p.id); presets[p.id] = s.field.map(x => ({ id: x.f.id, name: x.f.name, dex: x.f.dex, bucket: x.f.bucket, rank: x.rank, composite: x.composite, letter: x.letter, parts: x.parts })); }
+  // history: the default preset re-graded at the end of every completed epoch the facts cover
+  const history = [];
+  const firstDay = (series.days.find((d, i) => series.pools.filter(p => p.d && p.d.vol[i] != null).length >= 10) || series.days[0]);   // the first day with a real trading field (Astroport capture, 2026-05-12)
+  for (const [E, m] of Object.entries(series.epochs)) {
+    if (!m.end || m.end > asOf || m.end <= firstDay) continue;
+    const day = LPS.addDays(m.end, -1);
+    const s = LPS.scoreField(LPS.windowFacts(series, fullConfig, { asOf: day, window: sc.default_window }), fullConfig, 'allround');
+    if (!s.field.some(x => x.letter)) continue;   // no gradeable field that week (before the trading capture)
+    history.push({ epoch: Number(E), asOf: day, grades: Object.fromEntries(s.field.filter(x => x.letter).map(x => [x.f.id, [x.letter, x.composite]])) });
+  }
+  const stamp = { config_version: sc.config_version, config_sha: configSha, lib: LPS.VERSION, series: series.version, generatedAt: new Date().toISOString() };
+  await publishFile('lp-grades/series/pools.json', JSON.stringify(series), `lp-grades series ${series.version} (${series.pools.length} pools, ${series.days.length} days)`);
+  await publishFile('lp-grades/scorecard/current.json', JSON.stringify(Object.assign({ schemaVersion: 1, product: 'lp-grades/scorecard', asOf, window: sc.default_window, presets }, stamp), null, 1), `lp-scorecard current (config ${sc.config_version}/${configSha})`);
+  await publishFile('lp-grades/scorecard/history.json', JSON.stringify(Object.assign({ schemaVersion: 1, product: 'lp-grades/scorecard-history', rule: 'the default preset (' + (LPS.presetOf(fullConfig).id) + ') over the default window, re-graded at the last day of every completed epoch from the facts series under the CURRENT config — edit the config and the whole history re-grades on the next run', names: Object.fromEntries(series.pools.map(p => [p.id, p.name + ' · ' + (p.dex || '')])), epochs: history }, stamp)), `lp-scorecard history (${history.length} epochs, config ${sc.config_version})`);
+  console.log(`  scorecard: ${Object.keys(presets).length} presets · history ${history.length} epochs · config ${sc.config_version}/${configSha}`);
+}
+
 if (require.main === module) main().catch(e => { console.error(`${VERSION} FATAL:`, e.message); process.exit(1); });
-module.exports = { applyAlerts, VERSION };   // 2.1.0 — the gate exercises applyAlerts on the committed product
+module.exports = { applyAlerts, VERSION, runScorecard };   // 2.1.0 — the gate exercises applyAlerts on the committed product
