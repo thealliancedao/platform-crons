@@ -30,7 +30,7 @@ const C = require('../config/contracts.js');      // LST_HUBS: symbol → hub (s
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.6.0';   // 1.6.0 (2026-10-13): yields — bLUNA's hub is a "steak" hub (no exchange_rates; the rate rises only on `harvest`): assets.bLUNA.steak = realised_apr (the rate's own 30-day growth — 0 while unharvested), rate_unchanged_days, potential_apr (bonded delegations × (1 − commission) × apr_stakers × (1 − fee) ÷ total_native), validators (bonded / jailed), idle LUNA, rewards waiting (yields.js steakHub; proven by the bluna-probe 1.0 chain probe; gate mock-run-yields D14–D16) · 1.5.1 (2026-09-28): the daily gate at 19.5 h (20 h was missed by 0.6 s by an hourly job and waited an extra hour); the heartbeat records holder_pnl_at and a never-built holder P&L is built at once from the committed positions snapshot · 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
+const VERSION       = 'org-votion-1.7.0';   // 1.7.0 (2026-10-16): archive-node depositor candidates (votion/archive-holders.json, every deposit since launch) join the live-verified holder set · 1.6.0 (2026-10-13): yields — bLUNA's hub is a "steak" hub (no exchange_rates; the rate rises only on `harvest`): assets.bLUNA.steak = realised_apr (the rate's own 30-day growth — 0 while unharvested), rate_unchanged_days, potential_apr (bonded delegations × (1 − commission) × apr_stakers × (1 − fee) ÷ total_native), validators (bonded / jailed), idle LUNA, rewards waiting (yields.js steakHub; proven by the bluna-probe 1.0 chain probe; gate mock-run-yields D14–D16) · 1.5.1 (2026-09-28): the daily gate at 19.5 h (20 h was missed by 0.6 s by an hourly job and waited an extra hour); the heartbeat records holder_pnl_at and a never-built holder P&L is built at once from the committed positions snapshot · 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -383,6 +383,9 @@ async function runBranchB(now, vaults, errors) {
     // verified by live balance, never assumed). File is human-maintained.
     const curated = (await apiGetJson('votion/curated-holders.json')).data || { addresses: [] };
     const curatedAddrs = Array.isArray(curated.addresses) ? curated.addresses : [];
+    // 1.7.0: every depositor since launch, read from the archive node by the votion-holders Action (tla-core) — candidates,
+    // verified by live balance below exactly like the rest. Absent file = no archive candidates (never an error).
+    const archiveDoc = (await apiGetJson('votion/archive-holders.json')).data || { vaults: {} };
 
     // MEMBER SWEEP (dynamic candidates — nothing hardcoded): every wallet
     // member-data currently tracks gets ONE full-balances query; any votion
@@ -420,7 +423,8 @@ async function runBranchB(now, vaults, errors) {
         next.holders.sort();
         registry.vaults[v.address] = next;
         const sweep = sweepHits[v.address] || {};
-        const holders = [...new Set([...discovered, ...curatedAddrs, ...Object.keys(sweep)])];
+        const archiveAddrs = ((archiveDoc.vaults || {})[v.address] || {}).holders || [];
+        const holders = [...new Set([...discovered, ...curatedAddrs, ...archiveAddrs, ...Object.keys(sweep)])];
         if (!complete) anyIncomplete = true;
 
         // 1.2.0 pricing: LUNA_USD x LST's OWN hub rate (three-link chain) is
@@ -449,7 +453,7 @@ async function runBranchB(now, vaults, errors) {
             const shareOfVault = v.state.vdenom_supply_human ? vtoken / v.state.vdenom_supply_human : null;
             return {
                 address: addr,
-                found_via: sweep[addr] != null ? 'member_sweep' : (curatedAddrs.includes(addr) && !discovered.includes(addr) ? 'curated' : 'tx_discovery'),
+                found_via: sweep[addr] != null ? 'member_sweep' : discovered.includes(addr) ? 'tx_discovery' : curatedAddrs.includes(addr) ? 'curated' : archiveAddrs.includes(addr) ? 'archive' : 'tx_discovery',
                 vtoken_balance: vtoken,
                 underlying_lst: underlyingLst != null ? Math.round(underlyingLst * 1e6) / 1e6 : null,
                 underlying_usd: (underlyingLst != null && lstUsd != null) ? Math.round(underlyingLst * lstUsd * 100) / 100 : null,
