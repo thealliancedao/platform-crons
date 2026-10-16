@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.3.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.4.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.3.0';   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.4.0';   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -238,6 +238,29 @@
     return { asOf: asOf, window: windowKey, rows: rows, unscored: unscored, unscored_luna: unscored.reduce(function (s, id) { return s + alloc[id]; }, 0), placed_differently_pct: total ? moved / 2 / total * 100 : null, rho: rho };
   }
 
+  /** Sizing: among the pools a placement picked, does each pool's share of the LUNA match its share of a metric? */
+  function sizingCheck(series, cfg, placement, metric, windowKey, opt) {
+    var sc = cfg.scorecard || cfg; var asOf = addDays(String(placement.executed_at).slice(0, 10), -1);
+    var wf = windowFacts(series, cfg, { asOf: asOf, window: windowKey }); var by = {}; wf.pools.forEach(function (f) { by[f.id] = f; });
+    var grade = {}; scoreField(wf, cfg, 'allround', opt).field.forEach(function (x) { grade[x.f.id] = x; });
+    var fsc = formulaScores(wf, cfg, metric, opt);
+    var val = function (id) { var f = by[id]; if (!f) return null; if (metric === 'grade') return grade[id] && grade[id].composite != null ? grade[id].composite : null; if (fsc) return fsc[id] ? fsc[id].score : null; return isNum(f[metric]) ? f[metric] : null; };
+    var alloc = allocation(placement); var ids = Object.keys(alloc).filter(function (id) { return val(id) != null; }); var skipped = Object.keys(alloc).filter(function (id) { return ids.indexOf(id) < 0; });
+    var tl = ids.reduce(function (s, id) { return s + alloc[id]; }, 0), tv = ids.reduce(function (s, id) { return s + val(id); }, 0);
+    var rows = ids.map(function (id) { var f = by[id]; var sl = tl ? alloc[id] / tl : 0, sv = tv ? val(id) / tv : 0; var g = grade[id];
+      return { id: id, bucket: f.bucket, letter: g ? g.letter : null, rank: g ? g.rank : null, of: g ? g.of : null, luna: alloc[id], luna_share: sl, metric_value: val(id), metric_share: sv, weight: sv > 0 ? sl / sv : null, luna_per_1k_vol_day: f.volume > 0 ? alloc[id] / f.volume * 1000 : null, bucket_pct: f.bucket_pct }; });
+    rows.sort(function (a, b) { return b.luna - a.luna; });
+    var mis = rows.reduce(function (s, r) { return s + Math.abs(r.luna_share - r.metric_share); }, 0) / 2 * 100;
+    // buckets: PD LUNA share vs the bucket's share of all TLA volume and its emission share
+    var bL = {}, bV = {}; rows.forEach(function (r) { bL[r.bucket] = (bL[r.bucket] || 0) + r.luna; });
+    wf.pools.forEach(function (f) { if (inField(f, opt) && isNum(f.volume)) bV[f.bucket] = (bV[f.bucket] || 0) + f.volume; });
+    var tV = Object.keys(bV).reduce(function (s, b) { return s + bV[b]; }, 0);
+    var buckets = groupOrder(sc, Object.keys(bV).concat(Object.keys(bL))).map(function (b) { return { bucket: b, luna_share: tl ? (bL[b] || 0) / tl : 0, volume_share: tV ? (bV[b] || 0) / tV : 0, emission_share: (sc.bucket_share_of_tla || {})[b] != null ? sc.bucket_share_of_tla[b] : null }; });
+    var cpv = rows.map(function (r) { return r.luna_per_1k_vol_day; }).filter(function (v) { return v > 0; });
+    return { asOf: asOf, window: windowKey, metric: metric, rows: rows, skipped: skipped, sized_differently_pct: rows.length > 1 ? mis : null, buckets: buckets,
+      cost_spread: cpv.length > 1 ? { min: Math.min.apply(null, cpv), max: Math.max.apply(null, cpv) } : null };
+  }
+
   /** What changed: each bribed pool before the window, during it, and k epochs after — beside the unbribed field's median change. */
   function afterEffect(series, cfg, placement, opt) {
     var sc = cfg.scorecard || cfg; var k = (opt && opt.after != null) ? opt.after : ((sc.bribe_check || {}).after_epochs || 3);
@@ -285,5 +308,5 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
+  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });
