@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.2.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.3.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.2.0';   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.3.0';   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -157,8 +157,25 @@
     });
     return out;
   }
+  /** a declared formula (config bribe_check.formulas): weighted terms, each min-max normalized within the group */
+  function formulaScores(wf, cfg, fid, opt) {
+    var sc = cfg.scorecard || cfg; var F = ((sc.bribe_check || {}).formulas || {})[fid]; if (!F) return null;
+    var byB = F.within === 'all' ? function () { return 'all'; } : function (f) { return f.bucket || 'other'; };
+    var terms = Object.keys(F.terms || {}); var groups = {};
+    wf.pools.forEach(function (f) { if (!inField(f, opt)) return; if (terms.some(function (t) { return !isNum(f[t]); })) return; (groups[byB(f)] = groups[byB(f)] || []).push(f); });
+    var out = {};
+    Object.keys(groups).forEach(function (g) { var fs = groups[g]; var mm = {}; terms.forEach(function (t) { var a = fs.map(function (f) { return f[t]; }); mm[t] = [Math.min.apply(null, a), Math.max.apply(null, a)]; });
+      fs.forEach(function (f) { var v = 0; terms.forEach(function (t) { var lo = mm[t][0], hi = mm[t][1]; v += F.terms[t] * (hi > lo ? (f[t] - lo) / (hi - lo) : 0); }); out[f.id] = { score: v, group: g }; }); });
+    return out;
+  }
   function rankMap(wf, cfg, criterion, opt) {
     var sc = cfg.scorecard || cfg; var m = {};
+    var fsc = formulaScores(wf, cfg, criterion, opt);
+    if (fsc) {
+      var ofG = {}, seenF = {}; Object.keys(fsc).forEach(function (id) { ofG[fsc[id].group] = (ofG[fsc[id].group] || 0) + 1; });
+      Object.keys(fsc).sort(function (a, b) { return fsc[b].score - fsc[a].score; }).forEach(function (id) { var g = fsc[id].group; seenF[g] = (seenF[g] || 0) + 1; m[id] = { rank: seenF[g], value: fsc[id].score, of: ofG[g], group: g }; });
+      return m;
+    }
     if (criterion === 'allround' || (sc.presets || []).some(function (p) { return p.id === criterion; })) {
       var s = scoreField(wf, cfg, criterion === 'allround' ? 'allround' : criterion, opt); s.field.forEach(function (x) { if (x.rank != null) m[x.f.id] = { rank: x.rank, value: x.composite, of: x.of, group: x.group }; });
       return m;
@@ -208,6 +225,19 @@
     return { asOf: asOf, window: placementWindow(placement), alloc: alloc, luna_total: total, rows: rows, best: valid[0] || null, ranked: valid, fields: fields };
   }
 
+  /** Formula vs actual: if the placement's per-bucket LUNA had been split in proportion to the formula score, where would it go? */
+  function formulaFit(series, cfg, placement, fid, windowKey, opt) {
+    var asOf = addDays(String(placement.executed_at).slice(0, 10), -1);
+    var wf = windowFacts(series, cfg, { asOf: asOf, window: windowKey }); var fsc = formulaScores(wf, cfg, fid, opt) || {};
+    var alloc = allocation(placement); var budget = {}, unscored = [];
+    Object.keys(alloc).forEach(function (id) { if (fsc[id]) budget[fsc[id].group] = (budget[fsc[id].group] || 0) + alloc[id]; else unscored.push(id); });
+    var rows = [], moved = 0, total = 0;
+    Object.keys(budget).forEach(function (g) { var ids = Object.keys(fsc).filter(function (id) { return fsc[id].group === g; }); var sum = ids.reduce(function (s, id) { return s + fsc[id].score; }, 0);
+      ids.forEach(function (id) { var pred = sum > 0 ? budget[g] * fsc[id].score / sum : 0; var act = alloc[id] || 0; moved += Math.abs(pred - act); total += act; rows.push({ id: id, group: g, score: fsc[id].score, predicted: pred, actual: act }); }); });
+    var ids2 = Object.keys(fsc); var rho = spearman(ids2.map(function (id) { return fsc[id].score; }), ids2.map(function (id) { return alloc[id] || 0; }));
+    return { asOf: asOf, window: windowKey, rows: rows, unscored: unscored, unscored_luna: unscored.reduce(function (s, id) { return s + alloc[id]; }, 0), placed_differently_pct: total ? moved / 2 / total * 100 : null, rho: rho };
+  }
+
   /** What changed: each bribed pool before the window, during it, and k epochs after — beside the unbribed field's median change. */
   function afterEffect(series, cfg, placement, opt) {
     var sc = cfg.scorecard || cfg; var k = (opt && opt.after != null) ? opt.after : ((sc.bribe_check || {}).after_epochs || 3);
@@ -255,5 +285,5 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
+  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });
