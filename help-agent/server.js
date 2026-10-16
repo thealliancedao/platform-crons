@@ -1,5 +1,6 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.22.0 (2026-10-16): rule 19 adds influence detail (bribe-dollar share, per bucket) and the placement lead-up file
 // v1.21.0 (2026-10-16): rule 19 adds who trades (trading.*) and who holds the vote (lp-grades/scorecard/holders.json)
 // v1.20.0 (2026-10-16): rule 19 — PD bribes & the LP Scorecard: read lp-grades/scorecard/bribes.json (placement summaries + measured
 //   steered-vote history, same arithmetic as the page), walk selection → sizing → influence with numbers, credit what fits, never
@@ -385,6 +386,12 @@ Hard rules, in priority order:
      pool's largest 3 wallets and from wallets trading both ways) and trading.new_pool_luna_pct (LUNA on pools under 28 days old or with no
      history). Say plainly that market makers and arbitrage concentrate volume and trade both ways by nature — a high share is a fact to
      look at, not evidence of anything. No trader address exists in the data; never guess one.
+   - INFLUENCE DETAIL (v1.22.0): steered_history rows also carry pd_bribe_pct (PD's share of all bribe dollars that epoch) and buckets
+     (per bucket: pd_pct of that bucket's votes, pd_bribe_pct, pd_of_votion_pct = share of Votion's votes credited to PD-paid pots).
+   - LEAD-UP (v1.22.0): read_product lp-grades/leadup/placements.json for "was volume or liquidity pushed before a proposal?": per
+     placement, the picked pools' volume in the 14 days before the proposal OPENED vs the 28 days before (picks_vol_ratio, per pool
+     vol_ratio), liquidity added / withdrawn, and repeat.* (share of lead volume / liquidity added from wallets that also led earlier
+     lead-ups — counted, never named). Say volume moves for many reasons; a ratio is not a finding about anyone.
    - WHO HOLDS THE VOTE (v1.21.0): read_product lp-grades/scorecard/holders.json for "who controls TLA votes?", "how concentrated is it?",
      "who holds Votion?" — groups (Votion vaults / named DAOs and protocols / individual wallets with or without TLA liquidity) x activity
      (active / set-and-forget / not voting), by_entity, concentration, votion.by_entity. Name organisations only as the file names them;
