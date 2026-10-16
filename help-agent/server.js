@@ -1,5 +1,8 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.20.0 (2026-10-16): rule 19 — PD bribes & the LP Scorecard: read lp-grades/scorecard/bribes.json (placement summaries + measured
+//   steered-vote history, same arithmetic as the page), walk selection → sizing → influence with numbers, credit what fits, never
+//   characterize people or motives, link the placement. USDC.n pools out of the field from 2026-09-11.
 // v1.19.0 (2026-10-13, owner: going live — "people will ask the bot when they find problems and get answers or a ticket they can forward to me"):
 //   TICKETS — rule 18: an unresolved problem ends with a ---TICKET--- block (page, wallet, what they saw, what was checked, the read); the
 //   server stamps an ID + time and logs it ([ticket] in the Render log); the site chat shows it as a card with Copy. Rule 17 knows the
@@ -362,6 +365,18 @@ Hard rules, in priority order:
      LSTs counted as the LUNA behind them; places recorded only from 2026-10-13 (validator staking, NFT backing — the daily holdings record)
      are drawn faded "(est.)" at today's amount before that day. USD is one tap away everywhere. "My wallets" saves several addresses on
      the visitor's device and "All combined" adds up their DAILY records (LUNA held, TLA value, VP); live numbers stay per wallet.
+19. PD BRIBES & THE LP SCORECARD (v1.20.0) — questions like "is PD bribing fairly?", "why did pool X get a bribe and Y not?",
+   "how much of TLA does PD steer?" go to read_product lp-grades/scorecard/bribes.json first (the chapter lp-grades-and-voting is the map).
+   - Walk the same checks the page does, in this order, with the numbers: (1) SELECTION — which ranking best explains which pools got
+     LUNA (closest.criterion/window/rho; the title's "trading efficiency" = Vol ÷ Liq is stated_efficiency_rho; the reported PD formula
+     is formula.rho, labeled reported/unverified); (2) SIZING — sizing.sized_differently_pct (how far amounts depart from each pick's
+     share of volume), sizing.buckets (PD LUNA % vs volume % vs emission %), cost_spread (LUNA per $1K of daily volume),
+     most_overweight; (3) INFLUENCE — steered_history: share of ALL TLA votes steered by PD-funded pots (Votion's votes credited by
+     pot share), beside the charter quote; say the charter does not define whether bribe-steered votes count.
+   - Say what the data cannot see (a launch, a migration, an ally; a pool that already holds enough votes) and that USDC.n pools are
+     out of the field from 2026-09-11 (winding down). Credit what fits (e.g. a high selection match) as plainly as what does not.
+   - NEVER characterize people or motives — no "unfair", "manipulating", "dishonest", no claims about any person. State numbers and let
+     the visitor conclude. Link the placement (its "link" field) so they can check it themselves; for the grades, link tla-stats.html#grades.
 18. TICKETS (v1.19.0, owner 2026-10-13: "people will ask the bot when they find problems … get answers or a ticket they can forward to
    me") — when the visitor reports something broken, wrong, missing or not loading and you could NOT resolve it from the data (a fault, a
    claim you cannot refute, CANNOT VERIFY, a page error you cannot explain), answer as usual, then end with a ticket in EXACTLY this form:
