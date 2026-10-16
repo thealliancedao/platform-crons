@@ -245,6 +245,7 @@ async function discoverBribeProviders() {
 // Wallets that asked to be followed without holding a TLA lock (a followed wallet that only LPs or only holds tokens), listed in
 // tla-core docs/curated/followed-wallets.json { wallets: [{ address, since, via }] }. Only addresses — no names, no people. Captured exactly
 // like every participant (same engine, same products), tagged source 'followed'. A missing or unreadable list = no followed wallets.
+const NAME_OVERRIDES_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/name-overrides.json';
 const FOLLOWED_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/followed-wallets.json';
 const FOLLOWED_MAX = parseInt(process.env.FOLLOWED_MAX || '500', 10);   // a bound on the list's cost: ~40 reads a wallet an hour
 function parseFollowed(doc) {
@@ -308,6 +309,12 @@ async function resolveParticipants() {
         if (!p.name && p.briber_label) p.name = p.briber_label;
     }, BATCH_CONCURRENCY);
     console.log(`  ✓ PFPK names: ${named} resolved`);
+    // Hidden names (2026-10-16): a profile name the platform will not show — e.g. a project says a wallet carrying its name is not
+    // theirs. tla-core docs/curated/name-overrides.json { overrides: [{ address, name: null | "replacement", reason }] }. The address
+    // stays; only the name changes. A missing list = no overrides.
+    const ov = await fetchJson(NAME_OVERRIDES_URL, 'name-overrides').catch(() => null); let hidden = 0;
+    for (const o of (ov && Array.isArray(ov.overrides) ? ov.overrides : [])) { const p = participants.get(o && o.address); if (p) { p.name = o.name || null; hidden++; } }
+    if (hidden) console.log(`  ✓ name overrides applied: ${hidden}`);
 
     return {
         participants: list,

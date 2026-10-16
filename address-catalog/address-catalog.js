@@ -163,8 +163,11 @@ async function resolveHandles(rows) {
       else m.handle = null;
     } catch { m.handle = null; }
   }, BATCH_CONCURRENCY);
+  // hidden names (tla-core docs/curated/name-overrides.json) — the address stays, the handle is replaced or cleared
+  try { const ov = await fetchJson(NAME_OVERRIDES_URL, 'name-overrides', 15000); const by = {}; for (const o of (ov && ov.overrides) || []) if (o && o.address) by[o.address] = o; for (const m of rows) if (by[m.address]) m.handle = by[m.address].name || null; } catch {}
   return named;
 }
+const NAME_OVERRIDES_URL = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main/docs/curated/name-overrides.json';
 
 // -----------------------------------------------------------------------------
 // DISCOVERY: lock holders — veLUNA CW721 all_tokens enumeration + owner_of.
