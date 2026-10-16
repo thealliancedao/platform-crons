@@ -30,7 +30,7 @@
 // Output: lp-grades/series/pools.json
 // =============================================================================
 
-const SERIES_VERSION = 'pool-series-1.1.1';   // 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
+const SERIES_VERSION = 'pool-series-1.2.0';   // 1.2.0 (2026-10-16): votes per pool per period from vote-state, Votion's share (votes_cast, votion_vp, votes_by_epoch) · 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
 
 function num(v) { if (v === '' || v == null) return null; const n = Number(v); return isFinite(n) ? n : null; }
 const r2 = (v) => v == null ? null : Math.round(v * 100) / 100;
@@ -173,6 +173,32 @@ async function buildSeries(io, parseCsv, log = console.log) {
     placements.push({ proposal_id: pl.proposal_id, title: pl.title, executed_at: pl.executed_at, tx_hash: pl.tx_hash, legs });
   }
 
+  // ---- votes per pool per period, every voter (tla-voting/vote-state), and how many of them are Votion's (1.2.0) ----
+  // vote-state is a per-period, per-wallet harvest of the gauge controller: the wallet's VP and its split per gauge in bps.
+  // A pool's votes = Σ wallet VP × bps / 10000; Votion's = the same over the Votion vault wallets (votion/snapshots/vaults.json).
+  // This is what lets the page MEASURE how many votes each funder's pots steer (Votion follows pots) instead of estimating it.
+  const vaultsDoc = await io.readJson('votion/snapshots/vaults.json');
+  const votionVaults = new Set(((vaultsDoc && vaultsDoc.vaults) || []).map(v => v && (v.address || v.vault)).filter(Boolean));
+  const voteTotals = {}; let voteRows = 0;
+  for (const y of (await io.listDir('tla-voting/vote-state')).filter(n => /^\d{4}$/.test(n)).sort()) {
+    for (const m of (await io.listDir(`tla-voting/vote-state/${y}`)).filter(n => /^\d{2}\.json$/.test(n)).sort()) {
+      const rows = await io.readJson(`tla-voting/vote-state/${y}/${m}`); if (!Array.isArray(rows)) continue;
+      for (const r of rows) {
+        const E = String(r.period); const vp = Number((r.vp && r.vp.total) || 0) / 1e6; if (!(vp > 0)) continue; const isV = votionVaults.has(r.wallet);
+        for (const g of r.gauge_votes || []) for (const [gid, bps] of g.votes || []) {
+          const x = vp * Number(bps || 0) / 10000; if (!(x > 0)) continue;
+          const vt = voteTotals[E] = voteTotals[E] || { votes: 0, votion: 0, wallets: 0 }; vt.votes += x; if (isV) vt.votion += x;
+          const id = byGauge.get(gid) || byGauge.get(bare(gid)); if (!id) continue;
+          const ep = pools.get(id).epochs[E] = pools.get(id).epochs[E] || {};
+          ep.votes_cast = r2((ep.votes_cast || 0) + x); if (isV) ep.votion_vp = r2((ep.votion_vp || 0) + x);
+        }
+        if (voteTotals[E]) voteTotals[E].wallets++;
+        voteRows++;
+      }
+    }
+  }
+  for (const E of Object.keys(voteTotals)) { voteTotals[E].votes = r2(voteTotals[E].votes); voteTotals[E].votion = r2(voteTotals[E].votion); }
+
   // ---- lay out ----
   const days = [...allDays].sort();
   const dayIx = Object.fromEntries(days.map((d, i) => [d, i]));
@@ -197,8 +223,8 @@ async function buildSeries(io, parseCsv, log = console.log) {
   const doc = {
     schemaVersion: 1, product: 'lp-grades/series', version: SERIES_VERSION, generatedAt: new Date().toISOString(),
     method: 'Facts only, keyed by pool address (gauge id for single-asset gauges); every name a pool has carried is merged. d.* are daily arrays aligned to `days` (null = not captured that day): tvl USD, 24h volume USD, 24h fees USD. e[epoch] = votes (vp, bucket_pct, active), staked USD, pool amounts + prices at the epoch’s last reading (price-neutral retention), bribe pots for that period from chain state (every briber: bribe_luna, bribe_other_usd at TODAY’s catalog price, bribe_usd = LUNA at the epoch’s price + other), and pd_luna from PD’s decoded proposals. Grades are NOT here — lp-scorecard.js computes them from these facts + grading_config.json `scorecard`.',
-    coverage: { days_first: days[0] || null, days_last: days[days.length - 1] || null, dex_files: files, dex_rows: rowsRead, epochs_first: eps[0] || null, epochs_last: eps[eps.length - 1] || null, bribe_rows: bribeRows, bribe_months: bsMonths.length, runway_rows: runwayRows, unmapped_bribe_pools: [...unmappedBribePools].slice(0, 20), pd_placements: placements.length, notes: ['SkeletonSwap volume is mostly not provided by its API — those cells are null, never zero.', 'Votes, amounts and bribes per epoch begin at E184 (pool-status-history); daily dex facts begin 2026-05-12 (Astroport) and 2026-01-12 (SkeletonSwap).'] },
-    days, epochs, placements, pools: out,
+    coverage: { days_first: days[0] || null, days_last: days[days.length - 1] || null, dex_files: files, dex_rows: rowsRead, epochs_first: eps[0] || null, epochs_last: eps[eps.length - 1] || null, bribe_rows: bribeRows, bribe_months: bsMonths.length, runway_rows: runwayRows, vote_rows: voteRows, vote_periods: Object.keys(voteTotals).length, unmapped_bribe_pools: [...unmappedBribePools].slice(0, 20), pd_placements: placements.length, notes: ['SkeletonSwap volume is mostly not provided by its API — those cells are null, never zero.', 'Votes, amounts and bribes per epoch begin at E184 (pool-status-history); daily dex facts begin 2026-05-12 (Astroport) and 2026-01-12 (SkeletonSwap).'] },
+    days, epochs, placements, votes_by_epoch: voteTotals, votion_vaults: [...votionVaults], pools: out,
   };
   log(`${SERIES_VERSION}: ${out.length} pools · ${days.length} days (${doc.coverage.days_first}→${doc.coverage.days_last}) · epochs ${doc.coverage.epochs_first}–${doc.coverage.epochs_last} · ${bribeRows} bribe rows · ${placements.length} PD placements · ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return doc;
