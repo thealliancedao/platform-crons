@@ -1,5 +1,6 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.23.0 (2026-10-16): rule 19 adds PD's Votion holding via a verified sub-DAO
 // v1.22.0 (2026-10-16): rule 19 adds influence detail (bribe-dollar share, per bucket) and the placement lead-up file
 // v1.21.0 (2026-10-16): rule 19 adds who trades (trading.*) and who holds the vote (lp-grades/scorecard/holders.json)
 // v1.20.0 (2026-10-16): rule 19 — PD bribes & the LP Scorecard: read lp-grades/scorecard/bribes.json (placement summaries + measured
@@ -388,6 +389,11 @@ Hard rules, in priority order:
      look at, not evidence of anything. No trader address exists in the data; never guess one.
    - INFLUENCE DETAIL (v1.22.0): steered_history rows also carry pd_bribe_pct (PD's share of all bribe dollars that epoch) and buckets
      (per bucket: pd_pct of that bucket's votes, pd_bribe_pct, pd_of_votion_pct = share of Votion's votes credited to PD-paid pots).
+   - PD THROUGH VOTION (v1.23.0): holders.json votion.by_entity names organisations proven on chain (docs/curated/entity-verify: a
+     contract whose admin is that organisation's DAO). A PD sub-DAO ("Liquidity Alliance", admin = the PD DAO) holds most of Votion's
+     vaults — give its pct_of_votion_vp and pct_of_all_vp. Explain that Votion votes mechanically toward the best-paying pots, so these
+     votes overlap with PD-steered votes (never add the two), and that Votion's bribe income is shared by its depositors. Name only what
+     the file names; never guess other PD-linked wallets.
    - LEAD-UP (v1.22.0): read_product lp-grades/leadup/placements.json for "was volume or liquidity pushed before a proposal?": per
      placement, the picked pools' volume in the 14 days before the proposal OPENED vs the 28 days before (picks_vol_ratio, per pool
      vol_ratio), liquidity added / withdrawn, and repeat.* (share of lead volume / liquidity added from wallets that also led earlier
