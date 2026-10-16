@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.11.0';   // 1.11.0 (2026-10-16): steerHistory per bucket + PD's share of bribe dollars and of Votion's vote   // 1.10.0 (2026-10-16): who trades — f.tr per pool (distinct traders, top-1 / top-3 share, two-way share, from the weekly history); placementSummary adds trading (picks' top-3 / two-way share, LUNA-weighted) and new_pools (LUNA on pools younger than new_pool_days)   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.12.0';   // 1.12.0 (2026-10-16): steerHistory per funder group (h.by / buckets[b].by: steered votes + bribe dollars)   // 1.11.0 (2026-10-16): steerHistory per bucket + PD's share of bribe dollars and of Votion's vote   // 1.10.0 (2026-10-16): who trades — f.tr per pool (distinct traders, top-1 / top-3 share, two-way share, from the weekly history); placementSummary adds trading (picks' top-3 / two-way share, LUNA-weighted) and new_pools (LUNA on pools younger than new_pool_days)   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -305,19 +305,24 @@
     var out = []; var VB = series.votes_by_epoch || {}; var lastLuna = null; var BK = ['stable', 'project', 'bluechip', 'single'];
     Object.keys(VB).map(Number).sort(function (a, b) { return a - b; }).forEach(function (E) {
       var em = series.epochs[String(E)] || {}; var lp = em.luna_usd || lastLuna; if (em.luna_usd) lastLuna = em.luna_usd;
-      var pd = 0, other = 0, unfunded = 0, votion = 0, bUsd = 0, pdUsdAll = 0; var bk = {}; BK.forEach(function (b) { bk[b] = { votes: 0, votion: 0, pd_steered: 0, other_steered: 0, bribe_usd: 0, pd_bribe_usd: 0 }; });
+      var pd = 0, other = 0, unfunded = 0, votion = 0, bUsd = 0, pdUsdAll = 0; var bk = {}; BK.forEach(function (b) { bk[b] = { votes: 0, votion: 0, pd_steered: 0, other_steered: 0, bribe_usd: 0, pd_bribe_usd: 0, by: {} }; });
+      var by = {};   // 1.12.0: per funder group — { steered, bribe_usd } (PD from its decoded proposals, others from bribe events with a pool)
+      var add = function (o, g, k, v) { var x = o[g] = o[g] || { steered: 0, bribe_usd: 0 }; x[k] += v; };
       series.pools.forEach(function (p) { var r = p.e && p.e[String(E)]; if (!r) return; var B = bk[p.bucket] || null;
-        var pot = r.bribe_usd || 0; var pdUsd = (r.pd_luna || 0) * (lp || 0); var potAll = Math.max(pot, pdUsd); bUsd += potAll; pdUsdAll += pdUsd;
+        var pdUsd = (r.pd_luna || 0) * (lp || 0); var F = {}; Object.keys(r.funders || {}).forEach(function (g) { if (g !== 'Phoenix Directive') F[g] = r.funders[g]; }); if (pdUsd > 0) F['Phoenix Directive'] = pdUsd;
+        var named = Object.keys(F).reduce(function (s0, g) { return s0 + F[g]; }, 0); var pot = Math.max(r.bribe_usd || 0, named); var potAll = Math.max(pot, pdUsd); bUsd += potAll; pdUsdAll += pdUsd;
+        Object.keys(F).forEach(function (g) { add(by, g, 'bribe_usd', F[g]); if (B) add(B.by, g, 'bribe_usd', F[g]); });
         if (B) { B.votes += r.votes_cast || 0; B.bribe_usd += potAll; B.pd_bribe_usd += pdUsd; }
         if (!(r.votion_vp > 0)) return; votion += r.votion_vp; if (B) B.votion += r.votion_vp;
         var sh = pot > 0 ? Math.min(1, pdUsd / pot) : (pdUsd > 0 ? 1 : 0);
-        if (pot > 0 || pdUsd > 0) { pd += r.votion_vp * sh; other += r.votion_vp * (1 - sh); if (B) { B.pd_steered += r.votion_vp * sh; B.other_steered += r.votion_vp * (1 - sh); } } else unfunded += r.votion_vp; });
+        if (pot > 0 || pdUsd > 0) { pd += r.votion_vp * sh; other += r.votion_vp * (1 - sh); if (B) { B.pd_steered += r.votion_vp * sh; B.other_steered += r.votion_vp * (1 - sh); }
+          if (pot > 0) Object.keys(F).forEach(function (g) { var v = r.votion_vp * Math.min(1, F[g] / pot); add(by, g, 'steered', v); if (B) add(B.by, g, 'steered', v); }); } else unfunded += r.votion_vp; });
       var T = VB[String(E)].votes || 0;
       var buckets = {}; BK.forEach(function (b) { var x = bk[b]; buckets[b] = { votes: x.votes, votion: x.votion, pd_pct: x.votes ? x.pd_steered / x.votes * 100 : null, other_pct: x.votes ? x.other_steered / x.votes * 100 : null, votion_pct: x.votes ? x.votion / x.votes * 100 : null,
-        pd_of_votion_pct: x.votion ? x.pd_steered / x.votion * 100 : null, other_of_votion_pct: x.votion ? x.other_steered / x.votion * 100 : null, bribe_usd: x.bribe_usd, pd_bribe_usd: x.pd_bribe_usd, pd_bribe_pct: x.bribe_usd > 0 ? x.pd_bribe_usd / x.bribe_usd * 100 : null }; });
+        pd_of_votion_pct: x.votion ? x.pd_steered / x.votion * 100 : null, other_of_votion_pct: x.votion ? x.other_steered / x.votion * 100 : null, bribe_usd: x.bribe_usd, pd_bribe_usd: x.pd_bribe_usd, pd_bribe_pct: x.bribe_usd > 0 ? x.pd_bribe_usd / x.bribe_usd * 100 : null, by: x.by }; });
       out.push({ epoch: E, start: em.start || null, votes: T, votion: VB[String(E)].votion || votion, pd_steered: pd, other_steered: other, votion_unfunded: unfunded,
         pd_pct: T ? pd / T * 100 : null, other_pct: T ? other / T * 100 : null, votion_pct: T ? (VB[String(E)].votion || votion) / T * 100 : null, pd_of_votion_pct: votion ? pd / votion * 100 : null, other_of_votion_pct: votion ? other / votion * 100 : null,
-        bribe_usd: bUsd, pd_bribe_usd: pdUsdAll, pd_bribe_pct: bUsd > 0 ? pdUsdAll / bUsd * 100 : null, luna_usd: lp || null, votes_src: VB[String(E)].src || 'harvest', buckets: buckets });
+        bribe_usd: bUsd, pd_bribe_usd: pdUsdAll, pd_bribe_pct: bUsd > 0 ? pdUsdAll / bUsd * 100 : null, luna_usd: lp || null, votes_src: VB[String(E)].src || 'harvest', buckets: buckets, by: by });
     });
     return out;
   }
@@ -437,5 +442,6 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, traderFacts: traderFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementAudit: placementAudit, weightUnit: weightUnit, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
+  function funderPct(h, g, kind) { var x = (h.by || {})[g]; if (!x) return 0; if (kind === 'bribes') return h.bribe_usd > 0 ? x.bribe_usd / h.bribe_usd * 100 : null; if (kind === 'votion') return h.votion > 0 ? x.steered / h.votion * 100 : null; return h.votes > 0 ? x.steered / h.votes * 100 : null; }
+  return { VERSION: VERSION, funderPct: funderPct, pairClass: pairClass, windowFacts: windowFacts, traderFacts: traderFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementAudit: placementAudit, weightUnit: weightUnit, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });
