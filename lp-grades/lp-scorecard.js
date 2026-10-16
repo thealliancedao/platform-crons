@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.5.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.6.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.5.0';   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.6.0';   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -62,6 +62,7 @@
     series.pools.forEach(function (p) {
       var f = { id: p.id, name: p.name, names: p.names, dex: p.dex, bucket: p.bucket, is_single: p.is_single, tla: (p.gauge_pool_ids || []).length > 0, first_day: p.first_day };
       f.pair_class = pairClass(p.name, p.is_single, sc);
+      f.winding = windingOf(p, sc, asOf);
       f.age_days = p.first_day ? daysBetween(p.first_day, asOf) + 1 : null;
       var tv = [], vv = [], fv = [], days = 0;
       if (p.d && end >= 0) for (var i = start; i <= end; i++) { var t = p.d.tvl[i]; if (t == null) continue; days++; tv.push(t); if (p.d.vol[i] != null) vv.push(p.d.vol[i]); if (p.d.fees[i] != null) fv.push(p.d.fees[i]); }
@@ -115,7 +116,15 @@
   function standing(r) { return r.of > 1 ? 1 - (r.rank - 1) / (r.of - 1) : 1; }
 
   /** base field: TLA pools with trading facts in the window (single-asset gauges carry no trading facts). */
-  function inField(f, opt) { if (!f.tla || f.liquidity == null) return false; if (opt && opt.activeOnly && !f.active) return false; return f.liquidity >= ((opt && opt.min_liquidity) || 1000); }
+  // winding-down assets (config scorecard.winding_down): a pool holding one is out of the field from `since` on
+  function windingOf(p, sc, asOf) {
+    var list = sc.winding_down || []; if (!list.length) return null;
+    var syms = String(p.name || '').split(/[-\/]/).map(function (x) { return x.trim().toLowerCase(); });
+    Object.keys(p.e || {}).forEach(function (E) { var r = p.e[E]; (r && r.syms || []).forEach(function (x) { if (x) syms.push(String(x).toLowerCase()); }); });
+    for (var i = 0; i < list.length; i++) { var w = list[i]; if (w.since && asOf < w.since) continue; if ((w.symbols || []).some(function (x) { return syms.indexOf(String(x).toLowerCase()) >= 0; })) return w; }
+    return null;
+  }
+  function inField(f, opt) { if (!f.tla || f.liquidity == null || f.winding) return false; if (opt && opt.activeOnly && !f.active) return false; return f.liquidity >= ((opt && opt.min_liquidity) || 1000); }
 
   /** score every pool in the field for a preset (or explicit weights). */
   function scoreField(wf, cfg, presetId, opt) {
@@ -145,7 +154,8 @@
     scored.sort(function (a, b) { return (b.composite == null ? -1 : b.composite) - (a.composite == null ? -1 : a.composite); });
     var seen = {}, ofG = {}; scored.forEach(function (s) { if (s.composite != null) ofG[s.group] = (ofG[s.group] || 0) + 1; });
     scored.forEach(function (s) { if (s.composite == null) { s.rank = null; return; } seen[s.group] = (seen[s.group] || 0) + 1; s.rank = seen[s.group]; s.of = ofG[s.group]; });
-    return { preset: pr, weights: w, field: scored, groups: groupOrder(sc, scored.map(function (x) { return x.group; })), rank_within: sc.rank_within || 'all', excluded: wf.pools.filter(function (f) { return f.tla && field.indexOf(f) < 0; }) };
+    var winding = wf.pools.filter(function (f) { return f.tla && f.winding && f.liquidity != null && f.liquidity >= ((opt && opt.min_liquidity) || 1000); });
+    return { preset: pr, weights: w, field: scored, winding: winding, groups: groupOrder(sc, scored.map(function (x) { return x.group; })), rank_within: sc.rank_within || 'all', excluded: wf.pools.filter(function (f) { return f.tla && field.indexOf(f) < 0 && winding.indexOf(f) < 0; }) };
   }
 
   /** rank of each pool on one metric (or 'allround' = the default preset composite) in each window, at one date. */
