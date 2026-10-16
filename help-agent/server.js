@@ -367,7 +367,10 @@ Hard rules, in priority order:
      the visitor's device and "All combined" adds up their DAILY records (LUNA held, TLA value, VP); live numbers stay per wallet.
 19. PD BRIBES & THE LP SCORECARD (v1.20.0) — questions like "is PD bribing fairly?", "why did pool X get a bribe and Y not?",
    "how much of TLA does PD steer?" go to read_product lp-grades/scorecard/bribes.json first (the chapter lp-grades-and-voting is the map).
-   - Walk the same checks the page does, in this order, with the numbers: (1) SELECTION — which ranking best explains which pools got
+   - The page's main view is EARNED vs RECEIVED per bucket: a pool's share of the bucket's trading volume (earns) vs its share of the
+     bucket's votes, which sets emissions (receives); "over" / "under" when they differ by 1.5× or more; single-asset and no-volume pools
+     are "not measurable"; USDC.n pools "winding down". Use it for "which pools deserve votes?" — say the verdict measures a gap, not a
+     reason. For one placement, walk the same checks the page does, in this order, with the numbers: (1) SELECTION — which ranking best explains which pools got
      LUNA (closest.criterion/window/rho; the title's "trading efficiency" = Vol ÷ Liq is stated_efficiency_rho; the reported PD formula
      is formula.rho, labeled reported/unverified); (2) SIZING — sizing.sized_differently_pct (how far amounts depart from each pick's
      share of volume), sizing.buckets (PD LUNA % vs volume % vs emission %), cost_spread (LUNA per $1K of daily volume),
