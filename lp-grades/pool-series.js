@@ -30,7 +30,7 @@
 // Output: lp-grades/series/pools.json
 // =============================================================================
 
-const SERIES_VERSION = 'pool-series-1.2.0';   // 1.2.0 (2026-10-16): votes per pool per period from vote-state, Votion's share (votes_cast, votion_vp, votes_by_epoch) · 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
+const SERIES_VERSION = 'pool-series-1.3.0';   // 1.3.0 (2026-10-16): weekly history before the daily capture (dex-data/history) as w[E] · 1.2.0 (2026-10-16): votes per pool per period from vote-state, Votion's share (votes_cast, votion_vp, votes_by_epoch) · 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
 
 function num(v) { if (v === '' || v == null) return null; const n = Number(v); return isFinite(n) ? n : null; }
 const r2 = (v) => v == null ? null : Math.round(v * 100) / 100;
@@ -218,13 +218,27 @@ async function buildSeries(io, parseCsv, log = console.log) {
       e: p.epochs,
     });
   }
+  // ---- weekly history before the daily capture (dex-data/history/weekly.json, archive-node swaps + state-history reserves) — 1.3.0 ----
+  // Attached per pool as w[E] = [tvl_usd, vol_usd_week, swaps, complete, unpriced, reserve_implied]; pairs the daily record never saw
+  // (retired before 2026-05-12) join as their own pools so a past placement's whole field is there.
+  const hist = await io.readJson('dex-data/history/weekly.json'); let histPools = 0;
+  if (hist && hist.pairs) {
+    const byId = new Map(out.map(p => [p.id, p]));
+    for (const [pair, H] of Object.entries(hist.pairs)) {
+      const id = pair.toLowerCase(); const weeks = H.weeks || {}; if (!Object.keys(weeks).length) continue;
+      let p = byId.get(id);
+      if (!p) { p = { id, name: H.name || id.slice(0, 14), names: H.name ? [H.name] : [], dex: H.dex || null, bucket: H.bucket || null, is_single: false, gauge_pool_ids: H.key ? [H.key] : [], first_day: null, last_day: null, deregistered_from: null, d: null, e: {} }; out.push(p); byId.set(id, p); }
+      if (H.key && !(p.gauge_pool_ids || []).includes(H.key)) p.gauge_pool_ids = (p.gauge_pool_ids || []).concat([H.key]);
+      p.w = weeks; histPools++;
+    }
+  }
   out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const epochs = {}; for (const e of eps) { const c = calBy[e]; const h = ehBy[e]; epochs[e] = { start: c ? c.start_time.slice(0, 10) : null, end: c ? c.end_time.slice(0, 10) : null, luna_usd: h ? h.luna_price_usd : null, annual_luna: h ? h.rewards_annual_luna : null }; }
   const doc = {
     schemaVersion: 1, product: 'lp-grades/series', version: SERIES_VERSION, generatedAt: new Date().toISOString(),
     method: 'Facts only, keyed by pool address (gauge id for single-asset gauges); every name a pool has carried is merged. d.* are daily arrays aligned to `days` (null = not captured that day): tvl USD, 24h volume USD, 24h fees USD. e[epoch] = votes (vp, bucket_pct, active), staked USD, pool amounts + prices at the epoch’s last reading (price-neutral retention), bribe pots for that period from chain state (every briber: bribe_luna, bribe_other_usd at TODAY’s catalog price, bribe_usd = LUNA at the epoch’s price + other), and pd_luna from PD’s decoded proposals. Grades are NOT here — lp-scorecard.js computes them from these facts + grading_config.json `scorecard`.',
-    coverage: { days_first: days[0] || null, days_last: days[days.length - 1] || null, dex_files: files, dex_rows: rowsRead, epochs_first: eps[0] || null, epochs_last: eps[eps.length - 1] || null, bribe_rows: bribeRows, bribe_months: bsMonths.length, runway_rows: runwayRows, vote_rows: voteRows, vote_periods: Object.keys(voteTotals).length, unmapped_bribe_pools: [...unmappedBribePools].slice(0, 20), pd_placements: placements.length, notes: ['SkeletonSwap volume is mostly not provided by its API — those cells are null, never zero.', 'Votes, amounts and bribes per epoch begin at E184 (pool-status-history); daily dex facts begin 2026-05-12 (Astroport) and 2026-01-12 (SkeletonSwap).'] },
-    days, epochs, placements, votes_by_epoch: voteTotals, votion_vaults: [...votionVaults], pools: out,
+    coverage: { days_first: days[0] || null, days_last: days[days.length - 1] || null, dex_files: files, dex_rows: rowsRead, epochs_first: eps[0] || null, epochs_last: eps[eps.length - 1] || null, bribe_rows: bribeRows, bribe_months: bsMonths.length, runway_rows: runwayRows, vote_rows: voteRows, history_pools: histPools, history_epochs: hist && hist.coverage ? hist.coverage.epochs : null, vote_periods: Object.keys(voteTotals).length, unmapped_bribe_pools: [...unmappedBribePools].slice(0, 20), pd_placements: placements.length, notes: ['SkeletonSwap volume is mostly not provided by its API — those cells are null, never zero.', 'Votes, amounts and bribes per epoch begin at E184 (pool-status-history); daily dex facts begin 2026-05-12 (Astroport) and 2026-01-12 (SkeletonSwap).'] },
+    days, epochs, weekly_epochs: hist && hist.epochs ? hist.epochs : {}, placements, votes_by_epoch: voteTotals, votion_vaults: [...votionVaults], pools: out,
   };
   log(`${SERIES_VERSION}: ${out.length} pools · ${days.length} days (${doc.coverage.days_first}→${doc.coverage.days_last}) · epochs ${doc.coverage.epochs_first}–${doc.coverage.epochs_last} · ${bribeRows} bribe rows · ${placements.length} PD placements · ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return doc;

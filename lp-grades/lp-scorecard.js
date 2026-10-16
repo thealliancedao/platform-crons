@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.8.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.9.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.8.0';   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.9.0';   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -71,6 +71,20 @@
       f.liquidity = enough ? mean(tv) : null;
       f.volume = enough && vv.length >= Math.max(1, Math.ceil(days * 0.5)) ? mean(vv) : null;
       f.fees = enough && fv.length >= Math.max(1, Math.ceil(days * 0.5)) ? mean(fv) : null;
+      f.source = enough ? 'daily' : null;
+      // 1.9.0: before the daily capture, the weekly history (archive-node swaps + epoch-boundary reserves) stands in — the completed
+      // epochs inside the window (at least the last one before the as-of date), volume as a daily average. Labeled 'weekly'.
+      if (!enough && p.w) {
+        var WE = series.weekly_epochs || {}; var wk = [];
+        Object.keys(p.w).forEach(function (E) { var st = (WE[E] && WE[E].start) || (series.epochs[E] && series.epochs[E].start); if (!st) return; var end = addDays(st, 7);
+          if (end <= addDays(asOf, 1) && end > addDays(asOf, -Math.max(n, 7) + 1)) wk.push(p.w[E]); });
+        if (!wk.length) { var best = null, bestEnd = null; Object.keys(p.w).forEach(function (E) { var st = (WE[E] && WE[E].start) || (series.epochs[E] && series.epochs[E].start); if (!st) return; var end = addDays(st, 7); if (end <= addDays(asOf, 1) && (!bestEnd || end > bestEnd)) { best = p.w[E]; bestEnd = end; } }); if (best && daysBetween(bestEnd, asOf) <= 7) wk.push(best); }
+        var okw = wk.filter(function (r) { return r && r[3] === 1; });
+        if (okw.length) { f.liquidity = mean(okw.map(function (r) { return r[0] > 0 ? r[0] : null; })); var vw = okw.filter(function (r) { return r[1] != null && !r[4]; });
+          f.volume = vw.length ? mean(vw.map(function (r) { return r[1] / 7; })) : null; f.fees = null; f.days = okw.length * 7; f.coverage = 1; f.source = 'weekly';
+          f.history_flags = { unpriced: okw.some(function (r) { return r[4]; }), reserve_implied: okw.some(function (r) { return r[5]; }) }; }
+      }
+      if (p.w) { var firstW = Object.keys(p.w).map(Number).sort(function (a, b) { return a - b; })[0]; var fs0 = firstW != null ? (((series.weekly_epochs || {})[firstW] || {}).start || (series.epochs[firstW] || {}).start) : null; if (fs0 && (!f.first_day || fs0 < f.first_day)) { f.first_day = fs0; f.age_days = daysBetween(fs0, asOf) + 1; } }
       f.small = f.liquidity != null && f.liquidity < (sc.depth_floor_usd || 0);
       f.efficiency = (f.volume != null && f.liquidity > 0 && !f.small) ? f.volume / f.liquidity : null;
       f.efficiency_raw = (f.volume != null && f.liquidity > 0) ? f.volume / f.liquidity : null;
