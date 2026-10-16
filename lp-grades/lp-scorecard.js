@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.1.0 (2026-10-15) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.2.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.1.0';   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.2.0';   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -88,6 +88,13 @@
       var bU = [], bL = [], pdL = [];
       winEpochs.forEach(function (E) { var r = p.e && p.e[String(E)]; bU.push(r && r.bribe_usd != null ? r.bribe_usd : 0); bL.push(r && r.bribe_luna ? r.bribe_luna : 0); pdL.push(r && r.pd_luna ? r.pd_luna : 0); });
       f.bribes_usd_ep = winEpochs.length ? mean(bU) : null; f.bribes_luna_ep = winEpochs.length ? mean(bL) : null; f.pd_luna_ep = winEpochs.length ? mean(pdL) : null;
+      // the as-of epoch's own pots (what bribers placed for THIS round), split PD / everyone else
+      var er = Eend != null && p.e ? p.e[String(Eend)] : null;
+      f.ep_bribe_usd = er && er.bribe_usd != null ? er.bribe_usd : (er && er.pd_luna && lunaUsd ? er.pd_luna * lunaUsd : 0);
+      f.ep_pd_luna = er && er.pd_luna ? er.pd_luna : 0;
+      f.ep_pd_usd = f.ep_pd_luna && lunaUsd ? Math.min(f.ep_bribe_usd || Infinity, f.ep_pd_luna * lunaUsd) : 0;
+      f.ep_other_usd = Math.max(0, (f.ep_bribe_usd || 0) - f.ep_pd_usd);
+      f.ep_bribe_src = er && er.bribe_src || (er && er.bribe_usd != null ? 'harvest' : null);
       var incentivesUsd = (f.emissions_luna_ep != null && lunaUsd ? f.emissions_luna_ep * lunaUsd : 0) + (f.bribes_usd_ep || 0);
       f.incentives_usd_ep = (f.emissions_luna_ep != null || f.bribes_usd_ep) ? incentivesUsd : null;
       f.cost = (f.volume > 0 && f.incentives_usd_ep != null && incentivesUsd > 0) ? incentivesUsd / (f.volume * 7) : null;
