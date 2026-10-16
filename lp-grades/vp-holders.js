@@ -16,7 +16,7 @@
 
 const ACTIVE_EPOCHS = 4;
 
-function build({ participants, catalog, votionSnap, votionVaults, epoch, hide }) {
+function build({ participants, catalog, votionSnap, votionVaults, epoch, hide, verified }) {
   // 1.1.0 (owner 2026-10-16): organisations we know but do not name here (Fuel, Galactic Mining Club) count as individual wallets
   const HIDE = new Set(hide || ['Fuel', 'Galactic Mining Club']);
   const members = (participants && participants.members) || [];
@@ -25,7 +25,10 @@ function build({ participants, catalog, votionSnap, votionVaults, epoch, hide })
   const vaultLabel = {}; for (const v of (votionVaults && votionVaults.vaults) || []) vaultLabel[v.address] = v.label;
   const E = Number((participants && participants.epoch && participants.epoch.number) || epoch || 0);
   const named0 = (a) => ent[a] ? { label: ent[a].label, protocol: (ent[a].protocol === 'TLA' ? 'aDAO' : ent[a].protocol) || ent[a].label, subtype: ent[a].subtype || null } : null;   // the catalog files aDAO's own wallets under protocol 'TLA'
-  const named = (a) => { const n = named0(a); return n && !HIDE.has(n.protocol) && !HIDE.has(n.label) ? n : null; };
+  // 1.2.0: contracts proven on chain to be controlled by an organisation (docs/curated/entity-verify: the contract's admin IS that
+  // organisation's DAO) are named for it — e.g. a sub-DAO of the Phoenix Directive that holds Votion vault tokens.
+  const VER = {}; for (const c of ((verified && verified.checks) || [])) if (c && c.admin_matches && c.address && c.org) VER[c.address] = { label: (c.dao_name ? '"' + c.dao_name + '" ' : '') + 'sub-DAO (admin: ' + c.org + ' DAO)', protocol: c.org, subtype: 'sub-dao' };
+  const named = (a) => { if (VER[a]) return VER[a]; const n = named0(a); return n && !HIDE.has(n.protocol) && !HIDE.has(n.label) ? n : null; };
 
   const GROUPS = [['votion', 'Votion vaults'], ['entity', 'Named DAOs & protocols'], ['ind_lp', 'Individual wallets — provide TLA liquidity'], ['ind', 'Individual wallets — no TLA liquidity']];
   const ACTS = [['active', 'Active (votes changed in the last ' + ACTIVE_EPOCHS + ' epochs)'], ['set', 'Set-and-forget (votes still count, last changed earlier)'], ['none', 'Not voting (no votes allocated)']];
@@ -77,7 +80,7 @@ function build({ participants, catalog, votionSnap, votionVaults, epoch, hide })
     }
     other.holders = holders - Object.keys(vEnt).length;   // approximate: one named entity may hold through several labels
     const vp_ = (x) => vpAll ? Math.round(x / vpAll * 10000) / 100 : null;
-    votion = { holders, tvl_usd: r2(usd), implied_vp: r2(vpAll), discovery: (votionSnap.meta && votionSnap.meta.discovery_basis) || null,
+    votion = { holders, tvl_usd: r2(usd), implied_vp: r2(vpAll), pct_of_all_vp_total: pct(vpAll), discovery: (votionSnap.meta && votionSnap.meta.discovery_basis) || null,
       by_entity: Object.values(vEnt).sort((a, b) => b.implied_vp - a.implied_vp).map(e => ({ entity: e.entity, usd: r2(e.usd), implied_vp: r2(e.implied_vp), pct_of_votion_vp: vp_(e.implied_vp), pct_of_all_vp: pct(e.implied_vp), labels: e.labels }))
         .concat([{ entity: 'Individual wallets', holders: other.holders, usd: r2(other.usd), implied_vp: r2(other.implied_vp), pct_of_votion_vp: vp_(other.implied_vp), pct_of_all_vp: pct(other.implied_vp) }]) };
   }

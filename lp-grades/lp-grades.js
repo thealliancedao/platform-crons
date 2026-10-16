@@ -804,7 +804,7 @@ async function runScorecard(fullConfig, configSha) {
   try {
     const H = require('./vp-holders.js');
     const hd = H.build({ participants: await readRepoJson('member-data/participants/current.json', { required: false }), catalog: await readRepoJson('catalog/snapshots/current.json', { required: false }),
-      votionSnap: await readRepoJson('votion/snapshots/current.json', { required: false }), votionVaults: await readRepoJson('votion/snapshots/vaults.json', { required: false }), hide: (fullConfig.scorecard.holders || {}).hide_entities });
+      votionSnap: await readRepoJson('votion/snapshots/current.json', { required: false }), votionVaults: await readRepoJson('votion/snapshots/vaults.json', { required: false }), hide: (fullConfig.scorecard.holders || {}).hide_entities, verified: await readRepoJson('docs/curated/entity-verify/latest.json', { required: false }) });
     if (hd.wallets > 0) await publishFile('lp-grades/scorecard/holders.json', JSON.stringify(Object.assign(hd, stamp), null, 1), `lp-scorecard holders (${hd.wallets} wallets, E${hd.epoch})`);
   } catch (e) { console.warn('  ⚠ holders step failed:', e.message); }
   await publishFile('lp-grades/scorecard/bribes.json', JSON.stringify(Object.assign(bribes, stamp), null, 1), `lp-scorecard bribes (${bribes.placements.length} placements)`);
