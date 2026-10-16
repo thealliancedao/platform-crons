@@ -11,18 +11,21 @@
 //   • concentration — top 1 / 5 / 10 wallets' share and how many wallets make 50% / 80% (counts, no addresses)
 //   • votion — who holds Votion's vaults (and so the VP they vote): named entities by label, everyone else as one total
 // PUBLIC + §8b: only named entities (catalog `entities`, public organisations) appear by name; individuals appear only as totals and
-// counts. No individual address is written. Descriptive only.
+// counts. No individual address is written. Descriptive only. 1.1.0: hidden organisations (config) count as individuals; concentration tiers + size bands.
 'use strict';
 
 const ACTIVE_EPOCHS = 4;
 
-function build({ participants, catalog, votionSnap, votionVaults, epoch }) {
+function build({ participants, catalog, votionSnap, votionVaults, epoch, hide }) {
+  // 1.1.0 (owner 2026-10-16): organisations we know but do not name here (Fuel, Galactic Mining Club) count as individual wallets
+  const HIDE = new Set(hide || ['Fuel', 'Galactic Mining Club']);
   const members = (participants && participants.members) || [];
   const ent = (catalog && catalog.entities) || {};
   const vaultSet = new Set(((votionVaults && votionVaults.vaults) || []).map(v => v.address).filter(Boolean));
   const vaultLabel = {}; for (const v of (votionVaults && votionVaults.vaults) || []) vaultLabel[v.address] = v.label;
   const E = Number((participants && participants.epoch && participants.epoch.number) || epoch || 0);
-  const named = (a) => ent[a] ? { label: ent[a].label, protocol: (ent[a].protocol === 'TLA' ? 'aDAO' : ent[a].protocol) || ent[a].label, subtype: ent[a].subtype || null } : null;   // the catalog files aDAO's own wallets under protocol 'TLA'
+  const named0 = (a) => ent[a] ? { label: ent[a].label, protocol: (ent[a].protocol === 'TLA' ? 'aDAO' : ent[a].protocol) || ent[a].label, subtype: ent[a].subtype || null } : null;   // the catalog files aDAO's own wallets under protocol 'TLA'
+  const named = (a) => { const n = named0(a); return n && !HIDE.has(n.protocol) && !HIDE.has(n.label) ? n : null; };
 
   const GROUPS = [['votion', 'Votion vaults'], ['entity', 'Named DAOs & protocols'], ['ind_lp', 'Individual wallets — provide TLA liquidity'], ['ind', 'Individual wallets — no TLA liquidity']];
   const ACTS = [['active', 'Active (votes changed in the last ' + ACTIVE_EPOCHS + ' epochs)'], ['set', 'Set-and-forget (votes still count, last changed earlier)'], ['none', 'Not voting (no votes allocated)']];
@@ -56,6 +59,10 @@ function build({ participants, catalog, votionSnap, votionVaults, epoch }) {
   const ivps = members.filter(m => !vaultSet.has(m.wallet) && !named(m.wallet)).map(m => Number((m.summary && m.summary.voting_power_human) || 0)).filter(x => x > 0).sort((a, b) => b - a);
   const itot = ivps.reduce((s, x) => s + x, 0); const itop = (k) => pct(ivps.slice(0, k).reduce((s, x) => s + x, 0));
   const inFor = (f) => { let s2 = 0; for (let i = 0; i < ivps.length; i++) { s2 += ivps[i]; if (s2 >= f * itot) return i + 1; } return ivps.length; };
+  // how the vote is spread: the largest wallets in tiers, and wallets by size band (a vault or a DAO counts as one wallet)
+  const tiers = [[1, 1], [2, 3], [4, 5], [6, 10], [11, 20], [21, 50], [51, vps.length]].filter(([a]) => a <= vps.length).map(([a, b]) => ({ from: a, to: Math.min(b, vps.length), pct: pct(vps.slice(a - 1, Math.min(b, vps.length)).reduce((s2, x) => s2 + x, 0)) }));
+  const bands = [['≥ 5% each', 0.05, 1.01], ['1–5%', 0.01, 0.05], ['0.1–1%', 0.001, 0.01], ['under 0.1%', 0, 0.001]].map(([label, lo, hi]) => { const xs = vps.filter(v => v / total >= lo && v / total < hi); return { label, wallets: xs.length, pct: pct(xs.reduce((s2, x) => s2 + x, 0)) }; });
+  concentration.tiers = tiers; concentration.bands = bands;
   concentration.individuals = { wallets: ivps.length, top1_pct: itop(1), top5_pct: itop(5), top10_pct: itop(10), wallets_for_half_of_individual_vp: inFor(0.5) };
 
   // Votion: who holds the vaults (each holder's share of a vault ≈ its share of that vault's VP)
