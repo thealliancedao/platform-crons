@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.12.0';   // 1.12.0 (2026-10-16): steerHistory per funder group (h.by / buckets[b].by: steered votes + bribe dollars)   // 1.11.0 (2026-10-16): steerHistory per bucket + PD's share of bribe dollars and of Votion's vote   // 1.10.0 (2026-10-16): who trades — f.tr per pool (distinct traders, top-1 / top-3 share, two-way share, from the weekly history); placementSummary adds trading (picks' top-3 / two-way share, LUNA-weighted) and new_pools (LUNA on pools younger than new_pool_days)   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.13.0';   // 1.13.0 (2026-10-16): memoized windowFacts / bribeCheck / placementSummary / placementAudit / steerHistory (the PD audit opened in ~5 s)   // 1.12.0 (2026-10-16): steerHistory per funder group (h.by / buckets[b].by: steered votes + bribe dollars)   // 1.11.0 (2026-10-16): steerHistory per bucket + PD's share of bribe dollars and of Votion's vote   // 1.10.0 (2026-10-16): who trades — f.tr per pool (distinct traders, top-1 / top-3 share, two-way share, from the weekly history); placementSummary adds trading (picks' top-3 / two-way share, LUNA-weighted) and new_pools (LUNA on pools younger than new_pool_days)   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -16,8 +16,9 @@
     var below = 0, eq = 0; for (var i = 0; i < arr.length; i++) { var x = arr[i]; if (x === v) eq++; else if (dir >= 0 ? x < v : x > v) below++; }
     return Math.round(((below + 0.5 * Math.max(0, eq - 1)) / (arr.length - 1)) * 100);
   }
-  function addDays(iso, n) { var d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
-  function daysBetween(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000); }
+  var _ad = {}; function addDays(iso, n) { var k = iso + '|' + n; var v = _ad[k]; if (v !== undefined) return v; var d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); v = d.toISOString().slice(0, 10); _ad[k] = v; return v; }
+  var _db = {}; function daysBetween(a, b) { var k = a + '|' + b; var v = _db[k]; if (v !== undefined) return v; v = daysBetween_(a, b); _db[k] = v; return v; }
+  function daysBetween_(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000); }
 
   // ---- declared purpose: pair class from the pool name ----
   function pairClass(name, isSingle, cfg) {
@@ -58,7 +59,14 @@
     var wsum = 0, t1 = 0, t3 = 0, tw = 0, nT = 0, vol = 0; inW.forEach(function (r) { nT += r[6]; var v = r[1] || 0; vol += v; if (r[7] != null && v > 0) { wsum += v; t1 += r[7] * v; t3 += r[8] * v; tw += r[9] * v; } });
     return { weeks: inW.length, traders: Math.round(nT / inW.length), top1: wsum ? t1 / wsum : null, top3: wsum ? t3 / wsum : null, twoway: wsum ? tw / wsum : null, vol_week: vol / inW.length };
   }
-  function windowFacts(series, cfg, opt) {
+  // 1.13.0: memo — the same (series, config, arguments) always gives the same facts, and the page asks for the same windows many times
+  // (every placement × criterion × window). Cached on the series object, cleared whenever the config object changes. Results are read-only.
+  function memo(series, cfg, name, key, fn) {
+    var M = series.__lpsMemo; if (!M || M.cfg !== cfg) { M = { cfg: cfg, m: {} }; try { Object.defineProperty(series, '__lpsMemo', { value: M, configurable: true, writable: true, enumerable: false }); } catch (e) { return fn(); } }
+    var k = name + '|' + key; if (!(k in M.m)) M.m[k] = fn(); return M.m[k];
+  }
+  function windowFacts(series, cfg, opt) { return memo(series, cfg, 'wf', JSON.stringify(opt || {}), function () { return windowFacts_(series, cfg, opt); }); }
+  function windowFacts_(series, cfg, opt) {
     var sc = cfg.scorecard || cfg; var n = (sc.windows || {})[opt.window] || Number(opt.window) || 30;
     var asOf = opt.asOf || series.days[series.days.length - 1];
     var end = lastDayIx(series, asOf); var start = Math.max(0, end - n + 1);
@@ -237,7 +245,8 @@
   function placementWindow(placement) { var s = Infinity, e = -Infinity; (placement.legs || []).forEach(function (l) { if (l.start < s) s = l.start; if (l.end > e) e = l.end; }); return { start: s, end: e }; }
 
   /** Bribe check: on the day before the placement executed, how well does each criterion × window explain the allocation? */
-  function bribeCheck(series, cfg, placement, opt) {
+  function bribeCheck(series, cfg, placement, opt) { return memo(series, cfg, 'bc', placement.proposal_id + '|' + JSON.stringify(opt || {}), function () { return bribeCheck_(series, cfg, placement, opt); }); }
+  function bribeCheck_(series, cfg, placement, opt) {
     var sc = cfg.scorecard || cfg; var bc = sc.bribe_check || {}; var asOf = addDays(String(placement.executed_at).slice(0, 10), -1);
     var alloc = allocation(placement); var bribedIds = Object.keys(alloc); var total = bribedIds.reduce(function (s, k) { return s + alloc[k]; }, 0);
     var rows = []; var fields = {};
@@ -300,7 +309,8 @@
 
   /** Steered votes per epoch (series 1.2.0+): Votion votes on each pool, credited to each funder by its share of that pool's pot.
    *  Measured from the vote harvest (who voted what, per period) — not modeled. Returns oldest → newest. */
-  function steerHistory(series) {
+  function steerHistory(series) { return memo(series, null, 'sh', '', function () { return steerHistory_(series); }); }
+  function steerHistory_(series) {
     // 1.11.0: also per bucket, and the money side — PD's share of all bribe dollars (overall and per bucket) and of Votion's vote
     var out = []; var VB = series.votes_by_epoch || {}; var lastLuna = null; var BK = ['stable', 'project', 'bluechip', 'single'];
     Object.keys(VB).map(Number).sort(function (a, b) { return a - b; }).forEach(function (E) {
@@ -328,7 +338,8 @@
   }
 
   /** One placement in numbers — what the summary sentence, the track record and the help bot all read (same arithmetic as the panels). */
-  function placementSummary(series, cfg, placement, opt) {
+  function placementSummary(series, cfg, placement, opt) { return memo(series, cfg, 'ps', placement.proposal_id + '|' + JSON.stringify(opt || {}), function () { return placementSummary_(series, cfg, placement, opt); }); }
+  function placementSummary_(series, cfg, placement, opt) {
     opt = opt || {}; var sc = cfg.scorecard || cfg; var win = opt.window || '7d';
     var chk = bribeCheck(series, cfg, placement); if (!chk.best) return null;
     var fids = Object.keys((sc.bribe_check || {}).formulas || {}); var ff = fids.length ? formulaFit(series, cfg, placement, fids[0], win) : null;
@@ -357,7 +368,8 @@
   }
 
   /** Reverse-engineering audit of one placement against a declared formula, gauge by gauge: score, formula rank, PD's weight, flags. */
-  function placementAudit(series, cfg, placement, fid, windowKey, opt) {
+  function placementAudit(series, cfg, placement, fid, windowKey, opt) { return memo(series, cfg, 'pa', [placement.proposal_id, fid, windowKey, JSON.stringify(opt || {})].join('|'), function () { return placementAudit_(series, cfg, placement, fid, windowKey, opt); }); }
+  function placementAudit_(series, cfg, placement, fid, windowKey, opt) {
     var sc = cfg.scorecard || cfg; var asOf = addDays(String(placement.executed_at).slice(0, 10), -1);
     var wf = windowFacts(series, cfg, { asOf: asOf, window: windowKey }); var by = {}; wf.pools.forEach(function (f) { by[f.id] = f; });
     var fsc = formulaScores(wf, cfg, fid, opt) || {}; var alloc = allocation(placement);

@@ -30,7 +30,7 @@
 // Output: lp-grades/series/pools.json
 // =============================================================================
 
-const SERIES_VERSION = 'pool-series-1.5.0';   // 1.5.0 (2026-10-16): who funded each pot — e[E].funders by organisation from the bribe events (individuals only as 'Other bribers') · 1.4.0 (2026-10-16): votes per pool + Votion's share before the vote harvest (distributions ledger + archive read of Votion's vaults), LUNA price from the oracle before epoch-history · 1.3.0 (2026-10-16): weekly history before the daily capture (dex-data/history) as w[E] · 1.2.0 (2026-10-16): votes per pool per period from vote-state, Votion's share (votes_cast, votion_vp, votes_by_epoch) · 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
+const SERIES_VERSION = 'pool-series-1.5.1';   // 1.5.1 (2026-10-16): non-LUNA bribe tokens at the epoch's oracle price (else today's) · 1.5.0 (2026-10-16): who funded each pot — e[E].funders by organisation from the bribe events (individuals only as 'Other bribers') · 1.4.0 (2026-10-16): votes per pool + Votion's share before the vote harvest (distributions ledger + archive read of Votion's vaults), LUNA price from the oracle before epoch-history · 1.3.0 (2026-10-16): weekly history before the daily capture (dex-data/history) as w[E] · 1.2.0 (2026-10-16): votes per pool per period from vote-state, Votion's share (votes_cast, votion_vp, votes_by_epoch) · 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
 
 function num(v) { if (v === '' || v == null) return null; const n = Number(v); return isFinite(n) ? n : null; }
 const r2 = (v) => v == null ? null : Math.round(v * 100) / 100;
@@ -114,6 +114,14 @@ async function buildSeries(io, parseCsv, log = console.log) {
     for (let i = 0; i < 7; i++) { const k = new Date(d0.getTime() + i * 864e5).toISOString().slice(0, 10); if (lunaSeries.daily[k] != null) v.push(Number(lunaSeries.daily[k])); }
     if (v.length) lunaWeek[c.epoch] = v.reduce((a, b) => a + b, 0) / v.length; }
   const lunaPx = (E) => (ehBy[E] && ehBy[E].luna_price_usd) || lunaWeek[E] || null;
+  // 1.5.1: non-LUNA bribe tokens at the EPOCH's price (price-history oracle, week average) where the oracle has the token, else today's
+  // catalog price — a ROAR or SOLID bribe from 2025 is worth what it was worth then, not what the token is worth now.
+  const symBy = {}; for (const t of (tc && tc.tokens) || []) { const sy = (t.effective && t.effective.symbol) || (t.discovered && t.discovered.symbol) || t.symbol; if (sy) symBy[t.denom] = sy; }
+  const haveSeries = new Set(((await io.listDir('price-history/series')) || []).filter(n => /\.json$/.test(n)).map(n => n.replace(/\.json$/, '')));
+  const serCache = {}; const calStart = {}; for (const c of cal || []) if (c.start_time) calStart[c.epoch] = c.start_time.slice(0, 10);
+  const pxAt = async (denom, E) => { const sy = symBy[denom]; if (sy && haveSeries.has(sy) && calStart[E]) { if (!(sy in serCache)) { const j = await io.readJson(`price-history/series/${sy}.json`); serCache[sy] = j && j.daily ? j.daily : null; }
+      const dly = serCache[sy]; if (dly) { const d0 = new Date(calStart[E] + 'T00:00:00Z'); const v = []; for (let i = 0; i < 7; i++) { const k = new Date(d0.getTime() + i * 864e5).toISOString().slice(0, 10); if (dly[k] != null) v.push(Number(dly[k])); } if (v.length) return v.reduce((a, b) => a + b, 0) / v.length; } }
+    return pxNow[denom] ?? null; };
 
   // ---- bribes, every briber, per pool per period (chain state) ----
   const bsMonths = [];
@@ -133,7 +141,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
         for (const x of b.assets || []) {
           const d = x.info && (x.info.native || x.info.cw20); const amt = Number(x.amount || 0);
           if (d === 'uluna') { luna += amt / 1e6; continue; }
-          const px = pxNow[d]; if (px == null || decimalsOf(d) == null) { unpriced++; continue; }
+          const px = await pxAt(d, Number(row.period)); if (px == null || decimalsOf(d) == null) { unpriced++; continue; }
           usd += (amt / Math.pow(10, decimalsOf(d))) * px;
         }
         const lp = lunaPx(Number(row.period));
@@ -159,7 +167,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
       const p = pools.get(id); const ep = p.epochs[P] = p.epochs[P] || {};
       if (ep.bribe_luna != null || ep.bribe_usd != null) continue;   // harvested — the harvest wins
       let luna = 0, usd = 0, unpriced = 0;
-      for (const x of list) { if (x.d === 'uluna') { luna += x.amt / 1e6; continue; } const px = pxNow[x.d]; if (px == null || decimalsOf(x.d) == null) { unpriced++; continue; } usd += (x.amt / Math.pow(10, decimalsOf(x.d))) * px; }
+      for (const x of list) { if (x.d === 'uluna') { luna += x.amt / 1e6; continue; } const px = await pxAt(x.d, Number(P)); if (px == null || decimalsOf(x.d) == null) { unpriced++; continue; } usd += (x.amt / Math.pow(10, decimalsOf(x.d))) * px; }
       const lp = lunaPx(Number(P)) || (pxNow.uluna || null);
       ep.bribe_luna = r2(luna); ep.bribe_other_usd = r2(usd); ep.bribe_usd = lp ? r2(luna * lp + usd) : null; ep.bribe_src = 'runway';
       if (unpriced) ep.bribe_unpriced = unpriced;
@@ -198,7 +206,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
         for (let E = ev.epoch_start; E <= ev.epoch_end; E++) {
           let usd = 0; for (const c of ev.coins || []) { const d = bare(c.denom); const amt = Number(c.amount || 0) / nE;
             if (d === 'uluna') { const lp = lunaPx(E); if (lp) usd += amt / 1e6 * lp; continue; }
-            const px = pxNow[d]; if (px == null || decimalsOf(d) == null) continue; usd += amt / Math.pow(10, decimalsOf(d)) * px; }
+            const px = await pxAt(d, E); if (px == null || decimalsOf(d) == null) continue; usd += amt / Math.pow(10, decimalsOf(d)) * px; }
           if (!(usd > 0)) continue;
           const ep = pools.get(id).epochs[String(E)] = pools.get(id).epochs[String(E)] || {}; ep.funders = ep.funders || {}; ep.funders[g] = r2((ep.funders[g] || 0) + usd);
           funderTotals[g] = (funderTotals[g] || 0) + usd;
@@ -286,7 +294,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
   const epochs = {}; for (const e of eps) { const c = calBy[e]; const h = ehBy[e]; epochs[e] = { start: c ? c.start_time.slice(0, 10) : null, end: c ? c.end_time.slice(0, 10) : null, luna_usd: lunaPx(e), annual_luna: h ? h.rewards_annual_luna : null }; }
   const doc = {
     schemaVersion: 1, product: 'lp-grades/series', version: SERIES_VERSION, generatedAt: new Date().toISOString(),
-    method: 'Facts only, keyed by pool address (gauge id for single-asset gauges); every name a pool has carried is merged. d.* are daily arrays aligned to `days` (null = not captured that day): tvl USD, 24h volume USD, 24h fees USD. e[epoch] = votes (vp, bucket_pct, active), staked USD, pool amounts + prices at the epoch’s last reading (price-neutral retention), bribe pots for that period from chain state (every briber: bribe_luna, bribe_other_usd at TODAY’s catalog price, bribe_usd = LUNA at the epoch’s price + other), and pd_luna from PD’s decoded proposals. Grades are NOT here — lp-scorecard.js computes them from these facts + grading_config.json `scorecard`.',
+    method: 'Facts only, keyed by pool address (gauge id for single-asset gauges); every name a pool has carried is merged. d.* are daily arrays aligned to `days` (null = not captured that day): tvl USD, 24h volume USD, 24h fees USD. e[epoch] = votes (vp, bucket_pct, active), staked USD, pool amounts + prices at the epoch’s last reading (price-neutral retention), bribe pots for that period from chain state (every briber: bribe_luna, bribe_other_usd at the epoch’s oracle price (today’s catalog price where the oracle lacks the token), bribe_usd = LUNA at the epoch’s price + other), and pd_luna from PD’s decoded proposals. Grades are NOT here — lp-scorecard.js computes them from these facts + grading_config.json `scorecard`.',
     coverage: { days_first: days[0] || null, days_last: days[days.length - 1] || null, dex_files: files, dex_rows: rowsRead, epochs_first: eps[0] || null, epochs_last: eps[eps.length - 1] || null, bribe_rows: bribeRows, bribe_months: bsMonths.length, runway_rows: runwayRows, vote_rows: voteRows, history_pools: histPools, history_epochs: hist && hist.coverage ? hist.coverage.epochs : null, vote_periods: Object.keys(voteTotals).length, vote_ledger_periods: ledgerPeriods, funder_events: fundRows, unmapped_bribe_pools: [...unmappedBribePools].slice(0, 20), pd_placements: placements.length, notes: ['SkeletonSwap volume is mostly not provided by its API — those cells are null, never zero.', 'Votes, amounts and bribes per epoch begin at E184 (pool-status-history); daily dex facts begin 2026-05-12 (Astroport) and 2026-01-12 (SkeletonSwap).'] },
     days, epochs, weekly_epochs: hist && hist.epochs ? hist.epochs : {}, placements, funders: Object.entries(funderTotals).sort((a, b) => b[1] - a[1]).map(([g, u]) => ({ group: g, usd: r2(u) })), votes_by_epoch: voteTotals, votion_vaults: [...votionVaults], pools: out,
   };
