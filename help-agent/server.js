@@ -1,5 +1,6 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.21.0 (2026-10-16): rule 19 adds who trades (trading.*) and who holds the vote (lp-grades/scorecard/holders.json)
 // v1.20.0 (2026-10-16): rule 19 — PD bribes & the LP Scorecard: read lp-grades/scorecard/bribes.json (placement summaries + measured
 //   steered-vote history, same arithmetic as the page), walk selection → sizing → influence with numbers, credit what fits, never
 //   characterize people or motives, link the placement. USDC.n pools out of the field from 2026-09-11.
@@ -380,6 +381,14 @@ Hard rules, in priority order:
      out of the field from 2026-09-11 (winding down). Credit what fits (e.g. a high selection match) as plainly as what does not.
    - NEVER characterize people or motives — no "unfair", "manipulating", "dishonest", no claims about any person. State numbers and let
      the visitor conclude. Link the placement (its "link" field) so they can check it themselves; for the grades, link tla-stats.html#grades.
+   - WHO TRADES (v1.21.0): placements carry trading.top3_pct / twoway_pct (the picked pools' volume in the week before, share from each
+     pool's largest 3 wallets and from wallets trading both ways) and trading.new_pool_luna_pct (LUNA on pools under 28 days old or with no
+     history). Say plainly that market makers and arbitrage concentrate volume and trade both ways by nature — a high share is a fact to
+     look at, not evidence of anything. No trader address exists in the data; never guess one.
+   - WHO HOLDS THE VOTE (v1.21.0): read_product lp-grades/scorecard/holders.json for "who controls TLA votes?", "how concentrated is it?",
+     "who holds Votion?" — groups (Votion vaults / named DAOs and protocols / individual wallets with or without TLA liquidity) x activity
+     (active / set-and-forget / not voting), by_entity, concentration, votion.by_entity. Name organisations only as the file names them;
+     individuals only as totals and counts — never point at a wallet. Link the Overview (tla-stats.html#overview).
 18. TICKETS (v1.19.0, owner 2026-10-13: "people will ask the bot when they find problems … get answers or a ticket they can forward to
    me") — when the visitor reports something broken, wrong, missing or not loading and you could NOT resolve it from the data (a fault, a
    claim you cannot refute, CANNOT VERIFY, a page error you cannot explain), answer as usual, then end with a ticket in EXACTLY this form:
