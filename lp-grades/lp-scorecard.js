@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.9.0';   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.10.0';   // 1.10.0 (2026-10-16): who trades — f.tr per pool (distinct traders, top-1 / top-3 share, two-way share, from the weekly history); placementSummary adds trading (picks' top-3 / two-way share, LUNA-weighted) and new_pools (LUNA on pools younger than new_pool_days)   // 1.9.0 (2026-10-16): weekly history (dex-data/history) stands in before the daily capture   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -46,6 +46,18 @@
   }
 
   /** facts for every pool over one window ending on `asOf` (inclusive). */
+  /** Who traded a pool over the window: the completed weeks inside it (at least the last one before the as-of date), from the weekly
+   *  history's trader columns [6 traders, 7 top1_pct, 8 top3_pct, 9 twoway_pct]; shares volume-weighted across weeks, traders = the
+   *  weekly average. Null when no week has trader data. Aggregates only — the history stores no trader address. */
+  function traderFacts(series, p, asOf, n) {
+    if (!p.w) return null; var WE = series.weekly_epochs || {}; var inW = [], best = null, bestEnd = null;
+    Object.keys(p.w).forEach(function (E) { var r = p.w[E]; if (!r || r[6] == null) return; var st = (WE[E] && WE[E].start) || (series.epochs[E] && series.epochs[E].start); if (!st) return; var end = addDays(st, 7);
+      if (end > addDays(asOf, 1)) return; if (end > addDays(asOf, -Math.max(n || 7, 7) + 1)) inW.push(r); if (!bestEnd || end > bestEnd) { best = r; bestEnd = end; } });
+    if (!inW.length && best && daysBetween(bestEnd, asOf) <= 7) inW.push(best);
+    if (!inW.length) return null;
+    var wsum = 0, t1 = 0, t3 = 0, tw = 0, nT = 0, vol = 0; inW.forEach(function (r) { nT += r[6]; var v = r[1] || 0; vol += v; if (r[7] != null && v > 0) { wsum += v; t1 += r[7] * v; t3 += r[8] * v; tw += r[9] * v; } });
+    return { weeks: inW.length, traders: Math.round(nT / inW.length), top1: wsum ? t1 / wsum : null, top3: wsum ? t3 / wsum : null, twoway: wsum ? tw / wsum : null, vol_week: vol / inW.length };
+  }
   function windowFacts(series, cfg, opt) {
     var sc = cfg.scorecard || cfg; var n = (sc.windows || {})[opt.window] || Number(opt.window) || 30;
     var asOf = opt.asOf || series.days[series.days.length - 1];
@@ -85,6 +97,7 @@
           f.history_flags = { unpriced: okw.some(function (r) { return r[4]; }), reserve_implied: okw.some(function (r) { return r[5]; }) }; }
       }
       if (p.w) { var firstW = Object.keys(p.w).map(Number).sort(function (a, b) { return a - b; })[0]; var fs0 = firstW != null ? (((series.weekly_epochs || {})[firstW] || {}).start || (series.epochs[firstW] || {}).start) : null; if (fs0 && (!f.first_day || fs0 < f.first_day)) { f.first_day = fs0; f.age_days = daysBetween(fs0, asOf) + 1; } }
+      f.tr = traderFacts(series, p, asOf, n);
       f.small = f.liquidity != null && f.liquidity < (sc.depth_floor_usd || 0);
       f.efficiency = (f.volume != null && f.liquidity > 0 && !f.small) ? f.volume / f.liquidity : null;
       f.efficiency_raw = (f.volume != null && f.liquidity > 0) ? f.volume / f.liquidity : null;
@@ -317,6 +330,10 @@
       formula: ff ? { id: fids[0], window: win, rho: ff.rho, placed_differently_pct: ff.placed_differently_pct, unscored_luna: ff.unscored_luna } : null,
       sizing: { window: win, vs: 'volume', sized_differently_pct: sz.sized_differently_pct, cost_spread: sz.cost_spread, most_overweight: heavy[0] ? { id: heavy[0].id, weight: heavy[0].weight, luna_pct: heavy[0].luna_share * 100, metric_pct: heavy[0].metric_share * 100 } : null, buckets: bucketsOver },
       unrankable_luna: Object.keys(chk.alloc).filter(function (id) { var any = chk.fields[chk.best.criterion + '|' + chk.best.window]; return !(any && any[id]); }).reduce(function (s, id) { return s + chk.alloc[id]; }, 0),
+      trading: (function () { var wf = windowFacts(series, cfg, { asOf: addDays(String(placement.executed_at).slice(0, 10), -1), window: '7d' }); var by = {}; wf.forEach(function (f) { by[f.id] = f; });
+        var L = 0, t3 = 0, tw = 0, n = 0; Object.keys(chk.alloc).forEach(function (id) { var f = by[id]; if (!f || !f.tr || f.tr.top3 == null) return; var a = chk.alloc[id]; L += a; t3 += a * f.tr.top3; tw += a * f.tr.twoway; n++; });
+        var nd = sc.new_pool_days || 28, nl = 0, np = 0, tot = 0; Object.keys(chk.alloc).forEach(function (id) { var f = by[id]; tot += chk.alloc[id]; if (!f || f.age_days == null || f.age_days < nd) { nl += chk.alloc[id]; np++; } });
+        return { top3_pct: L ? t3 / L : null, twoway_pct: L ? tw / L : null, pools_with_data: n, new_pool_luna_pct: tot ? nl / tot * 100 : null, new_pools: np, new_pool_days: nd }; })(),
       steered: sh.length ? { epochs: sh.map(function (h) { return h.epoch; }), pd_pct_avg: sh.reduce(function (s, h) { return s + (h.pd_pct || 0); }, 0) / sh.length, pd_pct_max: Math.max.apply(null, sh.map(function (h) { return h.pd_pct || 0; })) } : null };
   }
 
@@ -413,5 +430,5 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementAudit: placementAudit, weightUnit: weightUnit, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
+  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, traderFacts: traderFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementAudit: placementAudit, weightUnit: weightUnit, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });
