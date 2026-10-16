@@ -1,4 +1,4 @@
-/* lp-scorecard.js 1.7.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
+/* lp-scorecard.js 1.8.0 (2026-10-16) — the LP Scorecard math, shared by the page and the lp-grades cron.
  * KEEP IDENTICAL: adao-links-site/lib/lp-scorecard.js  ==  platform-crons/lp-grades/lp-scorecard.js
  * Inputs: lp-grades/series/pools.json (facts only) + grading_config.json `scorecard` (the rubric).
  * Nothing here is opinion: every number is a fact from the series or a weight from the config, and every
@@ -6,7 +6,7 @@
  * a metric with no source is left out and its weight renormalizes. */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.LPScorecard = factory(); })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var VERSION = 'lp-scorecard-1.7.0';   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
+  var VERSION = 'lp-scorecard-1.8.0';   // 1.8.0 (2026-10-16): placementAudit + weightUnit — gauge-by-gauge reverse engineering of a placement   // 1.7.0 (2026-10-16): placementSummary   // 1.6.0 (2026-10-16): winding-down assets leave the field (config winding_down)   // 1.5.0 (2026-10-16): steerHistory — measured votes steered per funder per epoch   // 1.4.0 (2026-10-16): sizingCheck — LUNA share vs metric share among the picked pools, bucket split   // 1.3.0 (2026-10-16): declared formulas as bribe-check criteria + formulaFit   // 1.2.0 (2026-10-16): the as-of epoch's pots per pool, PD / other (ep_*)   // 1.1.0 (2026-10-15): grade and rank within each bucket (config rank_within)
 
   function isNum(x) { return x != null && isFinite(x); }
   function mean(xs) { var a = xs.filter(isNum); return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : null; }
@@ -306,6 +306,52 @@
       steered: sh.length ? { epochs: sh.map(function (h) { return h.epoch; }), pd_pct_avg: sh.reduce(function (s, h) { return s + (h.pd_pct || 0); }, 0) / sh.length, pd_pct_max: Math.max.apply(null, sh.map(function (h) { return h.pd_pct || 0; })) } : null };
   }
 
+  /** The weight unit of a placement: PD's per-epoch amounts are whole multiples of one unit (90 LUNA, 106 LUNA…). Returns the unit or null. */
+  function weightUnit(amounts) {
+    var a = amounts.filter(function (x) { return x > 0; }); if (!a.length) return null; var m = Math.min.apply(null, a);
+    for (var d = 1; d <= 12; d++) { var u = m / d; if (a.every(function (x) { var r = x / u; return Math.abs(r - Math.round(r)) <= 0.03 * Math.max(1, r) || Math.abs(r - Math.round(r)) < 0.02; })) return u; }
+    return null;
+  }
+
+  /** Reverse-engineering audit of one placement against a declared formula, gauge by gauge: score, formula rank, PD's weight, flags. */
+  function placementAudit(series, cfg, placement, fid, windowKey, opt) {
+    var sc = cfg.scorecard || cfg; var asOf = addDays(String(placement.executed_at).slice(0, 10), -1);
+    var wf = windowFacts(series, cfg, { asOf: asOf, window: windowKey }); var by = {}; wf.pools.forEach(function (f) { by[f.id] = f; });
+    var fsc = formulaScores(wf, cfg, fid, opt) || {}; var alloc = allocation(placement);
+    var unit = weightUnit(Object.keys(alloc).map(function (k) { return alloc[k]; }));
+    var gauges = {};
+    Object.keys(fsc).forEach(function (id) { var g = fsc[id].group; (gauges[g] = gauges[g] || { rows: [] }).rows.push(id); });
+    Object.keys(alloc).forEach(function (id) { var f = by[id]; var leg = (placement.legs || []).filter(function (l) { return l.pool === id; })[0]; var g = (fsc[id] && fsc[id].group) || (f && f.bucket) || (leg && leg.gauge) || 'other'; gauges[g] = gauges[g] || { rows: [] }; if (gauges[g].rows.indexOf(id) < 0) gauges[g].rows.push(id); });
+    var out = [], tot = { gauges: 0, top_match: 0, inversions: 0, passed_over: 0, unscored_luna: 0, luna: 0, moved: 0 };
+    Object.keys(gauges).forEach(function (g) {
+      var ids = gauges[g].rows; var budget = ids.reduce(function (s, id) { return s + (alloc[id] || 0); }, 0); if (!(budget > 0)) return;
+      var scored = ids.filter(function (id) { return fsc[id]; }).sort(function (a, b) { return fsc[b].score - fsc[a].score; });
+      var sumS = scored.reduce(function (s, id) { return s + fsc[id].score; }, 0);
+      var scoredBudget = scored.reduce(function (s, id) { return s + (alloc[id] || 0); }, 0);
+      var rows = ids.map(function (id) { var f = by[id] || {}; var s0 = fsc[id] ? fsc[id].score : null;
+        return { id: id, score: s0, formula_rank: s0 == null ? null : scored.indexOf(id) + 1, luna: alloc[id] || 0, weight: unit && alloc[id] ? Math.round(alloc[id] / unit) : (alloc[id] ? null : 0),
+          formula_luna: s0 != null && sumS > 0 ? scoredBudget * s0 / sumS : null, volume: f.volume, liquidity: f.liquidity, eff: f.efficiency_raw, small: !!f.small, winding: !!f.winding, new_pool: f.first_day ? f.first_day > asOf : false }; });
+      // flags
+      var bribedScored = rows.filter(function (r) { return r.luna > 0 && r.score != null; });
+      var minBribedScore = bribedScored.length ? Math.min.apply(null, bribedScored.map(function (r) { return r.score; })) : null;
+      rows.forEach(function (r) {
+        r.flags = [];
+        if (r.luna > 0 && r.score == null) r.flags.push(r.new_pool ? 'no history (new pool)' : 'no trading data');
+        if (!r.luna && r.score != null && minBribedScore != null && r.score > minBribedScore && !r.small && !r.winding) { r.flags.push('scored above a bribed pool, got nothing'); tot.passed_over++; }
+        if (r.luna > 0 && r.score != null) { var inv = bribedScored.filter(function (o) { return o.score > r.score && o.luna < r.luna; }); if (inv.length) { r.flags.push('more weight than ' + inv.length + ' higher-scored pick' + (inv.length > 1 ? 's' : '')); tot.inversions++; } }
+      });
+      rows.sort(function (a, b) { return (b.luna - a.luna) || ((b.score || -1) - (a.score || -1)); });
+      var topPd = bribedScored.slice().sort(function (a, b) { return b.luna - a.luna; })[0]; var topF = scored[0];
+      var topMatch = topPd && topF ? (topPd.id === topF || (alloc[topF] || 0) >= topPd.luna) : null;
+      var rho = bribedScored.length >= 3 ? spearman(bribedScored.map(function (r) { return r.score; }), bribedScored.map(function (r) { return r.luna; })) : null;
+      var moved = rows.reduce(function (s, r) { return s + (r.formula_luna != null ? Math.abs(r.formula_luna - r.luna) : 0); }, 0) / 2;
+      tot.gauges++; if (topMatch) tot.top_match++; tot.luna += budget; tot.moved += moved; tot.unscored_luna += rows.filter(function (r) { return r.luna > 0 && r.score == null; }).reduce(function (s, r) { return s + r.luna; }, 0);
+      out.push({ gauge: g, budget: budget, rows: rows, top_formula: topF || null, top_pd: topPd ? topPd.id : null, top_match: topMatch, rho_among_picks: rho, moved_pct: scoredBudget > 0 ? moved / scoredBudget * 100 : null });
+    });
+    out.sort(function (a, b) { var o = sc.bucket_order || BUCKET_ORDER; return o.indexOf(a.gauge) - o.indexOf(b.gauge); });
+    return { asOf: asOf, window: windowKey, unit: unit, gauges: out, totals: { gauges: tot.gauges, top_match: tot.top_match, inversions: tot.inversions, passed_over: tot.passed_over, unscored_luna: tot.unscored_luna, luna: tot.luna, moved_pct: tot.luna - tot.unscored_luna > 0 ? tot.moved / (tot.luna - tot.unscored_luna) * 100 : null } };
+  }
+
   /** What changed: each bribed pool before the window, during it, and k epochs after — beside the unbribed field's median change. */
   function afterEffect(series, cfg, placement, opt) {
     var sc = cfg.scorecard || cfg; var k = (opt && opt.after != null) ? opt.after : ((sc.bribe_check || {}).after_epochs || 3);
@@ -353,5 +399,5 @@
     return errs;
   }
 
-  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
+  return { VERSION: VERSION, pairClass: pairClass, windowFacts: windowFacts, scoreField: scoreField, rankMap: rankMap, ranksAcross: ranksAcross, bribeCheck: bribeCheck, afterEffect: afterEffect, rankPath: rankPath, allocation: allocation, placementWindow: placementWindow, spearman: spearman, validate: validate, presetOf: presetOf, placementAudit: placementAudit, weightUnit: weightUnit, placementSummary: placementSummary, steerHistory: steerHistory, sizingCheck: sizingCheck, formulaScores: formulaScores, formulaFit: formulaFit, groupOrder: groupOrder, standing: standing, epochOf: epochOf, addDays: addDays, median: median };
 });

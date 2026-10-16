@@ -170,7 +170,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
       legs.push({ pool: id, gauge_pool_id: l.pool_gauge_id, gauge: l.gauge, start: l.start, end: l.end, luna_per_epoch: lunaLeg ? r6(l.per_epoch_display) : null, denom: l.denom });
       if (id && lunaLeg) for (let e = l.start; e <= l.end; e++) { const ep = pools.get(id).epochs[String(e)] = pools.get(id).epochs[String(e)] || {}; ep.pd_luna = r2((ep.pd_luna || 0) + l.per_epoch_display); }
     }
-    placements.push({ proposal_id: pl.proposal_id, title: pl.title, executed_at: pl.executed_at, tx_hash: pl.tx_hash, legs });
+    placements.push({ proposal_id: pl.proposal_id, title: pl.title, executed_at: pl.executed_at, tx_hash: pl.tx_hash, description: pl.description || null, weights_parsed: pl.weights_parsed || null, legs });
   }
 
   // ---- votes per pool per period, every voter (tla-voting/vote-state), and how many of them are Votion's (1.2.0) ----

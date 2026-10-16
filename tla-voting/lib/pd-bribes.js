@@ -54,7 +54,23 @@ const PD_CORE = 'terra1k8ug6dkzntczfzn76wsh24tdjmx944yj6mk063wum7n20cwd7lxq4lppj
 const PD_PROP_MODULE = 'terra1660g9mle5kfsq8c0p4k4hgr9ujdyr3m48c22cawy0akr98rmwksqehqnup';
 const INCENTIVE_MANAGER = 'terra1tuuwm8yrj54qeg0c8xu00aha9ryatyhtczq8qq2q8tntuw0auzas9037wh';
 const FEE_LUNA_RAW = 10000000; // 10 LUNA add_bribe fee, forwarded to PD core (fee income, never a bribe)
-const VERSION = 'pd-bribes-1.2.0';
+const VERSION = 'pd-bribes-1.3.0';   // 1.3.0 (2026-10-16): proposal description captured verbatim + best-effort weights_parsed
+
+// Best-effort read of a description's allocation lines: a pool-like token (A-B pair or a known single asset) followed somewhere on
+// the same line by a number (weight, %, or LUNA). Returns [{ line, pool, value, unit }] or null. Never used as truth — the decoded
+// legs are the record; this only lets the page show the description's own numbers beside them.
+function parseDescriptionWeights(desc) {
+    if (!desc) return null; const out = [];
+    for (const raw of String(desc).split(/\r?\n/)) {
+        const line = raw.replace(/[|*`_>#]/g, ' ').trim(); if (!line) continue;
+        const pm = line.match(/([A-Za-z][A-Za-z0-9.]{1,14})\s*[-\/]\s*([A-Za-z][A-Za-z0-9.]{1,14})/); if (!pm) continue;
+        const rest = line.slice(line.indexOf(pm[0]) + pm[0].length);
+        const nm = rest.match(/(-?\d[\d,]*(?:\.\d+)?)\s*(%|luna|x)?/i); if (!nm) continue;
+        out.push({ line: raw.trim().slice(0, 200), pool: pm[1] + '-' + pm[2], value: Number(nm[1].replace(/,/g, '')), unit: (nm[2] || '').toLowerCase() || null });
+        if (out.length >= 60) break;
+    }
+    return out.length ? out : null;
+}
 
 function poolIdFrom(ab) {
     // add_bribe payload pool identity — defensive across the shapes the
@@ -221,6 +237,10 @@ function buildProduct(proposals, pdEvents, now, flags) {
         });
         const rec = {
             proposal_id: p.id, title: p.prop.title || null,
+            // 1.3.0: the proposal's own description, verbatim — where PD lists the pools and the weights it applied. Kept as written
+            // (capped) so anyone can compare it with the decoded legs; weights_parsed is a best-effort read of "pool … number" lines.
+            description: p.prop.description ? String(p.prop.description).slice(0, 12000) : null,
+            weights_parsed: parseDescriptionWeights(p.prop.description),
             tx_hash: exec ? exec.tx_hash : null, height: exec ? exec.height : null, executed_at: exec ? exec.timestamp : null,
             verified_against_events: !!exec,
             legs,
