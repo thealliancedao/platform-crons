@@ -330,7 +330,7 @@
       formula: ff ? { id: fids[0], window: win, rho: ff.rho, placed_differently_pct: ff.placed_differently_pct, unscored_luna: ff.unscored_luna } : null,
       sizing: { window: win, vs: 'volume', sized_differently_pct: sz.sized_differently_pct, cost_spread: sz.cost_spread, most_overweight: heavy[0] ? { id: heavy[0].id, weight: heavy[0].weight, luna_pct: heavy[0].luna_share * 100, metric_pct: heavy[0].metric_share * 100 } : null, buckets: bucketsOver },
       unrankable_luna: Object.keys(chk.alloc).filter(function (id) { var any = chk.fields[chk.best.criterion + '|' + chk.best.window]; return !(any && any[id]); }).reduce(function (s, id) { return s + chk.alloc[id]; }, 0),
-      trading: (function () { var wf = windowFacts(series, cfg, { asOf: addDays(String(placement.executed_at).slice(0, 10), -1), window: '7d' }); var by = {}; wf.forEach(function (f) { by[f.id] = f; });
+      trading: (function () { var wf = windowFacts(series, cfg, { asOf: addDays(String(placement.executed_at).slice(0, 10), -1), window: '7d' }); var by = {}; wf.pools.forEach(function (f) { by[f.id] = f; });
         var L = 0, t3 = 0, tw = 0, n = 0; Object.keys(chk.alloc).forEach(function (id) { var f = by[id]; if (!f || !f.tr || f.tr.top3 == null) return; var a = chk.alloc[id]; L += a; t3 += a * f.tr.top3; tw += a * f.tr.twoway; n++; });
         var nd = sc.new_pool_days || 28, nl = 0, np = 0, tot = 0; Object.keys(chk.alloc).forEach(function (id) { var f = by[id]; tot += chk.alloc[id]; if (!f || f.age_days == null || f.age_days < nd) { nl += chk.alloc[id]; np++; } });
         return { top3_pct: L ? t3 / L : null, twoway_pct: L ? tw / L : null, pools_with_data: n, new_pool_luna_pct: tot ? nl / tot * 100 : null, new_pools: np, new_pool_days: nd }; })(),
