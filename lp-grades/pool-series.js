@@ -30,7 +30,7 @@
 // Output: lp-grades/series/pools.json
 // =============================================================================
 
-const SERIES_VERSION = 'pool-series-1.1.0';   // 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
+const SERIES_VERSION = 'pool-series-1.1.1';   // 1.1.1 (2026-10-16): bribe-token decimals from the catalog's `effective` layer first (curated, verified) — wBTC / ATOM / FUEL / xASTRO bribes were counted $0 because they have no discovered decimals · 1.1.0 (2026-10-16): pots for periods not yet harvested come from the runway product (bribe_src 'runway')
 
 function num(v) { if (v === '' || v == null) return null; const n = Number(v); return isFinite(n) ? n : null; }
 const r2 = (v) => v == null ? null : Math.round(v * 100) / 100;
@@ -104,7 +104,7 @@ async function buildSeries(io, parseCsv, log = console.log) {
 
   // ---- prices (today) for non-LUNA bribe tokens ----
   const pxNow = {}; for (const t of (tc && tc.tokens) || []) { const u = t.prices && t.prices.tla && t.prices.tla.usd; if (u != null) pxNow[t.denom] = u; }
-  const decBy = {}; for (const t of (tc && tc.tokens) || []) { const d = (t.discovered && t.discovered.decimals) ?? t.decimals; if (d != null) decBy[t.denom] = d; }
+  const decBy = {}; for (const t of (tc && tc.tokens) || []) { const d = (t.effective && t.effective.decimals) ?? (t.discovered && t.discovered.decimals) ?? t.decimals; if (d != null) decBy[t.denom] = d; }   // effective = curated override (verified), else chain-discovered
   const decimalsOf = (denom) => decBy[denom];   // unknown decimals → unpriced (never guessed: a wrong guess is a 100x error)
   const ehBy = {}; for (const e of (eh && eh.epochs) || []) ehBy[e.epoch] = e;
 
