@@ -1,5 +1,18 @@
 # tla-flows — changelog
 
+## 3.5.13 — 2026-10-17 — wBTC.creda.a gets a cost (pnl 1.7.1)
+
+- Owner: "the wBTC I just recently brought into TLA … wouldn't when we staked it be the cost we know?" — Rallies showed "Cost unknown".
+  Cause: the state-history sampler pairs every cw20 gauge through its minter; Credia's wBTC receipt (wBTC.creda.a, terra1jjvy…) is
+  minted by its market, not a pair, so it was filed `unresolved` — never a single. The P&L had no basket for it: **all 37 open
+  wBTC.creda.a positions in every ledger had no cost and no value** (and the gate's curve "now" point was missing pool 35).
+- **pnl 1.7.1:** an `unresolved` gauge the token catalog knows as a token is a single (1 receipt = itself, priced from
+  price-history `wBTC.creda.a`, daily since 2026-08-03). Builder bump: every ledger rebuilds on the next run. Gate pnl v3: 38/39
+  (was 37/39 — the curve check passes now; the take-rate check's failure is unrelated data drift, unchanged).
+- dex-data state-history: a cw20 with no pair minter that the TLA snapshot lists as a gauge with no pair is classified `single`.
+- Not fixed (data, not code): ampCAPA lots from before 2026-05-13 have no ampCAPA price for their day (the series starts then), so
+  those positions stay "cost unknown".
+
 ## 3.5.12 — 2026-10-14 — a partly amplified add still owns its legs (pnl 1.7.0)
 
 - The first app-built LP → LP convert (USDC.inj-SOLID → LUNA-arbLUNA) showed "started 2,362 LUNA", ~16 short. Cause: the app

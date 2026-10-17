@@ -1,3 +1,8 @@
+## dex-data 1.5.1 — 2026-10-17 — single-asset cw20 gauges are singles
+
+- state-history: a cw20 gauge with no pair minter that the TLA snapshot lists with no pair (wBTC.creda.a, Credia's receipt) is
+  `single`, not `unresolved` — the P&L had no basket for it. tla-flows pnl 1.7.1 reads the same rule from the token catalog meanwhile.
+
 ## dex-data 1.5.0 — 2026-09-27 — LST ratios anchored on the chain (Milestone A step 3 (i))
 
 - New `lib/ratio-anchor.js` 1.0.0 — ONE rule for the LST ratio series, two callers: the one-time tla-core Action

@@ -201,7 +201,11 @@ async function buildTargets(corpus, { publicLcd, reqDelayMs = 150, stats = {}, g
       const lp = key.slice(5); const m = lpToPair.get(lp);
       if (m) targets.push({ ...base, kind: 'pair', lp, pair: m.pair, name: m.name, dex: m.dex, bucket: m.bucket, pair_via: 'snapshot' });
       else { const pair = await minterOf(lp); const pm = pair && pairMeta.get(pair);
+        // a cw20 with no pair minter that the TLA snapshot lists as a gauge with no pair is a single-asset token (wBTC.creda.a, Credia's
+        // receipt — minted by its market, not a pair). 2026-10-17: it was 'unresolved', so the P&L had no basket for it
+        const sp = !pair ? (corpus.snapshot.pools || []).find(p => p.gauge_pool_id === key && !p.pool_address) : null;
         targets.push(pair ? { ...base, kind: 'pair', lp, pair, name: pm ? pm.name : null, dex: pm ? pm.dex : null, bucket: pm ? pm.bucket : null, pair_via: 'lcd_minter' }
+                    : sp ? { ...base, kind: 'single', lp, pair: null, name: sp.name || null, dex: null, bucket: null, pair_via: null }
                           : { ...base, kind: 'unresolved', lp, pair: null, name: null, dex: null, bucket: null, pair_via: null }); }
     } else if (/^native:factory\/(terra1[0-9a-z]+)\/uLP$/.test(key)) {
       const pair = key.match(/^native:factory\/(terra1[0-9a-z]+)\/uLP$/)[1]; const pm = pairMeta.get(pair);
