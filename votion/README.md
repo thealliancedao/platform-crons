@@ -72,3 +72,10 @@ So the yields product publishes two numbers and never swaps one for the other:
 
 First read (chain `bluna-probe` 1.0, 2026-10-13): rate 1.769853 unchanged since at least 2026-08-01; 4 of 8 validators jailed
 (≈1.05M of 2.44M LUNA earning nothing); ≈282k LUNA idle in the hub; ≈8.8k LUNA rewards waiting. Gate: `mock-run-yields.js` D14–D16.
+
+## Rounds — Votion's votes per pool, each round (1.8.0, 2026-10-31)
+The first hourly run after a flip (rounds start Monday 00:00 UTC, weekly from 2022-10-31) writes that round once — within 6 h of its
+start — to `votion/rounds/current.json` `{ periods: { P: { at, minutes_after_flip, votion_vp, vaults_voting, pools } } }` (VP, not
+micro-units), from the same live read as `snapshots/vaults.json`. It carries Votion's per-round history forward without the archive
+node; `tla-voting/vote-history/votion.json` (the archive backfill, run by hand) keeps its own rounds. Readers take the backfill where it
+has a round and this file after it.

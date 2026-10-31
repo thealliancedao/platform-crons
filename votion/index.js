@@ -30,7 +30,7 @@ const C = require('../config/contracts.js');      // LST_HUBS: symbol → hub (s
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-votion-1.7.0';   // 1.7.0 (2026-10-16): archive-node depositor candidates (votion/archive-holders.json, every deposit since launch) join the live-verified holder set · 1.6.0 (2026-10-13): yields — bLUNA's hub is a "steak" hub (no exchange_rates; the rate rises only on `harvest`): assets.bLUNA.steak = realised_apr (the rate's own 30-day growth — 0 while unharvested), rate_unchanged_days, potential_apr (bonded delegations × (1 − commission) × apr_stakers × (1 − fee) ÷ total_native), validators (bonded / jailed), idle LUNA, rewards waiting (yields.js steakHub; proven by the bluna-probe 1.0 chain probe; gate mock-run-yields D14–D16) · 1.5.1 (2026-09-28): the daily gate at 19.5 h (20 h was missed by 0.6 s by an hourly job and waited an extra hour); the heartbeat records holder_pnl_at and a never-built holder P&L is built at once from the committed positions snapshot · 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
+const VERSION       = 'org-votion-1.8.0';   // 1.8.0 (2026-10-31): votion/rounds/current.json — Votion's votes per pool for each round, recorded forward from the first hourly read after the flip (Rallies' pool sheet showed the archive backfill's last round, Oct 11) · 1.7.0 (2026-10-16): archive-node depositor candidates (votion/archive-holders.json, every deposit since launch) join the live-verified holder set · 1.6.0 (2026-10-13): yields — bLUNA's hub is a "steak" hub (no exchange_rates; the rate rises only on `harvest`): assets.bLUNA.steak = realised_apr (the rate's own 30-day growth — 0 while unharvested), rate_unchanged_days, potential_apr (bonded delegations × (1 − commission) × apr_stakers × (1 − fee) ÷ total_native), validators (bonded / jailed), idle LUNA, rewards waiting (yields.js steakHub; proven by the bluna-probe 1.0 chain probe; gate mock-run-yields D14–D16) · 1.5.1 (2026-09-28): the daily gate at 19.5 h (20 h was missed by 0.6 s by an hourly job and waited an extra hour); the heartbeat records holder_pnl_at and a never-built holder P&L is built at once from the committed positions snapshot · 1.5.0 (2026-09-28, owner: "what went in, in USD / underlying LUNA / LST — why am I down"): Branch E after every daily B — votion/holder-pnl/current.json, each holder's lots FIFO with cost at entry and the Δ split into LUNA price / LST staking / Votion compounding legs (sum exact), realized vs advertised Votion APR (holder-pnl.js; gate mock-run-holder-pnl.js on real data); 1.4.0: 1.4.0: Branch D yields — vault/LST/native APR+APY from on-chain exchange_rates (Eris formula + independent measurement); 1.3.0: optimization product carries per-vault YIELD
 
 const VOTION_CODE_ID = 3677;
 const ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';
@@ -317,6 +317,27 @@ async function runBranchA(now, errors) {
     if (hDoc.points.length !== before + 1) throw new Error('never-shrink violated — aborting');
     hDoc.meta.updated_at = now.toISOString();
     await publishFile(hPath, hDoc, `votion: history point ${now.toISOString()}`);
+
+    // 1.8.0 (2026-10-31, owner: Rallies showed Votion's votes "Oct 11" — tla-voting/vote-history/votion.json is an archive backfill,
+    // run by hand, so it stops where the last run stopped): Votion's votes per pool for EACH ROUND, recorded going forward from this
+    // hourly read — the first run after a flip (rounds start Monday 00:00 UTC, weekly from 2022-10-31) writes round P once, within 6 h of
+    // its start, to votion/rounds/current.json { periods: { P: { at, votion_vp, vaults_voting, pools } } }. The archive backfill keeps
+    // its own file; a reader takes the backfill where it has a round and this file after it. No archive node involved.
+    try {
+        const T0R = Date.UTC(2022, 9, 31), WEEK = 7 * 864e5, P = Math.floor((now.getTime() - T0R) / WEEK), since = now.getTime() - (T0R + P * WEEK);
+        if (since < 6 * 3600e3 && Object.keys(votion_vp_now_per_pool).length) {
+            const rr = await apiGetJson('votion/rounds/current.json');
+            if (rr.ok) {
+                const rDoc = rr.data || { meta: { module: 'votion', product: 'rounds', note: 'Votion votes per pool at the start of each round (first hourly read after the flip); VP, not micro-units' }, periods: {} };
+                if (!rDoc.periods[P]) {
+                    const votionVp = Math.round(Object.values(votion_vp_now_per_pool).reduce((a, b) => a + b, 0) * 100) / 100;
+                    rDoc.periods[P] = { at: now.toISOString(), minutes_after_flip: Math.round(since / 60000), votion_vp: votionVp, vaults_voting: vaults.filter((v) => parseGaugeVotes(v.state && v.state.gauge_votes).length).length, pools: votion_vp_now_per_pool };
+                    rDoc.meta.updated_at = now.toISOString(); rDoc.meta.version = VERSION;
+                    await publishFile('votion/rounds/current.json', rDoc, `votion: round ${P} votes @ ${now.toISOString()}`);
+                }
+            }
+        }
+    } catch (e) { errors.push({ where: 'rounds', error: e.message }); }
     return { vaults, vaultsDoc };
 }
 
