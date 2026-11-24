@@ -9,8 +9,13 @@ Checked against a capture of Eris's liquidity-hub page taken in the same minute 
   the whole leg: LUNA-USDC.inj 38.64 % for Eris's 44.57 %, LUNA-USDT 36.31 % for 43.43 %. Median gap 1.2 points, worst 7.1.
 - **Source:** Eris's page does not read tRPC at all. Its bundle (`getAstroportInfo` / `getPoolInfo`) fetches
   `https://app.astroport.fi/api/pools?chainId=phoenix-1` and uses `365 × dayLpFeesUSD ÷ pool TVL`, `?? 0` for a pool the list
-  lacks. On xyk pools the two Astroport figures agree; on concentrated and stable pools the list's figure is 1.3–3× tRPC's.
-  `fetchAstroportLpFees()` now reads that list first. When it cannot be read (or no pool in it carries the field — a changed API),
+  lacks. `fetchAstroportLpFees()` now reads that list first. First live run (18:02 UTC): 293 pools read, all 17 Astroport rows
+  from the list, and the list's figure is the same number as tRPC's (LUNA-USDC.inj 4.01 % from both).
+- **Timing — corrected the same evening.** This entry first said the list ran 1.3–3× above tRPC on concentrated and stable
+  pools (LUNA-USDC.inj 5.83 % on Eris's page at 17:00 against tRPC's 4.27 % at 17:01). That was wrong. Eris's page keeps
+  Astroport's list for 60 minutes, so at 17:00 it was showing the figures of about 16:00 — our own 16:01 capture reads 5.88 %
+  (and 7.02 % for LUNA-USDT against the page's 6.99 %) — and the trailing-day fees fell sharply in that hour. With the units
+  right, this feed and Eris's page agree whenever Eris's copy is fresh, and can differ by one hour's change in fees when it is not. When it cannot be read (or no pool in it carries the field — a changed API),
   the tRPC fraction × 100 stands in, the row says so (`trading_apr_source`, flag `trading_apr_fallback_source`) and
   `meta.trading_leg` counts both. A failed read of the list is not an input error and does not turn the heartbeat `partial`.
 - Mock gate: the fixture's `fee_apr` is now a fraction, as on the wire; eight new assertions (list read, pool not in the list,

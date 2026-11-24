@@ -54,9 +54,13 @@
 //     and the APR/APY built on it read low by the whole leg — 5.9 points on the largest pool.
 //   • SOURCE: Eris's page does not read tRPC. `getAstroportInfo` (bundle chunk 713, same capture) fetches
 //     https://app.astroport.fi/api/pools?chainId=phoenix-1 and uses 365 × dayLpFeesUSD ÷ its own pool TVL; a pool
-//     missing from that list is `?? 0`. On xyk pools the two Astroport figures agree (LUNA-SOLID 1.86 vs 1.78);
-//     on concentrated and stable pools the REST figure is 1.3–3× the tRPC one (LUNA-USDC.inj 5.83 vs 4.27,
-//     LUNA-USDT 7.00 vs 2.29). That list is now read first; tRPC × 100 is the labelled fallback when it cannot be.
+//     missing from that list is `?? 0`. That list is now read first; tRPC × 100 is the labelled fallback.
+//     The two Astroport figures are the SAME number (first live run, 18:02 UTC: LUNA-USDC.inj 4.01 % from both).
+//   • TIMING, not a third difference: at 17:00 UTC the page showed LUNA-USDC.inj 5.83 % and LUNA-USDT 6.99 % where
+//     Astroport read 4.27 % and 2.29 % at 17:01. Eris's page keeps Astroport's list for 60 minutes
+//     (`getCached('astroport_…', 60, …)`, and the capture has no request for it), and the trailing-day fees fell
+//     sharply in that hour — our own 16:01 capture reads 5.88 % and 7.02 %. So Eris's trading leg can lag this
+//     feed's by up to an hour; nothing here should be "corrected" towards it.
 // Every single-asset leg is published with `trading_apr_source`; a failed
 // source read nulls the leg WITH the flag `single_asset_yield_leg_unmeasured`
 // (kept from 1.3.3) — never a borrowed value.
@@ -475,7 +479,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null,
           if (fee != null) { tradingPct = 365 * fee / tvl * 100; tradingSource = 'astroport api/pools: 365 × dayLpFeesUSD ÷ pool TVL (the list Eris\'s page reads)'; }
           else if (!has) { tradingPct = 0; tradingSource = 'astroport api/pools: pool not in the list — 0 by Eris source (dayLpFeesUSD ?? 0)'; }
         }
-        // fallback: Astroport's tRPC figure, a FRACTION (× 100). Reads below Eris on concentrated and stable pools.
+        // fallback: Astroport's tRPC figure, a FRACTION (× 100) — the same number as the list's dayLpFeesUSD ÷ TVL × 365.
         if (tradingPct == null && dexPool.fee_apr != null && isFinite(dexPool.fee_apr)) { tradingPct = Number(dexPool.fee_apr) * 100; tradingSource = 'astroport pools.getAll tradingFees.apr × 100 (fallback — the pool list Eris reads was not available)'; flags.push('trading_apr_fallback_source'); }
       } else {
         const sy = (inputs.single_yield_by_key || {})[key];
@@ -544,7 +548,7 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null,
       method: 'AUDIT-eris-apr-pricing §Gauge-LP-APR (source-confirmed 2026-08-02) — verbatim mixed convention: apy = aprToApy(incentive×0.92, 365.25) + trading − take; apr(linear total) = incentive − take + trading (no 0.92, per source); trading??0 in formula; edge cases verbatim (0/0→0, tvl==0→Infinity published null+flag); distributions raw, never normalized.',
       substitutions: 'LUNA price + LP TVL from dex-data adapter captures. Trading leg: Astroport\'s own pool list (dayLpFeesUSD), the figure Eris reads — see trading_leg; its tRPC figure is the labelled fallback.',
       trading_leg: { astroport_pool_list: inputs.astroport_lp_fees ? (inputs.astroport_lp_fees.ok ? 'ok' : 'unavailable') : 'not read', note: inputs.astroport_lp_fees ? inputs.astroport_lp_fees.note : null, rows_from_pool_list: pools.filter(p => /api\/pools/.test(p.trading_apr_source || '')).length, rows_on_fallback: pools.filter(p => (p.flags || []).includes('trading_apr_fallback_source')).length },
-      validation: 'checked 2026-11-24 against the owner\'s capture of the Eris liquidity-hub page in the same minute (21 pools): staked $ within 0.6 % (one SkeletonSwap pool 1.9 %), rewards per year −0.4 % on every pool (LUNA price an hour older than the page\'s), incentive APR within 0.4 points. The trading leg had been published at 1/100th (fixed in 1.6.0) and is now read from the list Eris reads. Earlier: reconciled 2026-09-10.',
+      validation: 'checked 2026-11-24 against the owner\'s capture of the Eris liquidity-hub page in the same minute (21 pools): staked $ within 0.6 % (one SkeletonSwap pool 1.9 %), rewards per year −0.4 % on every pool (LUNA price an hour older than the page\'s), incentive APR within 0.4 points. The trading leg had been published at 1/100th (fixed in 1.6.0) and is now read from the list Eris reads. Eris\'s page keeps that list for 60 minutes, so its trading leg can lag this one by up to an hour (that minute it showed the 16:00 figures). Earlier: reconciled 2026-09-10.',
       luna_price_used_usd: lunaUsd,
       luna_price_source: lunaSource,
       luna_price_as_of: lunaAsOf,   // 1.4.3: when the live feed priced this run (null for adapter / catalog)
