@@ -10,7 +10,7 @@
 // competitions. Null-vs-0: a missing component is excluded from its lens and lowers
 // confidence; it is never scored as zero.
 const CONFIG_V2 = {
-  config_version: '2.0.0',
+  config_version: '2.0.1',   // 2.0.1 (2026-11-24): the stable list names USDC.inj (and USDC.n / USDC.nbl) like the scorecard's does — LUNA-USDC.inj and the three other USDC.inj pools were classed 'project'
   lens_weights: { purpose: 0.20, work: 0.25, efficiency: 0.15, durability: 0.25, governance: 0.15 },
   // D1 (owner 2026-08-25): what the chain needs each kind of pool for. Adjustable by DAO prop.
   purpose_weights: { native_stable: 1.0, lst_correlated: 0.9, bluechip_bridge: 0.7, stable_stable: 0.6, project: 0.5, single_asset: 0.5 },
@@ -19,8 +19,8 @@ const CONFIG_V2 = {
   cushion_full_pct: 3,                                     // bucket_pct − 1% ≥ this → cushion score 100
   symbols: {
     lst: ['ampLUNA', 'arbLUNA', 'bLUNA', 'stLUNA', 'boneLUNA', 'ampROAR', 'ampCAPA'],
-    stable: ['USDC', 'USDT', 'USDt', 'EURe', 'axlUSDC', 'axlUSDT', 'SOLID'],
-    bluechip: ['wBTC', 'WBTC', 'wBTC.osmo', 'wBTC.axl', 'wBTC.creda.a', 'ATOM', 'INJ', 'PAXG', 'wstETH', 'ETH', 'dATOM'],
+    stable: ['USDC', 'USDC.n', 'USDC.nbl', 'USDC.inj', 'USDT', 'USDt', 'EURe', 'axlUSDC', 'axlUSDT', 'SOLID'],
+    bluechip: ['wBTC', 'WBTC', 'wBTC.osmo', 'wBTC.axl', 'WBTC.axl', 'wBTC.creda.a', 'ATOM', 'INJ', 'PAXG', 'wstETH', 'ETH', 'dATOM'],
   },
 };
 

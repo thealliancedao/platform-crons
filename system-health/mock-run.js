@@ -108,6 +108,29 @@ function healthyRepo() {
         'token-catalog/supply/capa/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },
         'price-history/heartbeat.json': { product: 'price-history', cron: 'token-catalog', capturedAt: '2026-07-16T10:00:00Z', status: 'ok', day: '2026-07-16', tokens_appended: 36 },   // 1.0.8 (B.5): writer heartbeat   // capa-supply v2 row (2026-08-24): the product IS the heartbeat
         'token-catalog/supply/fuel/current.json': { capturedAt: '2026-07-16T10:00:00Z', status: 'ok' },   // fuel-supply v1 row (2026-08-24)
+        // 1.1.0: the page-feeding products that got freshness rows (real shapes: capturedAt / generated_at / builtAt)
+        'member-data/tla-snapshot/heartbeat.json': { cron: 'tla-snapshot', version: 'tla-snapshot-1.2.0', capturedAt: '2026-07-16T11:45:00Z', status: 'ok' },
+        'member-data/participants/heartbeat.json': H('2026-07-16T11:45:00Z'),
+        'member-data/positions/heartbeat.json': { cron: 'adao-positions', capturedAt: '2026-07-16T11:47:00Z', status: 'ok' },
+        'member-data/holdings/heartbeat.json': { product: 'member-data/holdings', capturedAt: '2026-07-15T23:47:00Z', status: 'ok' },
+        'dex-data/eris-apr/heartbeat.json': { generated_at: '2026-07-16T11:02:00Z', status: 'ok' },
+        'lp-grades/snapshots/heartbeat.json': { cron: 'lp-grades', capturedAt: '2026-07-15T23:15:00Z', status: 'ok' },
+        'network-and-prices/heartbeat.json': { cron: 'network-and-prices', capturedAt: '2026-07-16T11:05:00Z', status: 'ok' },
+        'tla-flows/events/heartbeat.json': { cron: 'tla-flows', capturedAt: '2026-07-16T11:17:00Z', status: 'ok' },
+        'tla-flows/pnl/heartbeat.json': { product: 'tla-flows/pnl', builtAt: '2026-07-16T03:35:00Z', status: 'ok' },
+        // 1.1.0 INV9–11 fixtures: three paid pools (one with nothing staked — that is not "unvalued"), one pool off its gauge's
+        // list holding old votes (zero rewards), one listed newcomer with a small next-epoch estimate; the Eris-method feed
+        // values the paid pools within 1 %; the P&L build reports no fault.
+        'member-data/tla-snapshot/current.json': { version: 'tla-snapshot-1.2.0', totals: { rewards: { annual_emissions_luna: 1000 } }, pools: [
+            { name: 'PAID-A', bucket: 'stable', status: 'active', gauge_whitelisted: true, staked_in_tla_usd: 600, amp_lp: { underlying_lp_amount: 10 }, lp_health: { asset_0: { symbol: 'A' }, asset_1: { symbol: 'B' } }, rewards: { source: 'chain_distributions_current', annual_emissions_luna: 600, distribution_share_of_bucket: 0.6 } },
+            { name: 'PAID-B', bucket: 'stable', status: 'active', gauge_whitelisted: true, staked_in_tla_usd: 400, amp_lp: { underlying_lp_amount: 10 }, lp_health: { asset_0: { symbol: 'A' }, asset_1: { symbol: 'C' } }, rewards: { source: 'chain_distributions_current', annual_emissions_luna: 395, distribution_share_of_bucket: 0.395 } },
+            { name: 'PAID-EMPTY', bucket: 'stable', status: 'active', gauge_whitelisted: true, staked_in_tla_usd: null, amp_lp: null, rewards: { source: 'chain_distributions_current', annual_emissions_luna: 5, distribution_share_of_bucket: 0.005 } },
+            { name: 'OFF-LIST', bucket: 'stable', status: 'voted_but_below_threshold', status_reason: 'dewhitelisted', gauge_whitelisted: false, staked_in_tla_usd: 50, rewards: { source: 'dewhitelisted', annual_emissions_luna: 0 } },
+            { name: 'NEWCOMER', bucket: 'stable', status: 'voted_but_below_threshold', gauge_whitelisted: true, staked_in_tla_usd: 5, rewards: { source: 'gauge_infos_next_fallback', annual_emissions_luna: 3 } },
+        ] },
+        'dex-data/eris-apr/current.json': { meta: {}, pools: [{ pool_name: 'PAID-A', tla_staked_usd: 603 }, { pool_name: 'PAID-B', tla_staked_usd: 398 }, { pool_name: 'PAID-EMPTY', tla_staked_usd: 0 }] },
+        'tla-flows/pnl/integrity.json': { builder: 'tla-flows-pnl-1.7.2', builtAt: '2026-07-16T03:35:00Z', positions_checked: 100, wallets_checked: 10, checks: {
+            foreign_tokens_in_cost: { severity: 'fault', count: 0, status: 'ok' }, units_differ_from_chain: { severity: 'fault', count: 0, status: 'ok' }, cost_not_measured: { severity: 'check', count: 7, status: 'check' } }, per_wallet: { w1: ['cost_not_measured'] } },
     };
 }
 // fix the healthy fixture note above: NOT-TLA pool must satisfy INV2
@@ -118,7 +141,7 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO = fixNotTla(healthyRepo()); WRITES = {};
     let out = await M.run();
     check('R1 overall skipped-not-violation (bribe_capture pending)', out.meta.status === 'skipped', out.meta.status);
-    for (const k of ['bucket_vp_consistency', 'staked_le_depth', 'distribution_fractions_sum', 'bucket_label_agreement', 'heartbeat_freshness', 'identity_resolution', 'nft_listings_reconcile'])
+    for (const k of ['bucket_vp_consistency', 'staked_le_depth', 'distribution_fractions_sum', 'bucket_label_agreement', 'heartbeat_freshness', 'identity_resolution', 'nft_listings_reconcile', 'reward_list_valued', 'rewards_sum_to_emission', 'pnl_integrity'])
         check(`R1 ${k} ok`, out.invariants[k].status === 'ok', out.invariants[k]);
     { const m = out.invariants.nft_listings_reconcile.measured;
       check('R1 INV8 fold: only #2 open on aDAO (delisted, sold, transferred and superseded rows closed/ignored); by_venue both sides {bbl:1}', m.adao.ledger_open === 1 && m.adao.inventory_listed === 1 && JSON.stringify(m.adao.by_venue) === JSON.stringify({ ledger: { bbl: 1 }, inventory: { bbl: 1 } }), m.adao);
@@ -301,6 +324,55 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       REPO['lion-dao/holders-heartbeat.json'] = { product: 'lion-dao/holders', engine: '1.0.0', status: 'failed', capturedAt: '2026-07-16T03:40:00Z', written: [], errors: [{ product: 'burn/holders', reason: 'all_accounts read failed on page 3' }] };
       const out2 = await M.run(); const inv2 = out2.invariants.heartbeat_freshness; const row2 = inv2.measured.all.find(r => r.product === 'ally-holders-liondao');
       check('R10 ally-holders-liondao fresh-but-failed → FAILED + raised', inv2.status === 'violation' && row2 && row2.status === 'FAILED' && row2.hb_status === 'failed' && inv2.measured.stale.some(r => r.product === 'ally-holders-liondao'), row2); }
+
+    console.log('— R9 (1.1.0): reward_list_valued · rewards_sum_to_emission · pnl_integrity · the dust floor · the new freshness rows —');
+    REPO = fixNotTla(healthyRepo()); WRITES = {};
+    out = await M.run();
+    { const v = out.invariants.reward_list_valued, r = out.invariants.rewards_sum_to_emission, q = out.invariants.pnl_integrity;
+      check('R9 healthy: 3 paid pools, the one with nothing staked is not "unvalued"; totals agree within 5 % (1000 vs 1001)', v.status === 'ok' && v.measured.paid_pools === 3 && v.measured.unvalued.length === 0 && v.measured.diff_pct < 1, v);
+      check('R9 healthy: per-pool emissions = 100.3 % of the emission (the newcomer\'s estimate is the hair over); the off-list pool carries none', r.status === 'ok' && Math.abs(r.measured.per_pool_sum_over_emission - 1.003) < 1e-9 && r.measured.off_list_but_active_or_paid.length === 0, r);
+      check('R9 healthy: P&L — no fault; the 7 positions with no measured cost are carried as a number', q.status === 'ok' && q.measured.counts.cost_not_measured === 7 && /7 with no measured cost/.test(q.detail), q);
+      const rows = out.invariants.heartbeat_freshness.measured, names = rows.map(x => x.product);
+      check('R9 the nine page-feeding products are watched and fresh', ['tla-snapshot', 'tla-participants', 'adao-positions', 'member-holdings', 'eris-apr', 'lp-grades', 'network-and-prices', 'tla-flows-events', 'tla-flows-pnl'].every(n => names.includes(n) && rows.find(x => x.product === n).status === 'fresh'), rows.filter(x => /tla-|eris|lp-grades|network|holdings|positions/.test(x.product))); }
+    // the 2026-11 case, as it stood: one side of the largest paid pool unnamed → no value; nine pools off a list still active with an estimate
+    REPO = fixNotTla(healthyRepo());
+    { const P = REPO['member-data/tla-snapshot/current.json'].pools;
+      P[0].staked_in_tla_usd = null; P[0].lp_health.asset_1.symbol = null;                                   // PAID-A: staked LP, no dollar value
+      P[3].status = 'active'; P[3].rewards = { source: 'gauge_infos_next_fallback', annual_emissions_luna: 120 }; delete P[3].status_reason; }   // OFF-LIST: active with an estimate
+    REPO['tla-flows/pnl/integrity.json'].checks.foreign_tokens_in_cost = { severity: 'fault', count: 916, status: 'fault' };
+    out = await M.run();
+    { const v = out.invariants.reward_list_valued, r = out.invariants.rewards_sum_to_emission, q = out.invariants.pnl_integrity;
+      check('R9 a paid pool with a stake and no dollar value is a violation that names it and counts its unnamed side', v.status === 'violation' && /PAID-A/.test(v.detail) && v.measured.unvalued[0].unnamed_sides === 1, v);
+      check('R9 a pool off its gauge\'s list that is active or carries emissions is a violation that names it', r.status === 'violation' && /OFF-LIST/.test(r.detail) && r.measured.per_pool_sum_over_emission > 1.1, r);
+      check('R9 a P&L fault count above zero is a violation ("916 × foreign_tokens_in_cost")', q.status === 'violation' && /916 × foreign_tokens_in_cost/.test(q.detail), q);
+      check('R9 overall = violation', out.meta.status === 'violation'); }
+    // valued, but the two valuations disagree by more than 5 %
+    REPO = fixNotTla(healthyRepo()); REPO['dex-data/eris-apr/current.json'].pools[0].tla_staked_usd = 900;
+    out = await M.run();
+    check('R9 snapshot vs the Eris-method feed more than 5 % apart is a violation with both totals', out.invariants.reward_list_valued.status === 'violation' && out.invariants.reward_list_valued.measured.tla_staked_usd_snapshot === 1000 && out.invariants.reward_list_valued.measured.tla_staked_usd_eris_method === 1298, out.invariants.reward_list_valued);
+    // an earlier build's snapshot (no gauge_whitelisted) whose estimates run over: the sum alone raises it
+    REPO = fixNotTla(healthyRepo());
+    { const P = REPO['member-data/tla-snapshot/current.json'].pools; for (const x of P) delete x.gauge_whitelisted; P[3].status = 'active'; P[3].rewards = { source: 'gauge_infos_next_fallback', annual_emissions_luna: 120 }; }
+    out = await M.run();
+    check('R9 an earlier build\'s file: per-pool emissions at 112.3 % of the emission is a violation on the sum alone', out.invariants.rewards_sum_to_emission.status === 'violation' && /112\.3%/.test(out.invariants.rewards_sum_to_emission.detail) && out.invariants.rewards_sum_to_emission.measured.active_pools_with_unread_list === 4, out.invariants.rewards_sum_to_emission);
+    // missing inputs are skipped, never guessed
+    REPO = fixNotTla(healthyRepo()); delete REPO['member-data/tla-snapshot/current.json']; delete REPO['tla-flows/pnl/integrity.json'];
+    out = await M.run();
+    check('R9 no snapshot / no integrity file → the three checks are skipped', ['reward_list_valued', 'rewards_sum_to_emission', 'pnl_integrity'].every(k => out.invariants[k].status === 'skipped'), [out.invariants.reward_list_valued.status, out.invariants.pnl_integrity.status]);
+    REPO = fixNotTla(healthyRepo()); delete REPO['dex-data/eris-apr/current.json'];
+    out = await M.run();
+    check('R9 no Eris-method feed → valued pools still ok, and the detail says the total was not cross-checked', out.invariants.reward_list_valued.status === 'ok' && /not cross-checked/.test(out.invariants.reward_list_valued.detail));
+    // the dust floor: $1 staked over $0 depth, and a label disagreement on a $0.04 pool, are listed — $80 over $10 is raised
+    REPO = fixNotTla(healthyRepo());
+    REPO['dex-data/astroport/snapshots/current.json'].pools.push({ pool_name: 'DUST', pool_address: 'pairD', bucket: null, tvl_usd: 0, raw: { staked_liquidity_usd: 1 } });
+    REPO['token-catalog/snapshots/current.json'].pools.push({ bucket: 'stable', gauge_status: 'dewhitelisted', total_vp: '0', architecture: { pair_address: 'pairE' }, gauge_pool_id: 'g9', underlyings: ['x'] });
+    REPO['dex-data/astroport/snapshots/current.json'].pools.push({ pool_name: 'DUST-LABEL', pool_address: 'pairE', bucket: 'project', tvl_usd: 2, raw: { staked_liquidity_usd: 0.04 } });
+    out = await M.run();
+    check('R9 dust: staked $1 > depth $0 is listed, not raised', out.invariants.staked_le_depth.status === 'ok' && out.invariants.staked_le_depth.measured.dust_ignored.length === 1 && /1 dust pool/.test(out.invariants.staked_le_depth.detail), out.invariants.staked_le_depth);
+    check('R9 dust: a bucket-label disagreement on a $0.04 pool is listed, not raised', out.invariants.bucket_label_agreement.status === 'ok' && out.invariants.bucket_label_agreement.measured.dust_ignored.length === 1, out.invariants.bucket_label_agreement);
+    REPO['dex-data/astroport/snapshots/current.json'].pools.push({ pool_name: 'REAL', pool_address: 'pairF', bucket: null, tvl_usd: 10, raw: { staked_liquidity_usd: 80 } });
+    out = await M.run();
+    check('R9 staked $80 > depth $10 is still a violation; measured stays the list of pools', out.invariants.staked_le_depth.status === 'violation' && Array.isArray(out.invariants.staked_le_depth.measured) && out.invariants.staked_le_depth.measured.length === 1 && out.invariants.staked_le_depth.measured[0].pool === 'REAL' && /1 more under \$50/.test(out.invariants.staked_le_depth.detail), out.invariants.staked_le_depth);
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);

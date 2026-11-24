@@ -29,7 +29,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.0.11';   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.1.0';   // 1.1.0 (2026-11-24, pre-promotion health check): three checks that would have caught what the check found by hand — reward_list_valued (every pool the chain is paying has a dollar value in the TLA snapshot, and its total agrees with the Eris-method feed), rewards_sum_to_emission (per-pool emissions add up to the emission; a pool off its gauge's list is neither active nor paid), pnl_integrity (the P&L build's own fault checks); a $50 floor on the two dust-pool checks so a red status is news again; the page-feeding products that had no freshness row are watched (tla-snapshot, participants, positions, holdings, eris-apr, lp-grades, network-and-prices, tla-flows events + P&L)   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -78,6 +78,8 @@ function violation(detail, measured, expected) { return { status: 'violation', d
 function skipped(detail)                       { return { status: 'skipped',   detail, measured: null, expected: null }; }
 const dayOf = (iso) => (iso || '').slice(0, 10);
 const num   = (v) => (v === null || v === undefined) ? null : Number(v);
+const DUST_USD = 50;   // 1.1.0: materiality floor for the two per-pool consistency checks (INV 2, INV 5)
+const round2 = (v) => Math.round(v * 100) / 100;
 
 // --------------------------------------------------------------------------- INV 1 — bucket_vp_consistency (same-DAY like-for-like; report, don't repair)
 function invBucketVpConsistency(member, catalog) {
@@ -111,19 +113,22 @@ function invBucketVpConsistency(member, catalog) {
 // --------------------------------------------------------------------------- INV 2 — staked_le_depth (per pool, both sides present)
 function invStakedLeDepth(dexSnapshots) {
     if (!dexSnapshots.length) return skipped('no dex-data snapshots readable');
-    const bad = []; let checked = 0;
+    const bad = [], dust = []; let checked = 0;
     for (const { id, snap } of dexSnapshots) {
         for (const p of (snap.pools || [])) {
             const tvl = num(p.tvl_usd), staked = num(p.raw && p.raw.staked_liquidity_usd);
             if (tvl === null || staked === null) continue;
             checked++;
-            if (staked > tvl * 1.001)   // 0.1% float slack
-                bad.push({ dex: id, pool: p.pool_name || p.pool_address, staked_usd: staked, tvl_usd: tvl });
+            if (staked > tvl * 1.001) {   // 0.1% float slack
+                const row = { dex: id, pool: p.pool_name || p.pool_address, staked_usd: staked, tvl_usd: tvl };
+                // 1.1.0: a pool with under $50 staked is rounding in an empty pool, not a state anyone can be misled by — listed, not raised
+                (staked < DUST_USD ? dust : bad).push(row);
+            }
         }
     }
     if (!checked) return skipped('no pool carried both staked and tvl values');
-    if (bad.length) return violation(`${bad.length} pool(s) report staked > depth (impossible state)`, bad, 'staked_liquidity_usd <= tvl_usd');
-    return ok(`${checked} pools checked, none impossible`, { pools_checked: checked }, 'staked_liquidity_usd <= tvl_usd');
+    if (bad.length) return violation(`${bad.length} pool(s) report staked > depth (impossible state)` + (dust.length ? ` — ${dust.length} more under $${DUST_USD} staked not raised` : ''), bad, 'staked_liquidity_usd <= tvl_usd');   // measured stays the list of pools (readers expect an array)
+    return ok(`${checked} pools checked, none impossible` + (dust.length ? ` (${dust.length} dust pool(s) under $${DUST_USD} staked listed, not raised)` : ''), { pools_checked: checked, dust_ignored: dust }, 'staked_liquidity_usd <= tvl_usd');
 }
 
 // --------------------------------------------------------------------------- INV 3 — distribution_fractions_sum (active pools, per bucket)
@@ -168,20 +173,24 @@ function invBucketLabelAgreement(dexSnapshots, catalog) {
         const pair = p.architecture && p.architecture.pair_address;
         if (pair) catByPair[pair] = p;
     }
-    const mismatches = []; let joined = 0;
+    const mismatches = [], dust = []; let joined = 0;
     for (const { id, snap } of dexSnapshots) {
         for (const p of (snap.pools || [])) {
             if (!p.bucket) continue;                          // non-TLA pool
             const cat = catByPair[p.pool_address];
             if (!cat) continue;                               // catalog has no pair entry — INV7 territory
             joined++;
-            if (cat.bucket !== p.bucket)
-                mismatches.push({ dex: id, pool: p.pool_name || p.pool_address, dex_bucket: p.bucket, catalog_bucket: cat.bucket, dex_as_of: snap.meta && snap.meta.generated_at, catalog_as_of: catalog.meta && catalog.meta.generated_at });
+            if (cat.bucket !== p.bucket) {
+                const staked = num(p.raw && p.raw.staked_liquidity_usd);
+                const row = { dex: id, pool: p.pool_name || p.pool_address, dex_bucket: p.bucket, catalog_bucket: cat.bucket, staked_usd: staked, dex_as_of: snap.meta && snap.meta.generated_at, catalog_as_of: catalog.meta && catalog.meta.generated_at };
+                // 1.1.0: a disagreement on a pool with under $50 staked is listed, not raised (SkeletonSwap LUNA-SOLID: $0.04)
+                (staked !== null && staked < DUST_USD ? dust : mismatches).push(row);
+            }
         }
     }
     if (!joined) return skipped('no dex pool joined to a catalog pair');
-    if (mismatches.length) return violation(`${mismatches.length} bucket label disagreement(s) — dex-data 1.1.0 resolves from chain; catalog entry likely stale (finding A)`, mismatches, 'dex bucket == catalog bucket per pair');
-    return ok(`${joined} joined pairs agree`, { pairs_joined: joined }, 'dex bucket == catalog bucket per pair');
+    if (mismatches.length) return violation(`${mismatches.length} bucket label disagreement(s) — dex-data 1.1.0 resolves from chain; catalog entry likely stale (finding A)` + (dust.length ? ` — ${dust.length} more on dust pools not raised` : ''), mismatches, 'dex bucket == catalog bucket per pair');   // measured stays the list
+    return ok(`${joined} joined pairs agree` + (dust.length ? ` (${dust.length} disagreement(s) on dust pools under $${DUST_USD} staked listed, not raised)` : ''), { pairs_joined: joined, dust_ignored: dust }, 'dex bucket == catalog bucket per pair');
 }
 
 // --------------------------------------------------------------------------- INV 6 — heartbeat_freshness (product-appropriate signals; addendum)
@@ -238,6 +247,17 @@ const FRESHNESS_MAP = [
     // 1.0.11 (2026-09-22): the holder products (ally-positions/holders.js — a duty of org-ally-positions-liondao since index.js 1.2.2,
     // run when ≥20 h old): pyROAR ledger walked whole + ROAR20 owners via Helius; heartbeat carries status ok|ok_with_errors|failed.
     { product: 'ally-holders-liondao', kind: 'cron', repo: 'thealliancedao/dao-originations', path: 'lion-dao/holders-heartbeat.json', ts: ['capturedAt'], max_age_h: 30 },
+    // 1.1.0 (2026-11-24): the products TLA Stats and Member Portfolio read that had no row here (the 2026-10-14 go-live audit
+    // checked them by hand). Hourly ones get 4 h, daily ones 30 h — a missed run or two, not a blip.
+    { product: 'tla-snapshot',       kind: 'cron', path: 'member-data/tla-snapshot/heartbeat.json',  ts: ['capturedAt'],                 max_age_h: 4 },
+    { product: 'tla-participants',   kind: 'cron', path: 'member-data/participants/heartbeat.json',  ts: ['capturedAt'],                 max_age_h: 4 },
+    { product: 'adao-positions',     kind: 'cron', path: 'member-data/positions/heartbeat.json',     ts: ['capturedAt'],                 max_age_h: 4 },
+    { product: 'member-holdings',    kind: 'cron', path: 'member-data/holdings/heartbeat.json',      ts: ['capturedAt'],                 max_age_h: 30 },
+    { product: 'eris-apr',           kind: 'cron', path: 'dex-data/eris-apr/heartbeat.json',         ts: ['generated_at', 'capturedAt'], max_age_h: 4 },
+    { product: 'lp-grades',          kind: 'cron', path: 'lp-grades/snapshots/heartbeat.json',       ts: ['capturedAt'],                 max_age_h: 30 },
+    { product: 'network-and-prices', kind: 'cron', path: 'network-and-prices/heartbeat.json',        ts: ['capturedAt'],                 max_age_h: 4 },
+    { product: 'tla-flows-events',   kind: 'cron', path: 'tla-flows/events/heartbeat.json',          ts: ['capturedAt'],                 max_age_h: 4 },
+    { product: 'tla-flows-pnl',      kind: 'cron', path: 'tla-flows/pnl/heartbeat.json',             ts: ['builtAt'],                    max_age_h: 30 },
 ];
 function firstTs(obj, fields) { for (const f of fields || []) if (obj && obj[f]) return obj[f]; return null; }
 async function invHeartbeatFreshness(reader, now) {
@@ -285,6 +305,62 @@ function invIdentityResolution(catalog) {
     }, 'informational — trend toward zero');
 }
 
+
+// --------------------------------------------------------------------------- INV 9 — reward_list_valued (1.1.0)
+// Every pool the chain is paying must have a dollar value in the TLA snapshot, and the snapshot's total for those pools must
+// agree with the Eris-method feed (dex-data/eris-apr), which values the same pools from the DEX adapters. The 2026-11 case:
+// the snapshot could not name USDC.inj for eight weeks — four paid pools read no value (the largest TLA pool among them), the
+// page's TLA TVL read a third low — and every check here was green or "known".
+function invRewardListValued(tlaSnap, erisApr) {
+    if (!tlaSnap || !Array.isArray(tlaSnap.pools)) return skipped('tla-snapshot current.json absent/unreadable');
+    const paid = tlaSnap.pools.filter(p => p.rewards && p.rewards.source === 'chain_distributions_current');
+    if (!paid.length) return skipped('no pool in the TLA snapshot carries the chain distribution');
+    // "has a stake but no value": something is staked (the staking contract holds LP) and the snapshot could not price it
+    const unvalued = paid.filter(p => !(Number(p.staked_in_tla_usd) > 0) && p.amp_lp && Number(p.amp_lp.underlying_lp_amount) > 0)
+        .map(p => ({ pool: p.name, bucket: p.bucket, share_of_bucket: p.rewards.distribution_share_of_bucket, unnamed_sides: [p.lp_health && p.lp_health.asset_0, p.lp_health && p.lp_health.asset_1].filter(a => a && !a.symbol).length }));
+    const ours = paid.reduce((s, p) => s + (Number(p.staked_in_tla_usd) || 0), 0);
+    const theirs = erisApr && Array.isArray(erisApr.pools) ? erisApr.pools.reduce((s, p) => s + (Number(p.tla_staked_usd) || 0), 0) : null;
+    const diffPct = theirs ? Math.abs(ours - theirs) / theirs * 100 : null;
+    const TOL_PCT = 5;
+    const measured = { paid_pools: paid.length, unvalued, tla_staked_usd_snapshot: round2(ours), tla_staked_usd_eris_method: theirs == null ? null : round2(theirs), diff_pct: diffPct == null ? null : round2(diffPct), snapshot_version: tlaSnap.version || null };
+    const expected = `every paid pool valued; totals within ${TOL_PCT}%`;
+    if (unvalued.length) return violation(`${unvalued.length} pool(s) the chain is paying have no dollar value in the TLA snapshot: ${unvalued.map(u => u.pool).join(', ')}`, measured, expected);
+    if (diffPct != null && diffPct > TOL_PCT) return violation(`TLA staked in the paid pools: the snapshot and the Eris-method feed differ by ${diffPct.toFixed(1)}%`, measured, expected);
+    return ok(`${paid.length} paid pools valued` + (diffPct != null ? `; the snapshot and the Eris-method feed agree within ${diffPct.toFixed(1)}%` : ' (Eris-method feed unreadable — total not cross-checked)'), measured, expected);
+}
+
+// --------------------------------------------------------------------------- INV 10 — rewards_sum_to_emission (1.1.0)
+// The chain's distribution sums to 100 % of each bucket, so the per-pool emissions in the snapshot must add up to the emission
+// (a hair over is allowed: a listed pool not in this epoch's distribution carries a next-epoch estimate). A pool that is off its
+// gauge's list must carry none and must not be `active`. The 2026-11 case: nine such pools were active with an estimate each —
+// the sum ran 12 % over and the page's "Epoch rewards" tile with it.
+function invRewardsSumToEmission(tlaSnap) {
+    if (!tlaSnap || !Array.isArray(tlaSnap.pools) || !tlaSnap.totals || !tlaSnap.totals.rewards) return skipped('tla-snapshot rewards absent/unreadable');
+    const total = Number(tlaSnap.totals.rewards.annual_emissions_luna) || 0;
+    if (!(total > 0)) return skipped('no annual emission in the TLA snapshot');
+    const sum = tlaSnap.pools.reduce((s, p) => s + (Number(p.rewards && p.rewards.annual_emissions_luna) || 0), 0);
+    const ratio = sum / total;
+    const offPaid = tlaSnap.pools.filter(p => p.gauge_whitelisted === false && (p.status === 'active' || (Number(p.rewards && p.rewards.annual_emissions_luna) || 0) > 0)).map(p => p.name);
+    const unread = tlaSnap.pools.filter(p => p.status === 'active' && p.gauge_whitelisted == null).length;   // an earlier build, or the gauge's list could not be read
+    const measured = { per_pool_sum_over_emission: Math.round(ratio * 10000) / 10000, off_list_but_active_or_paid: offPaid, active_pools_with_unread_list: unread, snapshot_version: tlaSnap.version || null };
+    const expected = '98–102% of the emission; no pool off its gauge\'s list active or paid';
+    if (offPaid.length) return violation(`${offPaid.length} pool(s) off their gauge's list are active or carry emissions: ${offPaid.slice(0, 6).join(', ')}`, measured, expected);
+    if (ratio > 1.02 || ratio < 0.98) return violation(`per-pool emissions add up to ${(ratio * 100).toFixed(1)}% of the emission`, measured, expected);
+    return ok(`per-pool emissions add up to ${(ratio * 100).toFixed(1)}% of the emission` + (unread ? ` (${unread} active pool(s) with the gauge's list unread)` : ''), measured, expected);
+}
+
+// --------------------------------------------------------------------------- INV 11 — pnl_integrity (1.1.0)
+// tla-flows/pnl/integrity.json is the P&L build's own list of invariants; `fault` = a figure is wrong. Nothing watched it: it
+// reported 878–916 faults for five weeks (a stale check, fixed in pnl 1.7.2) and nobody was told. A fault count above zero is
+// now raised here; the `check` counts (cost not measured) are carried as numbers.
+function invPnlIntegrity(integ) {
+    if (!integ || !integ.checks) return skipped('tla-flows/pnl/integrity.json absent/unreadable');
+    const faults = Object.entries(integ.checks).filter(([, c]) => c && c.severity === 'fault' && Number(c.count) > 0).map(([k, c]) => ({ check: k, count: c.count }));
+    const measured = { builder: integ.builder || null, built_at: integ.builtAt || null, positions_checked: integ.positions_checked, wallets_checked: integ.wallets_checked,
+        counts: Object.fromEntries(Object.entries(integ.checks).map(([k, c]) => [k, c && c.count])), wallets_flagged: integ.per_wallet ? Object.keys(integ.per_wallet).length : null };
+    if (faults.length) return violation(`the P&L build reports ${faults.map(f => f.count + ' × ' + f.check).join(', ')}`, measured, 'no fault-severity check above zero');
+    return ok(`no fault in the P&L build (${integ.positions_checked} positions; ${measured.counts.cost_not_measured != null ? measured.counts.cost_not_measured + ' with no measured cost' : 'cost coverage not reported'})`, measured, 'no fault-severity check above zero');
+}
 
 // --------------------------------------------------------------------------- INV 8 — nft_listings_reconcile (1.0.9, owner 2026-09-19)
 // Two products answer "what is listed": the event LEDGER (org-nft-flows, every list/delist/sale/transfer on chain, hourly)
@@ -383,6 +459,10 @@ async function run() {
         if (s) dexSnapshots.push({ id, snap: s });
     }
     const votingHb = (await apiGetJson('tla-voting/events/heartbeat.json')).data;
+    // 1.1.0: the TLA snapshot (the file behind the TLA Stats tiles), the Eris-method feed and the P&L build's integrity report
+    const tlaSnap  = (await apiGetJson('member-data/tla-snapshot/current.json')).data;
+    const erisApr  = (await apiGetJson('dex-data/eris-apr/current.json')).data;
+    const pnlInteg = (await apiGetJson('tla-flows/pnl/integrity.json')).data;
 
     // previous run (for the INV4 drop alarm): last entry of current month, else previous month
     let lastRun = null;
@@ -396,7 +476,7 @@ async function run() {
         }
     }
 
-    // ---- run the eight
+    // ---- run them
     const invariants = {
         bucket_vp_consistency:      invBucketVpConsistency(member, catalog),
         staked_le_depth:            invStakedLeDepth(dexSnapshots),
@@ -406,6 +486,9 @@ async function run() {
         heartbeat_freshness:        await invHeartbeatFreshness(apiGetJson, now),
         identity_resolution:        invIdentityResolution(catalog),
         nft_listings_reconcile:     await invNftListingsReconcile(apiGetJson, now),   // 1.0.9
+        reward_list_valued:         invRewardListValued(tlaSnap, erisApr),            // 1.1.0
+        rewards_sum_to_emission:    invRewardsSumToEmission(tlaSnap),                 // 1.1.0
+        pnl_integrity:              invPnlIntegrity(pnlInteg),                        // 1.1.0
     };
     for (const inv of Object.values(invariants)) inv.as_of = now.toISOString();
 
@@ -429,5 +512,5 @@ async function run() {
     return current;
 }
 
-module.exports = { run, T, apiGetJson, publishFile, invBucketVpConsistency, invStakedLeDepth, invDistributionFractions, invTributeCoverage, invBucketLabelAgreement, invHeartbeatFreshness, invIdentityResolution, invNftListingsReconcile, FRESHNESS_MAP };
+module.exports = { run, T, apiGetJson, publishFile, invBucketVpConsistency, invStakedLeDepth, invDistributionFractions, invTributeCoverage, invBucketLabelAgreement, invHeartbeatFreshness, invIdentityResolution, invNftListingsReconcile, invRewardListValued, invRewardsSumToEmission, invPnlIntegrity, FRESHNESS_MAP };
 if (require.main === module) run().then(() => process.exit(0)).catch(e => { console.error('FATAL:', e.message); process.exit(1); });

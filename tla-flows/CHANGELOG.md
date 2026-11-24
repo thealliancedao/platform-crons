@@ -1,5 +1,19 @@
 # tla-flows — changelog
 
+## 3.5.14 — 2026-11-24 — the integrity report stops calling zap positions faults (pnl 1.7.2)
+
+- `tla-flows/pnl/integrity.json` reported `foreign_tokens_in_cost: fault` on 878 positions the day pnl 1.5.0 went live and 916 by
+  2026-11-24 (223 wallets). None was a fault. 1.5.0 changed the rule to "a deposit costs what left the wallet" and gave the GATE's
+  foreign-token check the exemption for positions entered by a zap or carrying one's cost; the PUBLISHED check in `pnl.js` did not
+  get it. Verified on the 223 flagged ledgers of 2026-11-24: 886 carry `zap_in`, the other 30 `carried_in` — every one exempt.
+- **pnl 1.7.2:** the published check applies the gate's rule (`zap_in || carried_in` → not held to the pool's tokens) and reports how
+  many positions that is (`positions_costed_by_what_left_the_wallet`). Builder bump only; no figure in any ledger changes.
+- Nothing watched the file, which is how a fault count sat there for five weeks: system-health 1.1.0 now raises any `fault` count
+  above zero (`pnl_integrity`).
+- Gate mock-run-pnl-v3 on a 2026-11-15 checkout: 37/39, the same two reds with and without this change — "value vs participants"
+  (median 9.5 % non-amp / 14.3 % amp; the open value is the last epoch's reading, the participants' is live, and that week moved)
+  and the take-rate check.
+
 ## 3.5.13 — 2026-10-17 — wBTC.creda.a gets a cost (pnl 1.7.1)
 
 - Owner: "the wBTC I just recently brought into TLA … wouldn't when we staked it be the cost we know?" — Rallies showed "Cost unknown".
