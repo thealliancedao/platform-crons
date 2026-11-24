@@ -9,8 +9,8 @@
 // (monthly append, never-shrink) + heartbeat.json.
 //
 // Invariants (D2 + audit addendum):
-//   1 bucket_vp_consistency    member-data vs catalog active-pool VP sums,
-//                              like-for-like = same DAY (skip + declare else)
+//   1 bucket_vp_consistency    the same paid pools in tla-snapshot and the catalog, the same votes behind them, members' votes vs
+//                              every vote in the gauge (1.1.1); like-for-like = same DAY (skip + declare else)
 //   2 staked_le_depth          dex-data: staked_liquidity_usd <= tvl_usd
 //   3 distribution_fractions   catalog active distribution_pct sums to 1/bucket
 //   4 tribute_stream_coverage  surface tla-voting bribe_capture; alarm on DROP
@@ -29,7 +29,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.1.0';   // 1.1.0 (2026-11-24, pre-promotion health check): three checks that would have caught what the check found by hand — reward_list_valued (every pool the chain is paying has a dollar value in the TLA snapshot, and its total agrees with the Eris-method feed), rewards_sum_to_emission (per-pool emissions add up to the emission; a pool off its gauge's list is neither active nor paid), pnl_integrity (the P&L build's own fault checks); a $50 floor on the two dust-pool checks so a red status is news again; the page-feeding products that had no freshness row are watched (tla-snapshot, participants, positions, holdings, eris-apr, lp-grades, network-and-prices, tla-flows events + P&L)   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.1.1';   // 1.1.1 (2026-11-24): bucket_vp_consistency asks like for like — the same paid pools in the hourly snapshot and the catalog, the same votes behind them, and members' votes against EVERY vote in the gauge (it compared every member vote with the paid pools only, a 9–12 % red light that could never go out)   // 1.1.0 (2026-11-24, pre-promotion health check): three checks that would have caught what the check found by hand — reward_list_valued (every pool the chain is paying has a dollar value in the TLA snapshot, and its total agrees with the Eris-method feed), rewards_sum_to_emission (per-pool emissions add up to the emission; a pool off its gauge's list is neither active nor paid), pnl_integrity (the P&L build's own fault checks); a $50 floor on the two dust-pool checks so a red status is news again; the page-feeding products that had no freshness row are watched (tla-snapshot, participants, positions, holdings, eris-apr, lp-grades, network-and-prices, tla-flows events + P&L)   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -82,7 +82,20 @@ const DUST_USD = 50;   // 1.1.0: materiality floor for the two per-pool consiste
 const round2 = (v) => Math.round(v * 100) / 100;
 
 // --------------------------------------------------------------------------- INV 1 — bucket_vp_consistency (same-DAY like-for-like; report, don't repair)
-function invBucketVpConsistency(member, catalog) {
+// 1.1.1: like with like. Through 1.1.0 this set every vote the members cast in a bucket against the votes behind the catalog's PAID
+// pools only, so the votes sitting on pools that earn nothing (off the gauge's reward list, or under 1 %) read as a 9–12 % "drift" on
+// every run — a red light that could not go out, on a monitor people then stop reading. tla-snapshot 1.2.0 carries every vote in each
+// gauge (boost + fixed) and which pools the chain is paying, so three like-for-like questions are asked instead:
+//   a) the paid set   — are the pools the hourly snapshot calls active exactly the pools the catalog says the chain is paying?
+//   b) the paid votes — do the two agree on the votes behind them? (the catalog holds the distribution's figure, the snapshot the
+//                       live one — they part by timing only; a boost-or-fixed mix-up shows as ~10 %)
+//   c) every vote     — do the members' votes account for the votes in the gauge?
+// (a) is not asked in the first hours of an epoch: the distribution changes at the flip and the two sources refresh at different rates.
+const PAID_VP_TOL_PCT = 5;              // (b) snapshot vs catalog, votes behind the paid pools
+const MEMBER_OVER_TOL_PCT = 5;          // (c) members may not claim more votes than the gauge holds (beyond a day's timing)
+const MEMBER_UNDER_TOL_PCT = 10;        // (c) votes in the gauge that no member wallet accounts for (timing + votes left by locks that moved)
+const PAID_SET_GRACE_H = 12;            // (a) hours after the epoch starts before the paid sets are compared
+function invBucketVpConsistency(member, catalog, tlaSnap) {
     if (!member)  return skipped('member-data current.json absent/unreadable');
     if (!catalog) return skipped('token-catalog current.json absent/unreadable');
     const mDay = dayOf(member.meta && member.meta.generated_at);
@@ -91,23 +104,57 @@ function invBucketVpConsistency(member, catalog) {
     if (mDay !== cDay)  return skipped(`stamps differ (member ${mDay} vs catalog ${cDay}) — like-for-like requires same day`);
     const perBucket = (member.system && member.system.vp_voting_per_bucket) || null;
     if (!perBucket) return skipped('member-data lacks system.vp_voting_per_bucket');
-    const sums = {};
+    const sB = (tlaSnap && tlaSnap.buckets) || null;
+    if (!sB || !Object.values(sB).some(b => b && typeof b.bucket_vp_total_human === 'number'))
+        return skipped('tla-snapshot has no per-bucket vote totals (bucket_vp_total_human, tla-snapshot 1.2.0) — members\' votes against the paid pools only is not like for like and is no longer compared');
+    const sDay = dayOf(tlaSnap.capturedAt);
+    if (sDay && sDay !== mDay) return skipped(`stamps differ (member ${mDay} vs tla-snapshot ${sDay}) — like-for-like requires same day`);
+
+    const catPaid = {}, catSet = new Map();
     for (const p of (catalog.pools || [])) {
         if (p.gauge_status !== 'active') continue;
-        sums[p.bucket] = (sums[p.bucket] || 0) + Number(p.total_vp || 0) / 1e6;   // micro → VP
+        catPaid[p.bucket] = (catPaid[p.bucket] || 0) + Number(p.total_vp || 0) / 1e6;   // micro → VP
+        catSet.set(`${p.bucket}|${p.gauge_pool_id}`, p.gauge_pool_id);
     }
-    const rows = [];
-    let worstPct = 0;
+    const snapPaid = {}, snapSet = new Map();
+    for (const p of (tlaSnap.pools || [])) {
+        if (p.status !== 'active') continue;
+        const vp = p.voting_power || {};
+        snapPaid[p.bucket] = (snapPaid[p.bucket] || 0) + (Number(vp.total_human != null ? vp.total_human : vp.vp_human) || 0);
+        snapSet.set(`${p.bucket}|${p.gauge_pool_id}`, p.name || p.gauge_pool_id);
+    }
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const rows = [], problems = [];
+    let worstPaid = 0, worstOver = 0, worstUnder = 0;
     for (const b of Object.keys(perBucket)) {
-        const m = Number(perBucket[b] || 0), c = Math.round((sums[b] || 0) * 100) / 100;
-        const diffPct = m ? Math.abs(m - c) / m * 100 : 0;
-        worstPct = Math.max(worstPct, diffPct);
-        rows.push({ bucket: b, member_vp: m, catalog_active_sum_vp: c, diff_pct: Math.round(diffPct * 100) / 100 });
+        const m = Number(perBucket[b] || 0), sb = sB[b] || {};
+        const all = Number(sb.bucket_vp_total_human || 0), cp = catPaid[b] || 0, sp = snapPaid[b] || 0;
+        const paidDiff = cp ? (sp - cp) / cp * 100 : (sp ? 100 : 0);
+        const memberDiff = all ? (m - all) / all * 100 : (m ? 100 : 0);
+        worstPaid = Math.max(worstPaid, Math.abs(paidDiff));
+        if (memberDiff > 0) worstOver = Math.max(worstOver, memberDiff); else worstUnder = Math.max(worstUnder, -memberDiff);
+        rows.push({ bucket: b, member_vp: m, gauge_votes_vp: r2(all), on_listed_pools_vp: r2(Number(sb.reward_list_vp_total_human || 0)), off_list_vp: r2(Number(sb.off_list_vp_total_human || 0)),
+            member_vs_gauge_pct: r2(memberDiff), catalog_active_sum_vp: r2(cp), snapshot_active_sum_vp: r2(sp), paid_diff_pct: r2(paidDiff) });
+        if (Math.abs(paidDiff) > PAID_VP_TOL_PCT) problems.push(`${b}: the votes behind the paid pools differ by ${paidDiff.toFixed(2)}% between the hourly snapshot and the catalog`);
+        if (memberDiff > MEMBER_OVER_TOL_PCT) problems.push(`${b}: members' votes exceed the votes in the gauge by ${memberDiff.toFixed(2)}%`);
+        if (-memberDiff > MEMBER_UNDER_TOL_PCT) problems.push(`${b}: ${(-memberDiff).toFixed(2)}% of the votes in the gauge are not accounted for by any member wallet`);
     }
-    const TOL_PCT = 0.5;
-    if (worstPct > TOL_PCT)
-        return violation(`bucket VP drift up to ${worstPct.toFixed(2)}% — known contributors: ghost/stray gauge votes + member/catalog tally scope differences (CHANGES_PENDING #4)`, rows, `<= ${TOL_PCT}% per bucket`);
-    return ok(`all buckets within ${TOL_PCT}%`, rows, `<= ${TOL_PCT}% per bucket`);
+    // (a) the paid set — same epoch on both sides, and past the hours in which the new distribution is still settling
+    const sEpoch = tlaSnap.epoch && tlaSnap.epoch.currentEpoch, cEpoch = catalog.meta && catalog.meta.epoch;
+    const startedAt = tlaSnap.epoch && Date.parse(tlaSnap.epoch.epochStartedAt), catAt = Date.parse(catalog.meta && catalog.meta.generated_at);
+    const settled = !isFinite(startedAt) || !isFinite(catAt) || (catAt - startedAt) >= PAID_SET_GRACE_H * 3600e3;
+    let setNote;
+    if (sEpoch != null && cEpoch != null && sEpoch !== cEpoch) setNote = `paid sets not compared (snapshot epoch ${sEpoch}, catalog epoch ${cEpoch})`;
+    else if (!settled) setNote = `paid sets not compared in the first ${PAID_SET_GRACE_H} h of an epoch`;
+    else {
+        const onlySnap = [...snapSet.keys()].filter(k => !catSet.has(k)), onlyCat = [...catSet.keys()].filter(k => !snapSet.has(k));
+        if (onlySnap.length) problems.push(`active in the hourly snapshot but not paid per the catalog: ${onlySnap.slice(0, 5).map(k => `${snapSet.get(k)} (${k.split('|')[0]})`).join(', ')}${onlySnap.length > 5 ? ` +${onlySnap.length - 5} more` : ''}`);
+        if (onlyCat.length) problems.push(`paid per the catalog but not active in the hourly snapshot: ${onlyCat.slice(0, 5).map(k => `${String(catSet.get(k)).slice(0, 24)} (${k.split('|')[0]})`).join(', ')}${onlyCat.length > 5 ? ` +${onlyCat.length - 5} more` : ''}`);
+        setNote = `the same ${snapSet.size} paid pools in both`;
+    }
+    const expected = `the same paid pools in both; paid votes within ${PAID_VP_TOL_PCT}%; members' votes within +${MEMBER_OVER_TOL_PCT}% / −${MEMBER_UNDER_TOL_PCT}% of the votes in the gauge`;
+    if (problems.length) return violation(problems.slice(0, 4).join(' · ') + (problems.length > 4 ? ` · +${problems.length - 4} more` : ''), rows, expected);
+    return ok(`${setNote}; paid votes agree within ${worstPaid.toFixed(2)}%; members account for all but ${worstUnder.toFixed(2)}% of the votes in a gauge at most`, rows, expected);
 }
 
 // --------------------------------------------------------------------------- INV 2 — staked_le_depth (per pool, both sides present)
@@ -478,7 +525,7 @@ async function run() {
 
     // ---- run them
     const invariants = {
-        bucket_vp_consistency:      invBucketVpConsistency(member, catalog),
+        bucket_vp_consistency:      invBucketVpConsistency(member, catalog, tlaSnap),
         staked_le_depth:            invStakedLeDepth(dexSnapshots),
         distribution_fractions_sum: invDistributionFractions(catalog),
         tribute_stream_coverage:    invTributeCoverage(votingHb, lastRun),

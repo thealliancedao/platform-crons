@@ -7,10 +7,22 @@ authenticated Contents API. **Reports, never repairs (D4)** — no other
 product is ever written to.
 
 ## Invariants (SPEC-system-health D2 + audit addendum)
-1. `bucket_vp_consistency` — member-data `vp_voting_per_bucket` vs
-   token-catalog active-pool `total_vp` sums per bucket. Like-for-like =
-   **same DAY** (skip + declare otherwise). Currently violates by design:
-   ghost/stray votes + tally scope differences (CHANGES_PENDING #4).
+1. `bucket_vp_consistency` (rewritten 1.1.1) — like for like, per bucket,
+   **same DAY** (skip + declare otherwise):
+   a) the paid set — the pools tla-snapshot calls `active` are exactly the
+      pools the token catalog marks `gauge_status: active` (not asked in the
+      first 12 h of an epoch, or when the two files are on different epochs);
+   b) the paid votes — the votes behind those pools (boost + fixed) agree
+      within 5 % (catalog = the distribution's figure, snapshot = live);
+   c) every vote — member-data `vp_voting_per_bucket` vs every vote in the
+      gauge (`bucket_vp_total_human`, tla-snapshot 1.2.0): members may not
+      exceed the gauge by more than 5 %, nor leave more than 10 % of it
+      unaccounted for.
+   Through 1.1.0 it set every member vote against the paid pools only, so the
+   votes left on pools that earn nothing (off the reward list, or under 1 %)
+   read as a 9–12 % drift on every run. Those votes are now a measured row
+   (`off_list_vp`), not a violation. A snapshot without the per-gauge totals
+   is skipped — the unlike comparison is never made.
 2. `staked_le_depth` — per dex pool with both sides: `raw.staked_liquidity_usd
    <= tvl_usd` (the impossible-LUNA-SOLID class of error).
 3. `distribution_fractions_sum` — catalog active `distribution_pct` sums to

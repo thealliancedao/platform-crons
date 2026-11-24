@@ -45,11 +45,12 @@ M.T.now = () => NOW;
 const H = (iso) => ({ capturedAt: iso, status: 'ok' });
 function healthyRepo() {
     const gen = '2026-07-16T10:00:00Z';
-    return {
+    const repo = {
         'member-data/snapshots/current.json': { meta: { generated_at: gen }, system: { vp_voting_per_bucket: { stable: 1000, project: 2000 } } },
         'token-catalog/snapshots/current.json': { meta: { generated_at: gen }, pools: [
             { bucket: 'stable',  gauge_status: 'active', total_vp: String(600 * 1e6), distribution_pct: 0.6, architecture: { pair_address: 'pairA' }, gauge_pool_id: 'g1', underlyings: ['x'] },
             { bucket: 'stable',  gauge_status: 'active', total_vp: String(399 * 1e6), distribution_pct: 0.4, architecture: { pair_address: 'pairB' }, gauge_pool_id: 'g2', underlyings: ['x'] },
+            { bucket: 'stable',  gauge_status: 'active', total_vp: String(1 * 1e6), distribution_pct: 0, architecture: { pair_address: 'pairF' }, gauge_pool_id: 'g5', underlyings: ['x'] },   // 1.1.1: paid, nothing staked (PAID-EMPTY in the snapshot)
             { bucket: 'project', gauge_status: 'active', total_vp: String(1995 * 1e6), distribution_pct: 1.0, architecture: { pair_address: 'pairC' }, gauge_pool_id: 'g3', underlyings: ['x'] },
             { bucket: 'project', gauge_status: 'dewhitelisted', total_vp: String(5000 * 1e6), distribution_pct: 0.9, gauge_pool_id: 'g4' },  // inactive: excluded everywhere, counts unresolved
         ], tokens: [ { denom: 'tokA', discovered: { symbol: 'A' } }, { denom: 'tokB', discovered: {} } ] },   // real shape: list + discovered
@@ -132,6 +133,17 @@ function healthyRepo() {
         'tla-flows/pnl/integrity.json': { builder: 'tla-flows-pnl-1.7.2', builtAt: '2026-07-16T03:35:00Z', positions_checked: 100, wallets_checked: 10, checks: {
             foreign_tokens_in_cost: { severity: 'fault', count: 0, status: 'ok' }, units_differ_from_chain: { severity: 'fault', count: 0, status: 'ok' }, cost_not_measured: { severity: 'check', count: 7, status: 'check' } }, per_wallet: { w1: ['cost_not_measured'] } },
     };
+    // 1.1.1 INV1 fixtures: the snapshot's votes (boost + fixed) per pool, every vote per gauge, and its epoch. The three paid stable
+    // pools are the catalog's g1/g2/g5 (600 + 399 + 1 = 1000 on both sides); OFF-LIST and NEWCOMER hold votes that earn nothing
+    // (8 + 2), so the stable gauge holds 1010 votes against the members' 1000. One paid project pool = the catalog's g3.
+    const S = repo['member-data/tla-snapshot/current.json'];
+    const vp = { 'PAID-A': ['g1', 600], 'PAID-B': ['g2', 399], 'PAID-EMPTY': ['g5', 1], 'OFF-LIST': ['g7', 8], 'NEWCOMER': ['g8', 2] };
+    for (const p of S.pools) { p.gauge_pool_id = vp[p.name][0]; p.voting_power = { vp_human: vp[p.name][1] * 0.9, fixed_human: vp[p.name][1] * 0.1, total_human: vp[p.name][1] }; }
+    S.pools.push({ name: 'PAID-P', bucket: 'project', status: 'active', gauge_whitelisted: true, gauge_pool_id: 'g3', staked_in_tla_usd: null, amp_lp: null, voting_power: { vp_human: 1795.5, fixed_human: 199.5, total_human: 1995 }, rewards: { source: 'chain_distributions_current', annual_emissions_luna: 0, distribution_share_of_bucket: 1 } });
+    S.capturedAt = gen; S.epoch = { currentEpoch: 50, epochStartedAt: '2026-07-13T00:00:00.000Z' };
+    S.buckets = { stable: { bucket_vp_total_human: 1010, reward_list_vp_total_human: 1002, off_list_vp_total_human: 8 }, project: { bucket_vp_total_human: 1995, reward_list_vp_total_human: 1995, off_list_vp_total_human: 0 } };
+    repo['token-catalog/snapshots/current.json'].meta.epoch = 50;
+    return repo;
 }
 // fix the healthy fixture note above: NOT-TLA pool must satisfy INV2
 function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].pools[2].raw.staked_liquidity_usd = 5; return repo; }
@@ -149,6 +161,8 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       check('R1 INV8 reads the ledger + inventory from nft-collections, tenants from tla-core', REPO_HITS['adao/ledger/2026/07.json'] === 'thealliancedao/nft-collections' && REPO_HITS['pixel-lions/snapshots/nfts.json'] === 'thealliancedao/nft-collections' && REPO_HITS['docs/curated/tenants.json'] === 'thealliancedao/tla-core', [REPO_HITS['adao/ledger/2026/07.json'], REPO_HITS['docs/curated/tenants.json']]); }
     check('R1 tribute skipped + declared', out.invariants.tribute_stream_coverage.status === 'skipped' && /not yet published/.test(out.invariants.tribute_stream_coverage.detail));
     check('R1 INV1 measured rows carry both sides', Array.isArray(out.invariants.bucket_vp_consistency.measured) && out.invariants.bucket_vp_consistency.measured[0].catalog_active_sum_vp > 0);
+    { const r = out.invariants.bucket_vp_consistency, st = r.measured.find(x => x.bucket === 'stable');
+      check('R1 INV1 (1.1.1) like for like: stable members 1000 vs 1010 votes in the gauge (−0.99 %), 8 of them off the list; paid 1000 = 1000; the same 4 paid pools', st.gauge_votes_vp === 1010 && st.off_list_vp === 8 && st.member_vs_gauge_pct === -0.99 && st.snapshot_active_sum_vp === 1000 && st.paid_diff_pct === 0 && /the same 4 paid pools in both/.test(r.detail), r); }
     check('R1 INV7 counts inactive-unresolved pool', out.invariants.identity_resolution.measured.unresolved_pools === 1 && out.invariants.identity_resolution.measured.tokens_without_identity === 1, out.invariants.identity_resolution.measured);
     check('R1 current.json written', WRITES['system-health/current.json'] === 1);
     check('R1 history appended', REPO['system-health/history/2026/07.json'].runs.length === 1);
@@ -164,7 +178,7 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
       check('R1.6 no read of tla-core/nfts/adao', !Object.keys(REPO_HITS).some(p => p.startsWith('nfts/adao/')), Object.keys(REPO_HITS).filter(p => p.startsWith('nfts/'))); }
 
     console.log('— R2: one violation per invariant —');
-    // INV1 drift: member stable 1000 vs catalog 999 ok; bump member to 1200 (20% drift)
+    // INV1: members' stable votes 1000 vs 1010 in the gauge is ok; bump the members to 1200 (they would claim 18.8 % more votes than the gauge holds)
     REPO['member-data/snapshots/current.json'].system.vp_voting_per_bucket.stable = 1200;
     // INV2: staked > tvl
     REPO['dex-data/astroport/snapshots/current.json'].pools[0].raw.staked_liquidity_usd = 150;
@@ -177,7 +191,7 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     // 1.0.5: a collection cron that stops (heartbeat absent — the exact 2026-09-12 failure: services misconfigured to another slug never wrote one) must be listed
     delete REPO['tla-locks/nft-flows/heartbeat.json'];
     out = await M.run();
-    check('R2 INV1 violation names #4', out.invariants.bucket_vp_consistency.status === 'violation' && /#4/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
+    check('R2 INV1 violation: members exceed the gauge (stable, 18.81 %)', out.invariants.bucket_vp_consistency.status === 'violation' && /stable: members' votes exceed the votes in the gauge by 18\.81%/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
     check('R2 INV2 violation lists pool', out.invariants.staked_le_depth.status === 'violation' && out.invariants.staked_le_depth.measured[0].pool === 'P1');
     check('R2 INV3 violation names bucket', out.invariants.distribution_fractions_sum.status === 'violation' && 'stable' in out.invariants.distribution_fractions_sum.measured);
     check('R2 INV5 violation carries both stamps', out.invariants.bucket_label_agreement.status === 'violation' && out.invariants.bucket_label_agreement.measured[0].catalog_as_of, out.invariants.bucket_label_agreement.measured);
@@ -329,7 +343,7 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO = fixNotTla(healthyRepo()); WRITES = {};
     out = await M.run();
     { const v = out.invariants.reward_list_valued, r = out.invariants.rewards_sum_to_emission, q = out.invariants.pnl_integrity;
-      check('R9 healthy: 3 paid pools, the one with nothing staked is not "unvalued"; totals agree within 5 % (1000 vs 1001)', v.status === 'ok' && v.measured.paid_pools === 3 && v.measured.unvalued.length === 0 && v.measured.diff_pct < 1, v);
+      check('R9 healthy: 4 paid pools, the two with nothing staked are not "unvalued"; totals agree within 5 % (1000 vs 1001)', v.status === 'ok' && v.measured.paid_pools === 4 && v.measured.unvalued.length === 0 && v.measured.diff_pct < 1, v);
       check('R9 healthy: per-pool emissions = 100.3 % of the emission (the newcomer\'s estimate is the hair over); the off-list pool carries none', r.status === 'ok' && Math.abs(r.measured.per_pool_sum_over_emission - 1.003) < 1e-9 && r.measured.off_list_but_active_or_paid.length === 0, r);
       check('R9 healthy: P&L — no fault; the 7 positions with no measured cost are carried as a number', q.status === 'ok' && q.measured.counts.cost_not_measured === 7 && /7 with no measured cost/.test(q.detail), q);
       const rows = out.invariants.heartbeat_freshness.measured, names = rows.map(x => x.product);
@@ -354,7 +368,39 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO = fixNotTla(healthyRepo());
     { const P = REPO['member-data/tla-snapshot/current.json'].pools; for (const x of P) delete x.gauge_whitelisted; P[3].status = 'active'; P[3].rewards = { source: 'gauge_infos_next_fallback', annual_emissions_luna: 120 }; }
     out = await M.run();
-    check('R9 an earlier build\'s file: per-pool emissions at 112.3 % of the emission is a violation on the sum alone', out.invariants.rewards_sum_to_emission.status === 'violation' && /112\.3%/.test(out.invariants.rewards_sum_to_emission.detail) && out.invariants.rewards_sum_to_emission.measured.active_pools_with_unread_list === 4, out.invariants.rewards_sum_to_emission);
+    check('R9 an earlier build\'s file: per-pool emissions at 112.3 % of the emission is a violation on the sum alone', out.invariants.rewards_sum_to_emission.status === 'violation' && /112\.3%/.test(out.invariants.rewards_sum_to_emission.detail) && out.invariants.rewards_sum_to_emission.measured.active_pools_with_unread_list === 5, out.invariants.rewards_sum_to_emission);
+    console.log('— R11 (1.1.1): bucket_vp_consistency, like for like —');
+    // a pool the hourly snapshot still calls active after the catalog says the chain stopped paying it (the 2026-11-24 error, seen from the other side)
+    REPO = fixNotTla(healthyRepo()); REPO['token-catalog/snapshots/current.json'].pools[1].gauge_status = 'dewhitelisted';
+    out = await M.run();
+    { const r = out.invariants.bucket_vp_consistency;
+      check('R11 active in the snapshot, not paid per the catalog → violation that names the pool', r.status === 'violation' && /active in the hourly snapshot but not paid per the catalog: PAID-B \(stable\)/.test(r.detail), r); }
+    // the same disagreement in the first hours of an epoch is not raised (the distribution changes at the flip; the catalog refreshes 6-hourly)
+    REPO = fixNotTla(healthyRepo()); REPO['token-catalog/snapshots/current.json'].pools[2].gauge_status = 'dewhitelisted';   // g5: 1 vote — the paid votes still agree within 5 %
+    REPO['member-data/tla-snapshot/current.json'].epoch.epochStartedAt = '2026-07-16T00:00:00.000Z';
+    out = await M.run();
+    { const r = out.invariants.bucket_vp_consistency;
+      check('R11 first 12 h of an epoch: the paid sets are not compared, and the detail says so', r.status === 'ok' && /paid sets not compared in the first 12 h of an epoch/.test(r.detail), r); }
+    REPO = fixNotTla(healthyRepo()); REPO['token-catalog/snapshots/current.json'].pools[2].gauge_status = 'dewhitelisted';
+    out = await M.run();
+    check('R11 …and the same file later in the epoch is raised (PAID-EMPTY)', out.invariants.bucket_vp_consistency.status === 'violation' && /PAID-EMPTY \(stable\)/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
+    // the votes behind the paid pools: fixed counted twice in the snapshot (+10 %)
+    REPO = fixNotTla(healthyRepo()); for (const x of REPO['member-data/tla-snapshot/current.json'].pools) x.voting_power.total_human = x.voting_power.total_human * 1.1;
+    out = await M.run();
+    check('R11 paid votes 10 % apart (a boost-or-fixed mix-up) → violation with the figure', out.invariants.bucket_vp_consistency.status === 'violation' && /stable: the votes behind the paid pools differ by 10\.00%/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
+    // votes in the gauge that no member accounts for: 1010 → 1200 (members 1000 = −16.67 %)
+    REPO = fixNotTla(healthyRepo()); REPO['member-data/tla-snapshot/current.json'].buckets.stable.bucket_vp_total_human = 1200;
+    out = await M.run();
+    check('R11 16.67 % of a gauge\'s votes unaccounted for → violation', out.invariants.bucket_vp_consistency.status === 'violation' && /stable: 16\.67% of the votes in the gauge are not accounted for by any member wallet/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
+    // votes left on pools that earn nothing are NOT a drift any more: 300 old votes off the list, members cast them → ok
+    REPO = fixNotTla(healthyRepo()); { const B = REPO['member-data/tla-snapshot/current.json'].buckets.stable; B.bucket_vp_total_human = 1302; B.off_list_vp_total_human = 300; REPO['member-data/snapshots/current.json'].system.vp_voting_per_bucket.stable = 1300; }
+    out = await M.run();
+    { const r = out.invariants.bucket_vp_consistency, st = r.measured.find(x => x.bucket === 'stable');
+      check('R11 300 votes sitting off the reward list (23 % of the gauge) are not a violation — the old check read them as drift', r.status === 'ok' && st.off_list_vp === 300 && st.member_vs_gauge_pct === -0.15, r); }
+    // an hourly snapshot from before 1.2.0 has no per-gauge totals: skipped and said so — the unlike comparison is not made
+    REPO = fixNotTla(healthyRepo()); delete REPO['member-data/tla-snapshot/current.json'].buckets;
+    out = await M.run();
+    check('R11 a snapshot without per-gauge vote totals → skipped, never the old comparison', out.invariants.bucket_vp_consistency.status === 'skipped' && /no per-bucket vote totals/.test(out.invariants.bucket_vp_consistency.detail), out.invariants.bucket_vp_consistency);
     // missing inputs are skipped, never guessed
     REPO = fixNotTla(healthyRepo()); delete REPO['member-data/tla-snapshot/current.json']; delete REPO['tla-flows/pnl/integrity.json'];
     out = await M.run();
