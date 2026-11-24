@@ -1,5 +1,5 @@
 'use strict';
-// mock-run-snapshot.js — BINDING gate for tla-snapshot 1.2.0 on REAL committed data (a tla-core checkout). Nothing fetched; the
+// mock-run-snapshot.js — BINDING gate for tla-snapshot 1.3.0 on REAL committed data (a tla-core checkout). Nothing fetched; the
 // live functions of tla-snapshot.js are exercised, never a copy.
 // Usage: TLA_CORE_DIR=<tla-core checkout> node member-data/mock-run-snapshot.js
 //   N  an IBC token the hand registry does not know is named from the price feed's denom + the token-catalog (USDC.inj); registry
@@ -9,6 +9,8 @@
 //   W  the gauges' own asset lists: parsed, checked against what the chain is paying, the token-catalog standing in when unread
 //   R  rewards: an asset off its gauge's list earns nothing; the per-pool emissions add up to the emission (they ran ~12 % over)
 //   T  totals: TLA staked in the pools the chain is paying = the Eris-method feed's total
+//   E  (1.3.0) the year's emission from the chain's own figures, the calibrated constant as the labelled fallback
+//   S  (1.3.0) total voting power from the lock contract's total_vamp
 const fs = require('fs'), path = require('path');
 const SRC = process.env.TLA_CORE_DIR; if (!SRC) { console.error('TLA_CORE_DIR required'); process.exit(1); }
 const S = require('./tla-snapshot.js')._internals;
@@ -123,5 +125,34 @@ const usd = (v) => '$' + Math.round(v).toLocaleString('en-US');
   const aprInj = pools.find(q => q.name === 'LUNA-USDC.inj'); const eInj = aprInj && erisBy.get(aprInj.gauge_pool_id);
   if (aprInj && eInj) check(`T4 LUNA-USDC.inj reward APR ${aprInj.rewards.approx_apr_pct == null ? 'null' : aprInj.rewards.approx_apr_pct.toFixed(1) + ' %'} vs the Eris-method feed ${eInj.incentive_apr_pct.toFixed(1)} % (within 2 points)`,
     aprInj.rewards.approx_apr_pct != null && Math.abs(aprInj.rewards.approx_apr_pct - eInj.incentive_apr_pct) < 2);
+  // ── E (1.3.0): the year's emission from the chain's own figures (the Eris-method feed's hourly read), the constant as fallback ──
+  { const feedAt = Date.parse(eris.meta.generated_at); const em = S.liveEmissionFrom(eris, feedAt + 36e5);
+    const want = eris.meta.annual_provisions_luna * ['stable', 'project', 'bluechip', 'single'].reduce((t, b) => t + eris.alliance.per_gauge[b].reward_weight, 0) / eris.meta.total_reward_weight;
+    check(`E1 live emission ${em.ok ? Math.round(em.annual_luna).toLocaleString('en-US') : '—'} LUNA a year = annual provisions × Σ gauge weights ÷ total weight (${(eris.meta.annual_provisions_luna / 1e6).toFixed(2)}M × ${em.ok ? em.weight_sum : '?'} ÷ ${eris.meta.total_reward_weight}); the May constant is ${em.ok ? ((S.TLA_LUNA_EMISSIONS_PER_YEAR / em.annual_luna - 1) * 100).toFixed(2) : '?'} % above it`,
+      em.ok && Math.abs(em.annual_luna - want) < 1e-6 && em.age_h === 1 && Math.abs(S.TLA_LUNA_EMISSIONS_PER_YEAR / em.annual_luna - 1) < 0.1, em);
+    const p2 = JSON.parse(JSON.stringify(pools)); const r2 = S.computeRollups(p2, bucketVps); const rw2 = S.computeRewards(p2, r2.byBucket, r2.totals, luna, dist, em);
+    const sum2 = p2.reduce((t, q) => t + ((q.rewards && q.rewards.annual_emissions_luna) || 0), 0);
+    check(`E2 with it the model pays out the chain's figure: totals ${Math.round(rw2.annual_emissions_luna).toLocaleString('en-US')} LUNA, per-pool sum ${(sum2 / rw2.annual_emissions_luna * 100).toFixed(2)} %, source "${rw2.emission_source.kind}", every pool scaled by the same ${(rw2.annual_emissions_luna / rw.annual_emissions_luna).toFixed(4)}`,
+      Math.abs(rw2.annual_emissions_luna - em.annual_luna) < 1e-6 && rw2.emission_source.kind === 'chain' && sum2 / rw2.annual_emissions_luna > 0.999 && sum2 / rw2.annual_emissions_luna < 1.01 &&
+      p2.every((q, i) => { const a = q.rewards && q.rewards.annual_emissions_luna, b = pools[i].rewards && pools[i].rewards.annual_emissions_luna; return (!a && !b) || Math.abs(a / b - em.annual_luna / S.TLA_LUNA_EMISSIONS_PER_YEAR) < 1e-9; }));
+    // with one emission on both sides, what is left between a pool's reward APR here and the feed's incentive APR is exactly the two
+    // inputs each captures for itself: the LUNA price and the staked value. (With the constant there was ~1 % more on top.)
+    const a2 = p2.find(q => q.name === 'LUNA-USDC.inj');
+    if (a2 && eInj) { const expect = (luna / eris.meta.luna_price_used_usd) * (eInj.tla_staked_usd / a2.staked_in_tla_usd); const got = a2.rewards.approx_apr_pct / eInj.incentive_apr_pct; const was = aprInj.rewards.approx_apr_pct / eInj.incentive_apr_pct;
+      check(`E3 LUNA-USDC.inj reward APR ${a2.rewards.approx_apr_pct.toFixed(2)} % vs the feed's ${eInj.incentive_apr_pct.toFixed(2)} %: the whole gap (${((got - 1) * 100).toFixed(2)} %) is LUNA price × staked value as each file captured them (${((expect - 1) * 100).toFixed(2)} %); with the constant ${((was / expect - 1) * 100).toFixed(2)} % was left unexplained`,
+        Math.abs(got / expect - 1) < 0.003 && Math.abs(was / expect - 1) > Math.abs(got / expect - 1), { got, expect, was }); }
+    const stale = S.liveEmissionFrom(eris, feedAt + 7 * 36e5); const noG = JSON.parse(JSON.stringify(eris)); delete noG.alliance.per_gauge.single; const wild = JSON.parse(JSON.stringify(eris)); wild.meta.annual_provisions_luna *= 3;
+    const off = JSON.parse(JSON.stringify(eris)); off.alliance.per_gauge.project.active = false;
+    const fb = [stale, S.liveEmissionFrom(noG, feedAt), S.liveEmissionFrom(wild, feedAt), S.liveEmissionFrom(off, feedAt), S.liveEmissionFrom(null, feedAt), S.liveEmissionFrom({ meta: {} }, feedAt)];
+    const p3 = JSON.parse(JSON.stringify(pools)); const r3 = S.computeRollups(p3, bucketVps); const rw3 = S.computeRewards(p3, r3.byBucket, r3.totals, luna, dist, stale);
+    check(`E4 a feed that is 7 h old, lacks a gauge, has a gauge switched off, reads 3× the calibration, or is missing is not believed (${fb.map(x => x.why).join(' · ')}) — the constant stands in, labelled`,
+      fb.every(x => x.ok === false && x.why) && rw3.annual_emissions_luna === S.TLA_LUNA_EMISSIONS_PER_YEAR && rw3.emission_source.kind === 'calibrated_constant' && /7\.0 h old/.test(rw3.emission_source.why), fb);
+    check('E5 called the old way (no sixth argument) nothing changes', rw.annual_emissions_luna === S.TLA_LUNA_EMISSIONS_PER_YEAR && rw.emission_source.kind === 'calibrated_constant'); }
+  // ── S (1.3.0): all the voting power that exists — the lock contract's total_vamp, in the shape the chain returned on 2026-11-24 ──
+  { const tv = S.parseTotalVamp({ fixed: '3936602484268', voting_power: '32748520740303', vp: '36685123224571' });
+    check(`S1 total_vamp → ${tv && tv.vp_human.toLocaleString('en-US')} VP = fixed ${tv && tv.fixed_human.toLocaleString('en-US')} + boost ${tv && tv.boost_human.toLocaleString('en-US')} (Eris printed 36.68M that minute)`,
+      !!tv && Math.abs(tv.vp_human - 36685123.224571) < 1e-6 && Math.abs(tv.fixed_human + tv.boost_human - tv.vp_human) < 1e-6);
+    const noVp = S.parseTotalVamp({ fixed: '10', voting_power: '90' });
+    check('S2 a failed or unrecognised read is null (the page keeps its older estimate); a reply without "vp" adds the two parts', S.parseTotalVamp(null) === null && S.parseTotalVamp({ error: 'x' }) === null && S.parseTotalVamp({ vp: '0' }) === null && !!noVp && Math.abs(noVp.vp_human - 0.0001) < 1e-12); }
   console.log(`\n${pass}/${pass + fail} passed`); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('gate crashed:', e.stack || e.message); process.exit(1); });

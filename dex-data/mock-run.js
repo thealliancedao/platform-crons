@@ -285,7 +285,7 @@ NET.pools_list = () => ([
 
         const dexPools = [
             { dex: 'astroport', pool_address: 'terra1pair_lunasolid_astro', pool_name: 'LUNA-SOLID',
-              tvl_usd: 1000000, lp_total_supply: '1000000000000', fee_apr: 0.85,
+              tvl_usd: 1000000, lp_total_supply: '1000000000000', fee_apr: 0.0085,   // Astroport's tRPC figure is a FRACTION: 0.0085 = 0.85 %
               assets: [ { denom: 'uluna', price_usd: 0.10, decimals: 6 }, { denom: 'terra1solid', price_usd: 0.01, decimals: 6 } ],
               raw: { gauge: { gauge_pool_id: K.lunaSolid } } },
             { dex: 'astroport', pool_address: 'terra1pair_lunawhale', pool_name: 'LUNA-WHALE',
@@ -315,7 +315,31 @@ NET.pools_list = () => ([
         assert(Math.abs(ls.tla_staked_usd - 400000) < 1e-9 && ls.tla_staked_usd_basis === 'staked_supply_ratio_x_pool_tvl', 'TLA-staked USD = supply-ratio × pool TVL (unit-free)');
         assert(Math.abs(ls.eris_apr_pct - 27.14032258064517) < 1e-9, 'linear total = incentive − take + trading (source-verbatim, NO 0.92)');
         assert(Math.abs(ls.eris_apy_pct - 30.465002564975258) < 1e-9, `displayed APY = aprToApy(incentive×0.92) + trading − take (got ${ls.eris_apy_pct.toFixed(6)})`);
-        assert(ls.eris_cut_pct === 8 && ls.yearly_take_rate_pct === 10 && ls.trading_apr_pct === 0.85, 'components block published (cut 8, take 10, trading 0.85)');
+        assert(ls.eris_cut_pct === 8 && ls.yearly_take_rate_pct === 10 && Math.abs(ls.trading_apr_pct - 0.85) < 1e-12, 'components block published (cut 8, take 10, trading 0.85)');
+        // 1.6.0: with Astroport's pool list out of reach the tRPC FRACTION stands in as a PERCENT (× 100), labelled and flagged — and it is not an input error
+        assert(/fallback/.test(ls.trading_apr_source) && ls.flags.includes('trading_apr_fallback_source') && doc.meta.trading_leg.astroport_pool_list === 'unavailable' && doc.meta.trading_leg.rows_on_fallback === 1 && !(doc.meta.input_errors && doc.meta.input_errors.astroport_lp_fees), 'pool list unreachable → tRPC fraction × 100 (0.0085 → 0.85 %), flagged, not an input error');
+        {   // 1.6.0 — the trading leg from the list Eris's page reads: 365 × dayLpFeesUSD ÷ pool TVL
+            const keepFJ = E.CH.fetchJson;
+            const rest = (list) => { E.CH.fetchJson = async (url) => { if (url === E.ASTROPORT_REST_POOLS_URL) return list; throw new Error('no catalog in M7 base'); }; };
+            // LUNA-SOLID pool earns $100 of LP fees a day on $1,000,000 → 3.65 %; LUNA-WHALE is not in the list → 0 by source
+            rest([{ poolAddress: 'terra1pair_lunasolid_astro', dayLpFeesUSD: 100, assets: [] }, { poolAddress: 'terra1someotherpool', dayLpFeesUSD: 5 }]);
+            const d2 = await E.runErisApr(dexPools, assetPrices); const b2 = Object.fromEntries(d2.pools.map(p => [p.gauge_pool_id, p]));
+            const s2 = b2[K.lunaSolid], w2 = b2[K.lunaWhale];
+            assert(Math.abs(s2.trading_apr_pct - 3.65) < 1e-9 && /api\/pools/.test(s2.trading_apr_source) && !(s2.flags || []).includes('trading_apr_fallback_source'), `pool list read → trading = 365 × 100 ÷ 1,000,000 = 3.65 % (got ${s2.trading_apr_pct})`);
+            assert(Math.abs(s2.eris_apr_pct - (s2.incentive_apr_pct - 10 + 3.65)) < 1e-9 && Math.abs(s2.eris_apy_pct - (E.aprToApy(s2.incentive_apr_pct * 0.92) + 3.65 - 10)) < 1e-9, 'APR and APY carry the new leg (incentive − take + trading; aprToApy(incentive × 0.92) + trading − take)');
+            assert(w2.trading_apr_pct === 0 && /not in the list/.test(w2.trading_apr_source) && !(w2.flags || []).includes('trading_apr_assumed_zero') && !(w2.flags || []).includes('trading_apr_fallback_source'), 'a pool the list lacks → 0 by Eris source (dayLpFeesUSD ?? 0), not "assumed"');
+            assert(d2.meta.trading_leg.astroport_pool_list === 'ok' && d2.meta.trading_leg.rows_from_pool_list === 2 && d2.meta.trading_leg.rows_on_fallback === 0, 'meta.trading_leg says which source every Astroport row used');
+            // numeric strings are read; a list where no pool carries the field is a changed API → fallback, never a column of zeros
+            rest({ pools: [{ poolAddress: 'terra1pair_lunasolid_astro', dayLpFeesUSD: '100' }] });
+            const d3 = await E.runErisApr(dexPools, assetPrices); assert(Math.abs(d3.pools.find(p => p.gauge_pool_id === K.lunaSolid).trading_apr_pct - 3.65) < 1e-9, 'wrapped list + numeric string are read');
+            rest([{ poolAddress: 'terra1pair_lunasolid_astro', dayFees: 100 }, { poolAddress: 'terra1pair_lunawhale' }]);
+            const d4 = await E.runErisApr(dexPools, assetPrices); const s4 = d4.pools.find(p => p.gauge_pool_id === K.lunaSolid), w4 = d4.pools.find(p => p.gauge_pool_id === K.lunaWhale);
+            assert(d4.meta.trading_leg.astroport_pool_list === 'unavailable' && Math.abs(s4.trading_apr_pct - 0.85) < 1e-9 && (s4.flags || []).includes('trading_apr_fallback_source') && w4.trading_apr_pct === null, 'a list with no dayLpFeesUSD anywhere = a changed API → fallback for the row that has one, null for the row that has none (no zeros invented)');
+            rest([{ poolAddress: 'terra1pair_lunasolid_astro', dayLpFeesUSD: null }, { poolAddress: 'terra1x', dayLpFeesUSD: 1 }]);
+            const d5 = await E.runErisApr(dexPools, assetPrices); const s5 = d5.pools.find(p => p.gauge_pool_id === K.lunaSolid);
+            assert(Math.abs(s5.trading_apr_pct - 0.85) < 1e-9 && (s5.flags || []).includes('trading_apr_fallback_source'), 'a pool listed with no fee figure falls back for that row only');
+            E.CH.fetchJson = keepFJ;
+        }
 
         // trading ?? 0 verbatim, flagged
         const lw = by[K.lunaWhale];

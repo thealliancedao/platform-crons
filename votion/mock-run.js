@@ -261,6 +261,24 @@ const CATALOG = { tokens: [
       NOW = new Date(pAt + 19 * 36e5 + 59 * 6e4 + 59400); r = await M.run();   /* the live miss: 19 h 59 m 59.4 s */
       check('R10 19 h 59 m 59.4 s after the last B (the run that missed on 2026-09-28): B now runs, and E with it', REPO['votion/heartbeat.json'].positions_status !== 'skipped' && REPO['votion/heartbeat.json'].holder_pnl_at === NOW.toISOString(), REPO['votion/heartbeat.json'].positions_status); }
 
+    // R11 (1.8.1) — the optimizer capture asks for all four vault pages votion.money loads (two Max, two Claim), whatever the env says
+    { CHAIN = healthyChain(); const asked = []; const keep = M.T.fetch;
+      const page = (vp, cur, nw, worth) => ({ period: 213, voteBefore: '2026-11-29T23:59:00.000Z', calculated: '2026-11-24T17:02:38.983Z', unknownPrices: [], summary: { totalExpectedReward: 1 },
+        optimizations: [{ id: 'project', votingPower: vp, activeVoted: cur, newVoted: nw, diff: { isWorthChanging: worth }, votingOptions: [{ id: 'terra1poolA', usdIncentives: 10, votingPower: 5e6 }], meta: { votes: [{ id: 'terra1poolA', title: 'A-LUNA LP' }, { id: 'terra1poolB', title: 'B-LUNA LP' }] }, optimization: { votes: [{ id: 'terra1poolA', votingPowerToAllocate: vp }] }, bribes: [] }] });
+      const PAGES = { 'ampluna-max': page(1200000, { terra1poolA: 100 }, { terra1poolA: 100 }, false), 'arbluna-max': page(8400000, { terra1poolA: 50, terra1poolB: 50 }, { terra1poolA: 100 }, true),
+        'ampluna-max-claiming': page(650000, { terra1poolB: 100 }, { terra1poolA: 100 }, true), 'arbluna-max-claiming': page(21000, { terra1poolB: 100 }, { terra1poolA: 100 }, true) };
+      M.T.fetch = async (url) => { const m = /liquidity-alliance\/([^/]+)\/optimization$/.exec(url); const slug = m && m[1]; asked.push(slug); return PAGES[slug] ? { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(PAGES[slug])) } : { ok: false, status: 404, json: async () => ({}) }; };
+      const errs = []; const rc = await M.runBranchC(new Date('2026-11-24T17:20:00Z'), errs, null); const doc = REPO['votion/optimization/current.json'];
+      check('R11 all four vault pages are asked for and captured', ['ampluna-max', 'arbluna-max', 'ampluna-max-claiming', 'arbluna-max-claiming'].every(k => asked.includes(k) && doc.vaults[k] && Array.isArray(doc.vaults[k].optimizations)) && rc.slugs.length === 4, { asked, got: Object.keys(doc.vaults) });
+      check('R11 the Claim vaults are reported as captured, an unknown page as absent, and no page is asked for twice', doc.probe_results['ampluna-max-claiming'] === 'captured' && doc.probe_results['arbluna-max-claiming'] === 'captured' && doc.probe_results['moar-max'] === 'absent' && new Set(asked).size === asked.length, doc.probe_results);
+      const agg = doc.aggregate.project.pools; const cur = agg.terra1poolA.current_vp + agg.terra1poolB.current_vp;
+      check('R11 the cross-vault totals count all four vaults (10.271M VP now; every moving vault lands on pool A)', cur === 10271000 && agg.terra1poolB.current_vp === 4200000 + 650000 + 21000 && agg.terra1poolB.planned_vp === 0 && agg.terra1poolA.planned_vp === 10271000, agg);
+      check('R11 a vault page with no chain row gets no invented yield and fails nothing', errs.length === 0 && doc.vaults['ampluna-max-claiming'].yield && doc.vaults['ampluna-max-claiming'].yield.apr_simple_pct == null, { errs, y: doc.vaults['ampluna-max-claiming'].yield });
+      // a Claim page that stops answering is a probe note, never a failed run
+      delete PAGES['arbluna-max-claiming']; asked.length = 0; const errs2 = []; const rc2 = await M.runBranchC(new Date('2026-11-24T18:20:00Z'), errs2, null); const doc2 = REPO['votion/optimization/current.json'];
+      check('R11 a Claim page that stops answering: run still ok with three vaults, noted as absent, no error raised', rc2.status === 'ok' && rc2.slugs.length === 3 && doc2.probe_results['arbluna-max-claiming'] === 'absent' && errs2.length === 0, { rc2, errs2 });
+      M.T.fetch = keep; }
+
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);
 })().catch(e => { console.error('GATE CRASH:', e); process.exit(1); });

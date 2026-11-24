@@ -68,7 +68,7 @@ const { buildResolver: buildDenomResolver } = require('../lib/denom-symbol.js');
 //       rewards are zero with `source: 'dewhitelisted'` — never an estimate.
 //   Additive only: `version`, `voting_power.{fixed_human,total_human,pct_of_reward_list}`, per-bucket reward-list VP,
 //   `totals.dewhitelisted_pools_count`, `totals.rewards.{pools_dewhitelisted,tla_tvl_in_distribution_usd}`.
-const SNAPSHOT_VERSION = 'tla-snapshot-1.2.0';
+const SNAPSHOT_VERSION = 'tla-snapshot-1.3.0';   // 1.3.0 (2026-11-24, checked against the owner's capture of Eris's page): emissions come from the chain's own annual provisions and Alliance weights (the Eris-method feed's read) instead of the May constant — it ran 0.95 % high; totals.system_voting_power = voting-escrow total_vamp, the figure Eris prints as "Total Voting Power"
 
 // -----------------------------------------------------------------------------
 // CONFIG
@@ -78,6 +78,7 @@ const TERRA_LCD_PRIMARY = process.env.TERRA_LCD || 'https://terra-lcd.publicnode
 const TERRA_LCD_FALLBACK = process.env.TERRA_LCD_FALLBACK || 'https://phoenix-lcd.terra.dev';
 
 const TLA_GAUGE_CONTROLLER = 'terra1hfksrhchkmsj4qdq33wkksrslnfles6y2l77fmmzeep0xmq24l2smsd3lj';
+const TLA_VOTING_ESCROW = 'terra1uqhj8agyeaz8fu6mdggfuwr3lp32jlrx5hqag4jxexde92rzkamq3l62zg';   // 1.3.0: the lock contract (total_vamp)
 
 const TLA_STAKING_CONTRACTS = {
     stable:   'terra1v399cx9drllm70wxfsgvfe694tdsd9x96p9ha36w7muffe4znlusqswspq',
@@ -155,6 +156,30 @@ const TLA_LUNA_EMISSIONS_PER_YEAR = 17_672_478;
 
 const REWARDS_CALIBRATION_DATE = '2026-05-13';
 
+// 1.3.0 — LIVE emission. Eris's page computes a gauge's yearly rewards from the chain every time it loads:
+//   annual_provisions × reward_weight(gauge) ÷ (Σ reward_weight of the started alliances + 1)
+// (its bundle, `getLiquidityIncentives`; the owner's capture 2026-11-24). dex-data's Eris-method feed reads exactly those
+// inputs every hour and publishes them in its meta — on 2026-11-24 they gave 17,505,737 LUNA a year for the four gauges
+// against the May constant's 17,672,478 (0.95 % high; Eris's own header that minute: $551.05K, ours from the constant $554.19K).
+// The constant stays as the labelled fallback for a feed that is missing, stale or implausible.
+const EMISSION_FEED_MAX_AGE_H = 6;
+const EMISSION_PLAUSIBLE = [0.5, 2];   // × the calibrated constant — outside this the read is not believed
+function liveEmissionFrom(feed, nowMs) {
+    try {
+        const m = feed && feed.meta; const pg = feed && feed.alliance && feed.alliance.per_gauge;
+        if (!m || !pg) return { ok: false, why: 'feed missing' };
+        const ap = Number(m.annual_provisions_luna), tw = Number(m.total_reward_weight);
+        if (!(ap > 0) || !(tw > 1)) return { ok: false, why: 'feed carries no annual provisions / total weight' };
+        const at = Date.parse(m.generated_at); const ageH = isFinite(at) ? (nowMs - at) / 36e5 : null;
+        if (ageH == null || ageH > EMISSION_FEED_MAX_AGE_H || ageH < -1) return { ok: false, why: `feed is ${ageH == null ? 'undated' : ageH.toFixed(1) + ' h old'}` };
+        const weights = {}; let sum = 0;
+        for (const b of Object.keys(TLA_ALLIANCE_WEIGHTS)) { const w = pg[b] && pg[b].active !== false ? Number(pg[b].reward_weight) : NaN; if (!(w > 0)) return { ok: false, why: `no live weight for the ${b} gauge` }; weights[b] = w; sum += w; }
+        const annual = ap * sum / tw; const k = annual / TLA_LUNA_EMISSIONS_PER_YEAR;
+        if (!(k >= EMISSION_PLAUSIBLE[0] && k <= EMISSION_PLAUSIBLE[1])) return { ok: false, why: `live figure ${Math.round(annual)} LUNA/yr is ${k.toFixed(2)}× the calibrated one` };
+        return { ok: true, annual_luna: annual, weights, weight_sum: sum, annual_provisions_luna: ap, total_reward_weight: tw, as_of: m.generated_at, age_h: Math.round(ageH * 10) / 10 };
+    } catch (e) { return { ok: false, why: String(e && e.message || e).slice(0, 80) }; }
+}
+
 // Epochs per year (TLA epoch = 1 week, so ~52.18 per year)
 const EPOCHS_PER_YEAR = (365.25 * 24 * 60 * 60 * 1000) / TLA_EPOCH_DURATION_MS;
 
@@ -166,6 +191,7 @@ const REFRESH_INTERVAL_MS = REFRESH_INTERVAL_HOURS * 60 * 60 * 1000;
 // Data repo URLs (raw.githubusercontent.com)
 const DATA_REPOS = {
     networkPricesUrl:  'https://raw.githubusercontent.com/thealliancedao/tla-core/main/network-and-prices/current.json',
+    erisAprUrl:        'https://raw.githubusercontent.com/thealliancedao/tla-core/main/dex-data/eris-apr/current.json',   // 1.3.0: its meta carries the chain's annual provisions + Alliance weights, read hourly
     prevDailyUrl: (dateStr) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/member-data/tla-snapshot/daily/${dateStr}.json`,
     // org tla-voting products (see header): month file is a LIST of harvests.
     bribeStateMonthUrl: (d) => `https://raw.githubusercontent.com/thealliancedao/tla-core/main/tla-voting/bribe-state/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}.json`,
@@ -375,14 +401,15 @@ async function loadAllInputs(currentEpoch) {
     // wBTC.creda.a — $80.7K staked, an active single gauge — absent from every tla-stats tab). Both reads isolated.
     const crediaTask = (async () => { try { const d = await fetchJson(`${DATA_REPOS.crediaSnapshotUrl}`, 'credia'); console.log(`  ✓ credia: ${(d.pools || []).length} markets`); return d; } catch (e) { console.log(`  ⚠ credia: ${e.message.slice(0, 60)}`); return null; } })();
     const catalogTask = (async () => { try { const d = await fetchJson(`${DATA_REPOS.tokenCatalogUrl}`, 'token-catalog'); console.log(`  ✓ token-catalog: ${(d.tokens || []).length} tokens`); return d; } catch (e) { console.log(`  ⚠ token-catalog: ${e.message.slice(0, 60)}`); return null; } })();
-    const [networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog]
-        = await Promise.all([...tasks, astroportTask, ssTask, crediaTask, catalogTask]);
+    const erisAprTask = (async () => { try { const d = await fetchJson(`${DATA_REPOS.erisAprUrl}`, 'eris-apr'); console.log(`  ✓ eris-apr: annual provisions ${d && d.meta && d.meta.annual_provisions_luna ? Math.round(d.meta.annual_provisions_luna).toLocaleString('en-US') : '?'} LUNA`); return d; } catch (e) { console.log(`  ⚠ eris-apr: ${e.message.slice(0, 60)}`); return null; } })();   // 1.3.0
+    const [networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog, erisApr]
+        = await Promise.all([...tasks, astroportTask, ssTask, crediaTask, catalogTask, erisAprTask]);
 
     if (networkPrices) console.log(`  ✓ network-and-prices: ${Object.keys(networkPrices.token_prices || {}).length} tokens`);
     if (bribesCurrent)  console.log(`  ✓ bribes-current: ${bribesCurrent.active_bribes?.length || 0} active bribes`);
     if (bribesHistory)  console.log(`  ✓ bribes-history: ${bribesHistory.bribes?.length || 0} bribes`);
 
-    return { networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog };
+    return { networkPrices, bribesCurrent, bribesHistory, astroport, ssCsv, credia, tokenCatalog, erisApr };
 }
 
 // -----------------------------------------------------------------------------
@@ -463,6 +490,7 @@ async function fetchChainState() {
         stableStaked, projectStaked, bluechipStaked, singleStaked,
         distributions,
         stableWl, projectWl, bluechipWl, singleWl,
+        totalVamp,
     ] = await Promise.all([
         queryContract(TLA_GAUGE_CONTROLLER, { gauge_infos: { gauge: 'stable',   time: 'next' } }),
         queryContract(TLA_GAUGE_CONTROLLER, { gauge_infos: { gauge: 'project',  time: 'next' } }),
@@ -479,6 +507,9 @@ async function fetchChainState() {
         queryContract(TLA_STAKING_CONTRACTS.project,  { whitelisted_asset_details: {} }).catch(() => null),
         queryContract(TLA_STAKING_CONTRACTS.bluechip, { whitelisted_asset_details: {} }).catch(() => null),
         queryContract(TLA_STAKING_CONTRACTS.single,   { whitelisted_asset_details: {} }).catch(() => null),
+        // 1.3.0: all the voting power that exists, voted or not — the lock contract's own total (Eris: "Total Voting Power").
+        // NOT core: a failed read is null and the page keeps its older estimate.
+        queryContract(TLA_VOTING_ESCROW, { total_vamp: {} }).catch(() => null),
     ]);
 
     // COMPLETENESS GATE — these chain queries ARE the snapshot; a null is a query FAILURE
@@ -523,7 +554,21 @@ async function fetchChainState() {
         console.log(`  ${b}: reward list ${m ? `${[...m.values()].filter(Boolean).length} on / ${[...m.values()].filter(v => !v).length} off` : 'UNREAD (token-catalog stands in)'}`);
     }
 
-    return { gauges, stakedBalances, distributions: distributions || [], whitelist };
+    const systemVp = parseTotalVamp(totalVamp);
+    console.log(`  total voting power (lock contract): ${systemVp ? systemVp.vp_human.toLocaleString('en-US', { maximumFractionDigits: 0 }) : 'UNREAD'}`);
+
+    return { gauges, stakedBalances, distributions: distributions || [], whitelist, systemVp };
+}
+
+// 1.3.0 — voting-escrow total_vamp → { vp, fixed, boost } in whole VP. Shape seen 2026-11-24:
+//   {"fixed":"3936602484268","voting_power":"32748520740303","vp":"36685123224571"}  (vp = fixed + voting_power)
+function parseTotalVamp(r) {
+    if (!r || typeof r !== 'object') return null;
+    const fixed = Number(r.fixed), boost = Number(r.voting_power); let vp = Number(r.vp);
+    if (!(vp > 0) && fixed >= 0 && boost >= 0 && isFinite(fixed + boost)) vp = fixed + boost;
+    if (!(vp > 0)) return null;
+    return { vp_human: vp / 1e6, fixed_human: isFinite(fixed) ? fixed / 1e6 : null, boost_human: isFinite(boost) ? boost / 1e6 : null,
+        source: 'voting-escrow total_vamp — every lock\'s voting power (fixed + boost), whether or not it has voted; the figure Eris prints as "Total Voting Power"' };
 }
 
 // 1.2.0 — `whitelisted_asset_details` rows ({ info: {cw20|native}, config, whitelisted }) → Map(gauge_pool_id → true|false).
@@ -1493,7 +1538,7 @@ function computeRollups(pools, bucketVps) {
 //
 // Wrapped in try/catch — any failure leaves snapshot intact without rewards.
 //
-function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
+function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions, emission) {
     try {
         // Defensive: need LUNA price to compute USD values
         if (!lunaPriceUsd || lunaPriceUsd <= 0) {
@@ -1520,15 +1565,18 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
         }
 
         // Total TLA annual emission (calibrated constant × live LUNA price)
-        const totalAnnualLuna = TLA_LUNA_EMISSIONS_PER_YEAR;
+        // 1.3.0: the chain's own figure when the hourly read is in hand (see liveEmissionFrom), else the calibrated constant
+        const live = emission && emission.ok ? emission : null;
+        const W = live ? live.weights : TLA_ALLIANCE_WEIGHTS;
+        const totalAnnualLuna = live ? live.annual_luna : TLA_LUNA_EMISSIONS_PER_YEAR;
         const totalAnnualUsd  = totalAnnualLuna * lunaPriceUsd;
 
         // Per-bucket allocations
         // TLA_ALLIANCE_WEIGHTS sums to 0.25 (TLA's 25% share of all Alliance rewards).
         // Within TLA, normalize so they sum to 1.0 — that's each bucket's share OF TLA's emissions.
-        const tlaShareTotal = Object.values(TLA_ALLIANCE_WEIGHTS).reduce((a, b) => a + b, 0);
+        const tlaShareTotal = Object.values(W).reduce((a, b) => a + b, 0);
         const bucketShareOfTla = {};
-        for (const [bucket, weight] of Object.entries(TLA_ALLIANCE_WEIGHTS)) {
+        for (const [bucket, weight] of Object.entries(W)) {
             bucketShareOfTla[bucket] = weight / tlaShareTotal;
         }
 
@@ -1539,7 +1587,7 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
             if (byBucket[bucket]) {
                 byBucket[bucket].rewards = {
                     bucket_weight_of_tla:        share,
-                    bucket_weight_of_alliance:   TLA_ALLIANCE_WEIGHTS[bucket] || 0,
+                    bucket_weight_of_alliance:   W[bucket] || 0,
                     annual_rewards_usd:          annualUsd,
                     weekly_rewards_usd:          annualUsd / EPOCHS_PER_YEAR,
                 };
@@ -1556,7 +1604,7 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
         for (const pool of pools) {
             try {
                 const bucket = pool.bucket;
-                if (!bucket || !TLA_ALLIANCE_WEIGHTS[bucket]) continue;
+                if (!bucket || !W[bucket]) continue;
 
                 // Prefer chain distributions (current epoch — what Eris uses), fallback to gauge_infos pct
                 let distShare = chainDistByPoolId.get(pool.gauge_pool_id);
@@ -1639,10 +1687,14 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
             pools_from_gauge_infos_fallback: fromGaugeInfosCount,
             pools_dewhitelisted: dewhitelistedCount,                 // 1.2.0 (additive)
             tla_tvl_in_distribution_usd: tvlInDistribution,          // staked value of the pools the chain is paying this epoch
+            // 1.3.0 (additive): where the year's emission came from this run
+            emission_source: live
+                ? { kind: 'chain', basis: 'annual provisions × Σ gauge reward_weight ÷ (Σ reward_weight of started alliances + 1) — the formula Eris\'s page uses, inputs read hourly by dex-data/eris-apr', annual_provisions_luna: live.annual_provisions_luna, total_reward_weight: live.total_reward_weight, gauge_weight_sum: live.weight_sum, as_of: live.as_of, age_h: live.age_h, calibrated_constant_luna: TLA_LUNA_EMISSIONS_PER_YEAR, vs_constant_pct: Math.round((live.annual_luna / TLA_LUNA_EMISSIONS_PER_YEAR - 1) * 10000) / 100 }
+                : { kind: 'calibrated_constant', basis: `the ${REWARDS_CALIBRATION_DATE} calibration (${TLA_LUNA_EMISSIONS_PER_YEAR} LUNA a year)`, why: (emission && emission.why) || 'no live read' },
             calibration: {
                 calibrated_at:   REWARDS_CALIBRATION_DATE,
                 source:          'Terra block explorer Alliance Assets page',
-                tla_alliance_weights: TLA_ALLIANCE_WEIGHTS,
+                tla_alliance_weights: W,
                 tla_total_alliance_share: tlaShareTotal,
                 bucket_share_of_tla:  bucketShareOfTla,
                 _note: 'Update TLA_ALLIANCE_WEIGHTS and TLA_LUNA_EMISSIONS_PER_YEAR constants if Alliance governance changes weights. Health page will flag drift between this model and Eris UI.',
@@ -1913,7 +1965,10 @@ async function captureTlaSnapshot() {
     // Phase B: rewards model (USD/year per pool, bucket, total)
     console.log('💰 Computing rewards model...');
     const lunaPriceUsd = tokenPrices?.LUNA?.final_price_usd || null;
-    computeRewards(pools, byBucket, totals, lunaPriceUsd, chainState.distributions);
+    const emission = liveEmissionFrom(inputs.erisApr, startedAt.getTime());   // 1.3.0
+    console.log(emission.ok ? `  emission: chain — ${Math.round(emission.annual_luna).toLocaleString('en-US')} LUNA a year (read ${emission.age_h} h ago)` : `  ⚠ emission: calibrated constant (${emission.why})`);
+    computeRewards(pools, byBucket, totals, lunaPriceUsd, chainState.distributions, emission);
+    totals.system_voting_power = chainState.systemVp || null;   // 1.3.0 (additive): null = that read failed this run
 
     // Final assembly
     const snapshot = {
@@ -2049,7 +2104,7 @@ async function captureTlaSnapshot() {
 
 module.exports = { main: captureTlaSnapshot,
     // for the gate (mock-run-snapshot.js) — the live functions, never a copy
-    _internals: { SNAPSHOT_VERSION, BUCKETS, IBC_REGISTRY, TokenResolver, PriceResolver, buildLpHealth, whitelistOf, buildWhitelistTruth, whitelistFor, poolStatus, computeRollups, computeRewards } };
+    _internals: { SNAPSHOT_VERSION, liveEmissionFrom, parseTotalVamp, TLA_LUNA_EMISSIONS_PER_YEAR, BUCKETS, IBC_REGISTRY, TokenResolver, PriceResolver, buildLpHealth, whitelistOf, buildWhitelistTruth, whitelistFor, poolStatus, computeRollups, computeRewards } };
 if (require.main === module) captureTlaSnapshot()
     .then(() => process.exit(0))
     .catch((err) => {

@@ -1,5 +1,5 @@
 // =============================================================================
-// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.3.5)
+// dex-data / lib / eris-apr.js — Eris-convention per-pool LP APR (1.6.0)
 // =============================================================================
 // Implements AUDIT-eris-apr-pricing.md §Gauge-LP-APR — Eris's OWN displayed
 // APR pipeline, source-confirmed 2026-08-02 (Philipp shared the code). The
@@ -48,6 +48,15 @@
 //              reports >0 because the last 14 stored points predate the freeze)
 //     Creda    metrics.assets[].supply_apy
 //     other    0
+// 1.6.0 (2026-11-24, checked against the owner's capture of the Eris page the same minute — 21 pools):
+//   • UNITS: Astroport's tRPC `tradingFees.apr` is a FRACTION (0.0427 = 4.27 %); 1.3.4 published it as if it were
+//     a percent, so every Astroport row's trading leg read 1/100th of its value (LUNA-USDC.inj 0.04 % for 4.27 %)
+//     and the APR/APY built on it read low by the whole leg — 5.9 points on the largest pool.
+//   • SOURCE: Eris's page does not read tRPC. `getAstroportInfo` (bundle chunk 713, same capture) fetches
+//     https://app.astroport.fi/api/pools?chainId=phoenix-1 and uses 365 × dayLpFeesUSD ÷ its own pool TVL; a pool
+//     missing from that list is `?? 0`. On xyk pools the two Astroport figures agree (LUNA-SOLID 1.86 vs 1.78);
+//     on concentrated and stable pools the REST figure is 1.3–3× the tRPC one (LUNA-USDC.inj 5.83 vs 4.27,
+//     LUNA-USDT 7.00 vs 2.29). That list is now read first; tRPC × 100 is the labelled fallback when it cannot be.
 // Every single-asset leg is published with `trading_apr_source`; a failed
 // source read nulls the leg WITH the flag `single_asset_yield_leg_unmeasured`
 // (kept from 1.3.3) — never a borrowed value.
@@ -192,6 +201,27 @@ function reserveImpliedTvl(dexPool, assetPrices = {}, catalog = null) {
 // 1.3.4 — single-asset yield sources (verbatim Eris `getPoolInfo` branches).
 const ASTRO_STAKING_APY_URL = 'https://app.astroport.fi/api/trpc/protocol.stakingApy?input=%7B%22json%22%3A%7B%22chainId%22%3A%22neutron-1%22%7D%7D';
 const AMPCAPA_HUB = 'terra186rpfczl7l2kugdsqqedegl4es4hp624phfc7ddy8my02a4e8lgq5rlx7y';
+// 1.6.0 — the pool list Eris's own page reads for its trading leg (see header). Returns { ok, by_pool: { <pair address>: dayLpFeesUSD }, note }.
+// Never throws and never counts as an input error: the tRPC figure stands in, labelled, when this cannot be read.
+const ASTROPORT_REST_POOLS_URL = 'https://app.astroport.fi/api/pools?chainId=phoenix-1';
+async function fetchAstroportLpFees(T = CH) {
+  if (typeof T.fetchJson !== 'function') return { ok: false, by_pool: {}, note: 'no transport' };
+  try {
+    const j = await T.fetchJson(ASTROPORT_REST_POOLS_URL);
+    const list = Array.isArray(j) ? j : (j && Array.isArray(j.pools) ? j.pools : (j && Array.isArray(j.data) ? j.data : null));
+    if (!list || !list.length) return { ok: false, by_pool: {}, note: 'empty or unrecognised response' };
+    const by = {}; let withFee = 0;
+    for (const p of list) {
+      const addr = p && (p.poolAddress || p.pool_address); if (typeof addr !== 'string' || !addr) continue;
+      const raw = p.dayLpFeesUSD; const n = raw == null || raw === '' ? null : Number(raw);
+      by[addr] = n != null && isFinite(n) && n >= 0 ? n : null; if (by[addr] != null) withFee++;
+    }
+    // a list in which no pool carries the field is a changed API, not "every pool earned nothing"
+    if (!withFee) return { ok: false, by_pool: {}, note: `${list.length} pools, none with dayLpFeesUSD` };
+    return { ok: true, by_pool: by, note: `${Object.keys(by).length} pools, ${withFee} with dayLpFeesUSD` };
+  } catch (e) { return { ok: false, by_pool: {}, note: String(e && e.message || e).slice(0, 160) }; }
+}
+
 const SINGLE_YIELD_SOURCES = {
   'native:ibc/65B3EB6263482979FD7A80E3FFB9D0C85CFBF6DB63EB8DDE918B2984A40CEAB6': {   // xASTRO (Neutron, IBC)
     name: 'xastro', label: 'astroport tRPC protocol.stakingApy weekApr (Staking APR)',
@@ -324,9 +354,12 @@ async function captureInputs(T = CH) {
     } catch (e) { out.errors[`single_yield_${src.name}`] = String(e && e.message || e); }
   }
 
+  const astroLpFees = await fetchAstroportLpFees(T);   // 1.6.0
+
   return {
     ...out,
     captured_at: new Date().toISOString(),
+    astroport_lp_fees: astroLpFees,
     single_yield_by_key: singleYield,
     annual_provisions_uluna: annualProvisionsUluna,
     annual_provisions_luna: annualProvisionsUluna != null ? annualProvisionsUluna / 1e6 : null,
@@ -435,7 +468,15 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null,
         const sa = dexPool.raw && dexPool.raw.supply_apy != null ? Number(dexPool.raw.supply_apy) : null;
         if (sa != null && isFinite(sa)) { tradingPct = sa * 100; tradingSource = 'credia metrics supply_apy (Supply APR)'; }
       } else if (dexPool) {
-        if (dexPool.fee_apr != null && isFinite(dexPool.fee_apr)) { tradingPct = Number(dexPool.fee_apr); tradingSource = 'dex-data fee_apr (substitutes 365 × dayLpFeesUSD / TVL)'; }
+        // 1.6.0: Eris's own source first — 365 × dayLpFeesUSD ÷ pool TVL from Astroport's pool list; `?? 0` for a pool the list lacks.
+        const lf = inputs.astroport_lp_fees; const tvl = dexPool.tvl_usd != null ? Number(dexPool.tvl_usd) : null;
+        if (lf && lf.ok && tvl > 0) {
+          const has = Object.prototype.hasOwnProperty.call(lf.by_pool, dexPool.pool_address); const fee = has ? lf.by_pool[dexPool.pool_address] : null;
+          if (fee != null) { tradingPct = 365 * fee / tvl * 100; tradingSource = 'astroport api/pools: 365 × dayLpFeesUSD ÷ pool TVL (the list Eris\'s page reads)'; }
+          else if (!has) { tradingPct = 0; tradingSource = 'astroport api/pools: pool not in the list — 0 by Eris source (dayLpFeesUSD ?? 0)'; }
+        }
+        // fallback: Astroport's tRPC figure, a FRACTION (× 100). Reads below Eris on concentrated and stable pools.
+        if (tradingPct == null && dexPool.fee_apr != null && isFinite(dexPool.fee_apr)) { tradingPct = Number(dexPool.fee_apr) * 100; tradingSource = 'astroport pools.getAll tradingFees.apr × 100 (fallback — the pool list Eris reads was not available)'; flags.push('trading_apr_fallback_source'); }
       } else {
         const sy = (inputs.single_yield_by_key || {})[key];
         if (sy && sy.pct != null && isFinite(sy.pct)) { tradingPct = Number(sy.pct); tradingSource = sy.source; }
@@ -501,8 +542,9 @@ function composeErisApr(inputs, dexPools = [], assetPrices = {}, catalog = null,
     meta: {
       generated_at: inputs.captured_at || new Date().toISOString(),
       method: 'AUDIT-eris-apr-pricing §Gauge-LP-APR (source-confirmed 2026-08-02) — verbatim mixed convention: apy = aprToApy(incentive×0.92, 365.25) + trading − take; apr(linear total) = incentive − take + trading (no 0.92, per source); trading??0 in formula; edge cases verbatim (0/0→0, tvl==0→Infinity published null+flag); distributions raw, never normalized.',
-      substitutions: 'trading_apr = dex-data fee_apr (their pool service not queryable); LUNA price + LP TVL from dex-data adapter captures.',
-      validation: 'reconciled 2026-09-10 vs the Eris liquidity-hub screen (owner screenshots + HAR): 18 Astroport rows within 1 pp, SkeletonSwap + Credia within 0.5% staked / 0.4 pp, singles within 0.15 pp with the source-verbatim own-yield leg (1.3.4). Residual = LUNA price at capture vs Eris /prices.',
+      substitutions: 'LUNA price + LP TVL from dex-data adapter captures. Trading leg: Astroport\'s own pool list (dayLpFeesUSD), the figure Eris reads — see trading_leg; its tRPC figure is the labelled fallback.',
+      trading_leg: { astroport_pool_list: inputs.astroport_lp_fees ? (inputs.astroport_lp_fees.ok ? 'ok' : 'unavailable') : 'not read', note: inputs.astroport_lp_fees ? inputs.astroport_lp_fees.note : null, rows_from_pool_list: pools.filter(p => /api\/pools/.test(p.trading_apr_source || '')).length, rows_on_fallback: pools.filter(p => (p.flags || []).includes('trading_apr_fallback_source')).length },
+      validation: 'checked 2026-11-24 against the owner\'s capture of the Eris liquidity-hub page in the same minute (21 pools): staked $ within 0.6 % (one SkeletonSwap pool 1.9 %), rewards per year −0.4 % on every pool (LUNA price an hour older than the page\'s), incentive APR within 0.4 points. The trading leg had been published at 1/100th (fixed in 1.6.0) and is now read from the list Eris reads. Earlier: reconciled 2026-09-10.',
       luna_price_used_usd: lunaUsd,
       luna_price_source: lunaSource,
       luna_price_as_of: lunaAsOf,   // 1.4.3: when the live feed priced this run (null for adapter / catalog)
@@ -527,4 +569,4 @@ async function runErisApr(dexPools, assetPrices, T = CH) {
   return composeErisApr(inputs, dexPools, assetPrices || {}, catalog, live);
 }
 
-module.exports = { runErisApr, captureInputs, composeErisApr, fetchLivePrices, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, SINGLE_YIELD_SOURCES, CH, ERIS_INCENTIVE_CUT };
+module.exports = { runErisApr, captureInputs, composeErisApr, fetchLivePrices, aprToApy, assetKeyFromInfo, connectorAddrFromDenom, fetchCatalog, catalogPrice, catalogSymbol, reserveImpliedTvl, SINGLE_YIELD_SOURCES, CH, ERIS_INCENTIVE_CUT, fetchAstroportLpFees, ASTROPORT_REST_POOLS_URL };

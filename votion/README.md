@@ -79,3 +79,15 @@ start — to `votion/rounds/current.json` `{ periods: { P: { at, minutes_after_f
 micro-units), from the same live read as `snapshots/vaults.json`. It carries Votion's per-round history forward without the archive
 node; `tla-voting/vote-history/votion.json` (the archive backfill, run by hand) keeps its own rounds. Readers take the backfill where it
 has a round and this file after it.
+
+## Optimizer capture — all four vault pages (1.8.1, 2026-11-24)
+`votion/optimization/current.json` holds Votion's own output per vault page, verbatim. votion.money loads four of them — the two Max
+vaults (`ampluna-max`, `arbluna-max`) and the two Claim vaults (`ampluna-max-claiming`, `arbluna-max-claiming`) — and the cron now asks
+for all four on every run, whatever `VOTION_OPT_SLUGS` / `VOTION_OPT_PROBES` say (`VOTION_OPT_KNOWN`). Before 1.8.1 the Claim vaults
+were never requested, so anything summed from this file was short by their voting power (0.68M of 10.30M on 2026-11-24).
+A page that stops answering is `absent` in `probe_results`; it is not an error and does not fail the run.
+
+**Still open:** the chain branch (`snapshots/vaults.json`, `rounds/current.json`) finds vaults by code id 3677. The Claim vaults are a
+different contract (their `state` is `{ total_staked, global_index, reward_balance }`, not `{ staked }`), so they are not in those two
+files yet. Adding them needs their code id and one `config` read from the chain (the probe Action), which this change did not have.
+

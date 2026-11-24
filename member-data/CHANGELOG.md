@@ -1,5 +1,22 @@
 # member-data — changelog
 
+## 1.7.2 — 2026-11-24 — tla-snapshot 1.3.0: emissions from the chain's own figures; total voting power
+
+Checked against a capture of Eris's liquidity-hub page taken in the same minutes as our files.
+
+- **Emission.** The year's LUNA to the four gauges was a constant calibrated from Eris's page in May (17,672,478). Eris's page works
+  it out on every load: annual provisions × the gauge's reward weight ÷ (Σ reward weight of the started alliances + 1). dex-data's
+  Eris-method feed already reads those inputs every hour; on 24 Nov they give 17,505,737 — the constant ran 0.95 % high (Eris's
+  header that minute: rewards per year $551.05K; ours from the constant $554.19K). `liveEmissionFrom()` takes the feed's figures when
+  the feed is under 6 h old, has all four gauges switched on and lands within 0.5–2× the calibration; otherwise the constant stands
+  in. Either way `totals.rewards.emission_source` says which, and why.
+- **Total voting power.** New `totals.system_voting_power` `{ vp_human, fixed_human, boost_human, source }` from the lock contract's
+  `total_vamp` — every lock's voting power, voted or not. It is the figure Eris prints as "Total Voting Power" (36.68M on 24 Nov;
+  TLA Stats had been printing the largest gauge's boost-only votes, 33.98M). Not a core read: a failure leaves it `null`.
+- Gate (`mock-run-snapshot.js`, real committed data): E1–E5 and S1–S2 added, 26 pass on the 15 Nov and 24 Nov checkouts. E3: with
+  one emission on both sides, the gap between a pool's reward APR here and the feed's incentive APR is exactly LUNA price × staked
+  value as each file captured them (to 0.3 %); with the constant ~1 % more was left over.
+
 ## 1.7.1 — 2026-11-24 — tla-snapshot 1.2.0: USDC.inj is named; a pool off its gauge's list earns nothing
 
 Found by the pre-promotion health check of TLA Stats (the page read TLA TVL $697.8K where the Eris-method feed read $1.02M, and

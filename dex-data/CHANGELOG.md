@@ -1,3 +1,21 @@
+## dex-data 1.6.0 — 2026-11-24 — eris-apr: the trading-fee leg is the one Eris's page shows
+
+Checked against a capture of Eris's liquidity-hub page taken in the same minute as our 17:02 UTC run (21 pools).
+
+- **Matched already:** staked $ within 0.6 % on every pool but one small SkeletonSwap pool (1.9 %); rewards per year −0.4 % on
+  every pool (our LUNA price is the hourly feed's, an hour older than the page's); incentive APR within 0.4 points.
+- **Wrong:** the trading leg of every Astroport row. Astroport's tRPC `tradingFees.apr` is a fraction (0.0427 = 4.27 %) and
+  `lib/eris-apr.js` published it as a percent, so the leg read 1/100th of its value and the APR and APY built on it read low by
+  the whole leg: LUNA-USDC.inj 38.64 % for Eris's 44.57 %, LUNA-USDT 36.31 % for 43.43 %. Median gap 1.2 points, worst 7.1.
+- **Source:** Eris's page does not read tRPC at all. Its bundle (`getAstroportInfo` / `getPoolInfo`) fetches
+  `https://app.astroport.fi/api/pools?chainId=phoenix-1` and uses `365 × dayLpFeesUSD ÷ pool TVL`, `?? 0` for a pool the list
+  lacks. On xyk pools the two Astroport figures agree; on concentrated and stable pools the list's figure is 1.3–3× tRPC's.
+  `fetchAstroportLpFees()` now reads that list first. When it cannot be read (or no pool in it carries the field — a changed API),
+  the tRPC fraction × 100 stands in, the row says so (`trading_apr_source`, flag `trading_apr_fallback_source`) and
+  `meta.trading_leg` counts both. A failed read of the list is not an input error and does not turn the heartbeat `partial`.
+- Mock gate: the fixture's `fee_apr` is now a fraction, as on the wire; eight new assertions (list read, pool not in the list,
+  wrapped list, numeric strings, a list without the field, one pool without a figure). 97 pass.
+
 ## dex-data 1.5.1 — 2026-10-17 — single-asset cw20 gauges are singles
 
 - state-history: a cw20 gauge with no pair minter that the TLA snapshot lists with no pair (wBTC.creda.a, Credia's receipt) is
