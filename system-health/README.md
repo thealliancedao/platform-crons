@@ -27,13 +27,23 @@ product is ever written to.
    <= tvl_usd` (the impossible-LUNA-SOLID class of error).
 3. `distribution_fractions_sum` — catalog active `distribution_pct` sums to
    1.0 ± 0.001 per bucket.
-4. `tribute_stream_coverage` — consumes tla-voting's `bribe_capture`
-   heartbeat block (never recomputes); violation ONLY on a per-denom DROP vs
-   the baseline stored in the previous history run. Skipped + declared until
-   the first epoch-flip capture publishes it.
+4. `tribute_stream_coverage` — consumes tla-voting's `bribe_capture` block
+   (never recomputes); violation ONLY on a per-denom DROP vs the baseline
+   stored in the previous history run. 1.1.2: read from
+   `tla-voting/bribe-state/heartbeat.json` — written only at a harvest, so it
+   keeps the block; the hourly events heartbeat carries it for one run a week
+   and is the fallback — in the shape tla-voting writes
+   (`{ period, denoms: { <denom>: { state, events, coverage_pct } } }`).
+   Coverage above 100 % (a pot moved or topped up) counts as seen in full, so
+   117 % → 100 % is not a drop. Until 1.1.2 this check looked in the hourly
+   heartbeat for a `per_denom` map and reported "not yet published" for months.
 5. `bucket_label_agreement` — dex-data bucket vs catalog bucket joined on
    `architecture.pair_address`; mismatches carry both generated_at stamps.
    Proven live: caught the SS LUNA-SOLID stale entry on its first dry run.
+   1.1.0: a disagreement on a pool with under $50 staked is listed, not raised.
+   1.1.2: the dex label agrees when it is ANY bucket the catalog files that
+   pair under; when the dex adapter has no stake figure the hourly snapshot's
+   is used to decide dust (no figure anywhere = raised).
 6. `heartbeat_freshness` — per-product FRESHNESS_MAP with product-appropriate
    signals: cron heartbeats vs cadence-aware max ages; price-history = latest
    day key of the current month file (data truth) PLUS, since 1.0.8, the

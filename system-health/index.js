@@ -29,7 +29,7 @@ const https = require('https');
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
 const GITHUB_REPO   = process.env.GITHUB_REPO   || 'thealliancedao/tla-core';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
-const VERSION       = 'org-system-health-1.1.1';   // 1.1.1 (2026-11-24): bucket_vp_consistency asks like for like — the same paid pools in the hourly snapshot and the catalog, the same votes behind them, and members' votes against EVERY vote in the gauge (it compared every member vote with the paid pools only, a 9–12 % red light that could never go out)   // 1.1.0 (2026-11-24, pre-promotion health check): three checks that would have caught what the check found by hand — reward_list_valued (every pool the chain is paying has a dollar value in the TLA snapshot, and its total agrees with the Eris-method feed), rewards_sum_to_emission (per-pool emissions add up to the emission; a pool off its gauge's list is neither active nor paid), pnl_integrity (the P&L build's own fault checks); a $50 floor on the two dust-pool checks so a red status is news again; the page-feeding products that had no freshness row are watched (tla-snapshot, participants, positions, holdings, eris-apr, lp-grades, network-and-prices, tla-flows events + P&L)   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
+const VERSION       = 'org-system-health-1.1.2';   // 1.1.2 (2026-11-24): the two lights that could not go out. tribute_stream_coverage reads bribe_capture where it persists (the bribe-state heartbeat) and in the shape tla-voting writes — it had answered "not yet published" for months. bucket_label_agreement compares against every bucket the catalog files a pair under, and uses the hourly snapshot's stake to tell dust when the dex adapter has none.   // 1.1.1 (2026-11-24): bucket_vp_consistency asks like for like — the same paid pools in the hourly snapshot and the catalog, the same votes behind them, and members' votes against EVERY vote in the gauge (it compared every member vote with the paid pools only, a 9–12 % red light that could never go out)   // 1.1.0 (2026-11-24, pre-promotion health check): three checks that would have caught what the check found by hand — reward_list_valued (every pool the chain is paying has a dollar value in the TLA snapshot, and its total agrees with the Eris-method feed), rewards_sum_to_emission (per-pool emissions add up to the emission; a pool off its gauge's list is neither active nor paid), pnl_integrity (the P&L build's own fault checks); a $50 floor on the two dust-pool checks so a red status is news again; the page-feeding products that had no freshness row are watched (tla-snapshot, participants, positions, holdings, eris-apr, lp-grades, network-and-prices, tla-flows events + P&L)   // 1.0.11 (2026-09-22): org-ally-holders-liondao registered (daily, heartbeat lion-dao/holders-heartbeat.json) · 1.0.10 (2026-09-21): org-ally-positions-liondao registered (hourly :20, heartbeat in dao-originations/lion-dao/positions/; carries its own status + errors count) · 1.0.9 (2026-09-19, owner): INV 8 nft_listings_reconcile — per collection, listings OPEN per the chain-event ledger == listings the inventory reads from contract state, per venue and per token (the PL #2124 gap: a chain-only BBL listing the state read could not see); + PL inventory freshness row · 1.0.8 (2026-09-14): price-history WRITER heartbeat row (token-catalog now writes price-history/heartbeat.json each run; B.5) · 1.0.7 (2026-09-14): a FRESH heartbeat whose own `status` is failed/error is a violation (tla-locks failed every run for 13 h on 2026-09-13 behind a green freshness row) · 1.0.6 (2026-09-13): the three aDAO product heartbeats read from nft-collections/adao/ (migration) · 1.0.5 (2026-09-12): freshness rows may name their repo — the three nft-collections ledger crons registered
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -194,31 +194,66 @@ function invDistributionFractions(catalog) {
 }
 
 // --------------------------------------------------------------------------- INV 4 — tribute_stream_coverage (consume, don't recompute; alarm on DROP)
-function invTributeCoverage(votingHeartbeat, lastHistoryRun) {
-    if (!votingHeartbeat) return skipped('tla-voting events heartbeat absent/unreadable');
-    const cap = votingHeartbeat.bribe_capture;
-    if (!cap) return skipped('bribe_capture not yet published by tla-voting (first epoch flip pending)');
-    const prev = lastHistoryRun && lastHistoryRun.tribute_coverage || null;
+// 1.1.2: read the figure where it lives, in the shape it has. tla-voting computes bribe_capture only on the run that harvests a round
+// (once a week, after the flip). It goes into the hourly events heartbeat — which the next hourly run overwrites without it — and
+// into the bribe-state heartbeat, which is written only at a harvest and so keeps it. This check read the first, and looked for a
+// `per_denom` map the product never wrote ({ period, denoms: { <denom>: { state, events, coverage_pct } } } is what it writes), so it
+// answered "not yet published (first epoch flip pending)" 167 hours out of 168, for months.
+// The rule is SPEC D7's, unchanged: coverage is a metric, not an alarm (the event stream is structurally partial — that is why the
+// state harvest exists); the alarm is a DROP — a token whose pots were seen in full as events at the previous harvest and are not now.
+function normCapture(cap) {
+    if (!cap || typeof cap !== 'object') return null;
+    if (cap.unavailable) return { unavailable: String(cap.unavailable) };
+    const one = Array.isArray(cap.periods) ? cap.periods[cap.periods.length - 1] : cap;
+    if (!one || typeof one !== 'object') return null;
+    const per = {};
+    if (one.denoms && typeof one.denoms === 'object') { for (const [d, v] of Object.entries(one.denoms)) if (v && typeof v.coverage_pct === 'number') per[d] = Math.round(v.coverage_pct * 100) / 10000; }   // % → fraction; events-only tokens (no state) carry no figure
+    else if (one.per_denom && typeof one.per_denom === 'object') { for (const [d, v] of Object.entries(one.per_denom)) if (typeof v === 'number') per[d] = v; }   // this check's own stored baseline
+    else return null;
+    const mean = typeof one.mean_coverage_pct === 'number' ? Math.round(one.mean_coverage_pct * 100) / 10000 : (typeof one.mean === 'number' ? one.mean : null);
+    return { period: one.period != null ? one.period : null, per_denom: per, mean };
+}
+function invTributeCoverage(votingHeartbeat, lastHistoryRun, bribeStateHeartbeat) {
+    if (!votingHeartbeat && !bribeStateHeartbeat) return skipped('tla-voting heartbeats absent/unreadable');
+    const raw = (bribeStateHeartbeat && bribeStateHeartbeat.bribe_capture) || (votingHeartbeat && votingHeartbeat.bribe_capture) || null;
+    if (!raw) return skipped('no bribe_capture in the bribe-state heartbeat or the events heartbeat — it is written at the first harvest after an epoch flip');
+    const cap = normCapture(raw);
+    if (!cap) return skipped('bribe_capture is in a shape this check does not read');
+    if (cap.unavailable) return skipped(`bribe_capture was unavailable at the last harvest: ${cap.unavailable}`);
+    const prev = normCapture(lastHistoryRun && lastHistoryRun.tribute_coverage);
+    const seen = (x) => Math.min(1, x);   // events adding up to more than the state (a pot moved or topped up) is still "seen in full"
     const drops = [];
-    if (prev && cap.per_denom && prev.per_denom) {
+    if (prev && prev.per_denom) {
         for (const [denom, v] of Object.entries(cap.per_denom)) {
             const was = prev.per_denom[denom];
-            if (typeof was === 'number' && typeof v === 'number' && v < was - 1e-9)
-                drops.push({ denom, was, now: v });
+            if (typeof was === 'number' && seen(v) < seen(was) - 0.01) drops.push({ denom, was, now: v });
         }
     }
-    if (drops.length) return violation('direct-bribe coverage DROPPED vs previous run', { drops, current: cap }, 'coverage never decreases per denom');
-    return ok('coverage surfaced' + (prev ? ' (no drops vs previous run)' : ' (first observation — no baseline)'), cap, 'coverage never decreases per denom');
+    const vals = Object.values(cap.per_denom), low = vals.length ? Math.min(...vals) : null;
+    const pctTxt = (x) => `${(x * 100).toFixed(0)}%`;
+    const measured = { period: cap.period, per_denom: cap.per_denom, mean: cap.mean, baseline_period: prev && !prev.unavailable ? prev.period : null };
+    if (drops.length) return violation(`direct-bribe coverage DROPPED vs previous run: ${drops.slice(0, 4).map(d => `${d.denom.slice(0, 28)} ${pctTxt(d.was)} → ${pctTxt(d.now)}`).join(', ')}`, { drops, current: measured }, 'coverage never decreases per denom');
+    const what = `round ${cap.period != null ? cap.period : '?'}: ${vals.length} token(s), lowest coverage ${low != null ? pctTxt(low) : '—'}`;
+    return ok(`coverage surfaced — ${what}` + (prev && prev.per_denom ? (prev.period != null && prev.period === cap.period ? ' (same harvest as the previous run)' : ' (no drops vs previous run)') : ' (first observation — no baseline)'), measured, 'coverage never decreases per denom');
 }
 
 // --------------------------------------------------------------------------- INV 5 — bucket_label_agreement (dex-data vs catalog, joined on pair)
-function invBucketLabelAgreement(dexSnapshots, catalog) {
+function invBucketLabelAgreement(dexSnapshots, catalog, tlaSnap) {
     if (!catalog) return skipped('token-catalog current.json absent/unreadable');
     if (!dexSnapshots.length) return skipped('no dex-data snapshots readable');
-    const catByPair = {};
+    // 1.1.2: a pair can sit in more than one gauge — the catalog then has one row per bucket. The dex label agrees when it is ANY of
+    // them (the join kept the last row only, so which bucket it compared against depended on file order).
+    const catByPair = {}, catBuckets = {};
     for (const p of (catalog.pools || [])) {
         const pair = p.architecture && p.architecture.pair_address;
-        if (pair) catByPair[pair] = p;
+        if (pair) { catByPair[pair] = p; (catBuckets[pair] = catBuckets[pair] || new Set()).add(p.bucket); }
+    }
+    // 1.1.2: when the dex adapter has no stake figure for the pool, the hourly snapshot's is used to decide "dust" — a missing figure
+    // is not dust by itself (SkeletonSwap LUNA-SOLID read $0.04 one hour and nothing the next, and the check went red again)
+    const snapStake = {};
+    for (const p of ((tlaSnap && tlaSnap.pools) || [])) {
+        if (!p.pool_address || typeof p.staked_in_tla_usd !== 'number') continue;
+        snapStake[p.pool_address] = Math.max(snapStake[p.pool_address] || 0, p.staked_in_tla_usd);
     }
     const mismatches = [], dust = []; let joined = 0;
     for (const { id, snap } of dexSnapshots) {
@@ -227,9 +262,10 @@ function invBucketLabelAgreement(dexSnapshots, catalog) {
             const cat = catByPair[p.pool_address];
             if (!cat) continue;                               // catalog has no pair entry — INV7 territory
             joined++;
-            if (cat.bucket !== p.bucket) {
-                const staked = num(p.raw && p.raw.staked_liquidity_usd);
-                const row = { dex: id, pool: p.pool_name || p.pool_address, dex_bucket: p.bucket, catalog_bucket: cat.bucket, staked_usd: staked, dex_as_of: snap.meta && snap.meta.generated_at, catalog_as_of: catalog.meta && catalog.meta.generated_at };
+            if (!catBuckets[p.pool_address].has(p.bucket)) {
+                let staked = num(p.raw && p.raw.staked_liquidity_usd), stakedFrom = 'dex-data';
+                if (staked === null && p.pool_address in snapStake) { staked = snapStake[p.pool_address]; stakedFrom = 'tla-snapshot'; }
+                const row = { dex: id, pool: p.pool_name || p.pool_address, dex_bucket: p.bucket, catalog_bucket: [...catBuckets[p.pool_address]].join(' / '), staked_usd: staked, staked_from: staked === null ? null : stakedFrom, dex_as_of: snap.meta && snap.meta.generated_at, catalog_as_of: catalog.meta && catalog.meta.generated_at };
                 // 1.1.0: a disagreement on a pool with under $50 staked is listed, not raised (SkeletonSwap LUNA-SOLID: $0.04)
                 (staked !== null && staked < DUST_USD ? dust : mismatches).push(row);
             }
@@ -506,6 +542,7 @@ async function run() {
         if (s) dexSnapshots.push({ id, snap: s });
     }
     const votingHb = (await apiGetJson('tla-voting/events/heartbeat.json')).data;
+    const bribeStateHb = (await apiGetJson('tla-voting/bribe-state/heartbeat.json')).data;   // 1.1.2: written only at a harvest, so it keeps the last bribe_capture
     // 1.1.0: the TLA snapshot (the file behind the TLA Stats tiles), the Eris-method feed and the P&L build's integrity report
     const tlaSnap  = (await apiGetJson('member-data/tla-snapshot/current.json')).data;
     const erisApr  = (await apiGetJson('dex-data/eris-apr/current.json')).data;
@@ -528,8 +565,8 @@ async function run() {
         bucket_vp_consistency:      invBucketVpConsistency(member, catalog, tlaSnap),
         staked_le_depth:            invStakedLeDepth(dexSnapshots),
         distribution_fractions_sum: invDistributionFractions(catalog),
-        tribute_stream_coverage:    invTributeCoverage(votingHb, lastRun),
-        bucket_label_agreement:     invBucketLabelAgreement(dexSnapshots, catalog),
+        tribute_stream_coverage:    invTributeCoverage(votingHb, lastRun, bribeStateHb),
+        bucket_label_agreement:     invBucketLabelAgreement(dexSnapshots, catalog, tlaSnap),
         heartbeat_freshness:        await invHeartbeatFreshness(apiGetJson, now),
         identity_resolution:        invIdentityResolution(catalog),
         nft_listings_reconcile:     await invNftListingsReconcile(apiGetJson, now),   // 1.0.9
@@ -551,7 +588,7 @@ async function run() {
     const runSummary = {
         as_of: now.toISOString(), status: worst,
         by_invariant: Object.fromEntries(Object.entries(invariants).map(([k, v]) => [k, v.status])),
-        tribute_coverage: (votingHb && votingHb.bribe_capture) || null,   // baseline for the next drop check
+        tribute_coverage: normCapture((bribeStateHb && bribeStateHb.bribe_capture) || (votingHb && votingHb.bribe_capture)) || null,   // baseline for the next drop check ({ period, per_denom, mean } — 1.1.2)
     };
     const h = await appendHistory(now, runSummary);
     await publishFile('system-health/heartbeat.json', { version: VERSION, capturedAt: now.toISOString(), status: worst, history_runs: h.runs }, `system-health heartbeat`);

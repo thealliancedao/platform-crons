@@ -60,7 +60,7 @@ function healthyRepo() {
             { pool_name: 'P2', pool_address: 'pairC', bucket: 'project', tvl_usd: 500, raw: { staked_liquidity_usd: 400 } },
             { pool_name: 'NOT-TLA', pool_address: 'pairZ', bucket: null, tvl_usd: 9, raw: { staked_liquidity_usd: 90 } },  // no bucket → INV5 skip; INV2 STILL checks it? yes both sides exist → would violate! keep <= : fix to 5
         ] },
-        'tla-voting/events/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },  // no bribe_capture yet
+        'tla-voting/events/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },  // the hourly heartbeat: no bribe_capture (it is only there on the run that harvests)
         'member-data/snapshots/heartbeat.json': { generated_at: '2026-07-16T02:00:00Z', status: 'ok' },   // real shape: generated_at, no capturedAt
         'token-catalog/snapshots/heartbeat.json': H('2026-07-16T10:00:00Z'),
         'dex-data/astroport/snapshots/heartbeat.json': { generated_at: '2026-07-16T11:00:00Z' },
@@ -70,7 +70,9 @@ function healthyRepo() {
         'dex-data/astroport/epochs/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },
         'dex-data/skeletonswap/rolling/heartbeat.json': { capturedAt: '2026-07-16T11:00:00Z', status: 'ok' },
         'tla-voting/vote-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
-        'tla-voting/bribe-state/heartbeat.json': H('2026-07-13T00:00:00Z'),
+        // 1.1.2: written at a harvest only, so it keeps the last bribe_capture — in the shape tla-voting writes (INV4 reads it here)
+        'tla-voting/bribe-state/heartbeat.json': Object.assign(H('2026-07-13T00:00:00Z'), { period_head: 49, bribe_capture: { period: 49, denom_count: 3, mean_coverage_pct: 105.61, denoms: {
+            'native:uluna': { state: '6942836142', events: '8111781408', coverage_pct: 116.84 }, 'cw20:astro': { state: '100', events: '100', coverage_pct: 100 }, 'native:ibc/EVT': { state: '0', events: '204265', coverage_pct: null, events_only: true } } } }),
         // 1.0.5: the three nft-collections ledger crons (real shape: ran_at, status, cursor)
         'adao/nft-flows/heartbeat.json':        { ran_at: '2026-07-16T11:04:00Z', status: 'ok', cursor: 1 },
         'pixel-lions/nft-flows/heartbeat.json': { ran_at: '2026-07-16T11:24:00Z', status: 'ok', cursor: 1 },
@@ -152,14 +154,15 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     console.log('— R1: all-ok pass —');
     REPO = fixNotTla(healthyRepo()); WRITES = {};
     let out = await M.run();
-    check('R1 overall skipped-not-violation (bribe_capture pending)', out.meta.status === 'skipped', out.meta.status);
+    check('R1 overall ok — every check answers (1.1.2: no check is left permanently skipped)', out.meta.status === 'ok', out.meta.status);
     for (const k of ['bucket_vp_consistency', 'staked_le_depth', 'distribution_fractions_sum', 'bucket_label_agreement', 'heartbeat_freshness', 'identity_resolution', 'nft_listings_reconcile', 'reward_list_valued', 'rewards_sum_to_emission', 'pnl_integrity'])
         check(`R1 ${k} ok`, out.invariants[k].status === 'ok', out.invariants[k]);
     { const m = out.invariants.nft_listings_reconcile.measured;
       check('R1 INV8 fold: only #2 open on aDAO (delisted, sold, transferred and superseded rows closed/ignored); by_venue both sides {bbl:1}', m.adao.ledger_open === 1 && m.adao.inventory_listed === 1 && JSON.stringify(m.adao.by_venue) === JSON.stringify({ ledger: { bbl: 1 }, inventory: { bbl: 1 } }), m.adao);
       check('R1 INV8 PL: the chain-only #2124 listing is open in the ledger AND in the inventory (D.2 completion) → ok', m['pixel-lions'].status === 'ok' && m['pixel-lions'].ledger_open === 1, m['pixel-lions']);
       check('R1 INV8 reads the ledger + inventory from nft-collections, tenants from tla-core', REPO_HITS['adao/ledger/2026/07.json'] === 'thealliancedao/nft-collections' && REPO_HITS['pixel-lions/snapshots/nfts.json'] === 'thealliancedao/nft-collections' && REPO_HITS['docs/curated/tenants.json'] === 'thealliancedao/tla-core', [REPO_HITS['adao/ledger/2026/07.json'], REPO_HITS['docs/curated/tenants.json']]); }
-    check('R1 tribute skipped + declared', out.invariants.tribute_stream_coverage.status === 'skipped' && /not yet published/.test(out.invariants.tribute_stream_coverage.detail));
+    { const t = out.invariants.tribute_stream_coverage;
+      check('R1 tribute (1.1.2): read from the bribe-state heartbeat in the product\'s own shape — round 49, 2 tokens with a figure (the events-only one has none), lowest 100 %, first observation', t.status === 'ok' && /round 49: 2 token\(s\), lowest coverage 100%/.test(t.detail) && /first observation/.test(t.detail) && t.measured.per_denom['native:uluna'] === 1.1684 && !('native:ibc/EVT' in t.measured.per_denom), t); }
     check('R1 INV1 measured rows carry both sides', Array.isArray(out.invariants.bucket_vp_consistency.measured) && out.invariants.bucket_vp_consistency.measured[0].catalog_active_sum_vp > 0);
     { const r = out.invariants.bucket_vp_consistency, st = r.measured.find(x => x.bucket === 'stable');
       check('R1 INV1 (1.1.1) like for like: stable members 1000 vs 1010 votes in the gauge (−0.99 %), 8 of them off the list; paid 1000 = 1000; the same 4 paid pools', st.gauge_votes_vp === 1010 && st.off_list_vp === 8 && st.member_vs_gauge_pct === -0.99 && st.snapshot_active_sum_vp === 1000 && st.paid_diff_pct === 0 && /the same 4 paid pools in both/.test(r.detail), r); }
@@ -274,24 +277,40 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     out = await M.run();
     check('R4c fuel-supply absent → listed stale', out.invariants.heartbeat_freshness.status === 'violation' && JSON.stringify(out.invariants.heartbeat_freshness.measured.stale).includes('fuel-supply'));
 
-    console.log('— R5: coverage drop alarm —');
+    console.log('— R5: coverage drop alarm (1.1.2: the bribe-state heartbeat, in the shape tla-voting writes) —');
+    const BS = 'tla-voting/bribe-state/heartbeat.json'; const capOf = (period, uluna, astro) => ({ period, denom_count: 2, mean_coverage_pct: (uluna + astro) / 2, denoms: { 'native:uluna': { state: '100', events: String(uluna), coverage_pct: uluna }, 'cw20:astro': { state: '100', events: String(astro), coverage_pct: astro } } });
     REPO = fixNotTla(healthyRepo());
-    REPO['tla-voting/events/heartbeat.json'].bribe_capture = { mean: 0.9, per_denom: { uluna: 0.95, astro: 0.9 } };
+    REPO[BS].bribe_capture = capOf(49, 95, 90);
     out = await M.run();   // first observation — baseline
     check('R5a first observation ok (no baseline)', out.invariants.tribute_stream_coverage.status === 'ok' && /first observation/.test(out.invariants.tribute_stream_coverage.detail));
-    REPO['tla-voting/events/heartbeat.json'].bribe_capture = { mean: 0.8, per_denom: { uluna: 0.7, astro: 0.9 } };   // uluna dropped
+    out = await M.run();   // the same harvest an hour later
+    check('R5a2 the same harvest an hour later: ok, and says it is the same harvest', out.invariants.tribute_stream_coverage.status === 'ok' && /same harvest as the previous run/.test(out.invariants.tribute_stream_coverage.detail), out.invariants.tribute_stream_coverage);
+    REPO[BS].bribe_capture = capOf(50, 70, 90);   // next round: uluna dropped
     out = await M.run();
-    check('R5b drop → violation with denom named', out.invariants.tribute_stream_coverage.status === 'violation' && out.invariants.tribute_stream_coverage.measured.drops[0].denom === 'uluna', out.invariants.tribute_stream_coverage.measured);
-    REPO['tla-voting/events/heartbeat.json'].bribe_capture = { mean: 0.92, per_denom: { uluna: 0.96, astro: 0.9 } };   // recovered/increase
+    check('R5b drop → violation with denom named', out.invariants.tribute_stream_coverage.status === 'violation' && out.invariants.tribute_stream_coverage.measured.drops[0].denom === 'native:uluna' && /native:uluna 95% → 70%/.test(out.invariants.tribute_stream_coverage.detail), out.invariants.tribute_stream_coverage);
+    REPO[BS].bribe_capture = capOf(51, 96, 90);   // recovered/increase
     out = await M.run();
     check('R5c increase → ok, no drops', out.invariants.tribute_stream_coverage.status === 'ok' && /no drops/.test(out.invariants.tribute_stream_coverage.detail));
+    REPO[BS].bribe_capture = capOf(52, 100, 90); out = await M.run();
+    REPO[BS].bribe_capture = capOf(53, 116.84, 90); out = await M.run();   // events add up to more than the state
+    REPO[BS].bribe_capture = capOf(54, 100, 90); out = await M.run();      // back to exactly the state: 117 % → 100 % is not a drop
+    check('R5d 117 % → 100 % is not a drop (seen in full both times)', out.invariants.tribute_stream_coverage.status === 'ok' && /no drops/.test(out.invariants.tribute_stream_coverage.detail), out.invariants.tribute_stream_coverage);
+    // the block only in the hourly events heartbeat (the run that harvested) is still read
+    REPO = fixNotTla(healthyRepo()); delete REPO[BS].bribe_capture; REPO['tla-voting/events/heartbeat.json'].bribe_capture = capOf(49, 100, 100);
+    out = await M.run();
+    check('R5e capture present only in the events heartbeat is read too', out.invariants.tribute_stream_coverage.status === 'ok' && out.invariants.tribute_stream_coverage.measured.period === 49);
+    // neither heartbeat carries it: skipped, and the detail says where it is written
+    REPO = fixNotTla(healthyRepo()); delete REPO[BS].bribe_capture;
+    out = await M.run();
+    check('R5f no capture anywhere → skipped + declared', out.invariants.tribute_stream_coverage.status === 'skipped' && /written at the first harvest after an epoch flip/.test(out.invariants.tribute_stream_coverage.detail) && out.meta.status === 'skipped');
+    REPO = fixNotTla(healthyRepo()); REPO[BS].bribe_capture = capOf(49, 96, 90); out = await M.run();   // leave a baseline in place for R6
 
     console.log('— R6: history never-shrink guard —');
     REPO['system-health/history/2026/07.json'].runs.length ? null : null;
     const runsBefore = REPO['system-health/history/2026/07.json'].runs.length;
     out = await M.run();
     check('R6 append exactly one', REPO['system-health/history/2026/07.json'].runs.length === runsBefore + 1);
-    check('R6 run summary carries coverage baseline', REPO['system-health/history/2026/07.json'].runs.at(-1).tribute_coverage.per_denom.uluna === 0.96);
+    check('R6 run summary carries coverage baseline ({ period, per_denom } as fractions)', REPO['system-health/history/2026/07.json'].runs.at(-1).tribute_coverage.per_denom['native:uluna'] === 0.96 && REPO['system-health/history/2026/07.json'].runs.at(-1).tribute_coverage.period === 49);
 
     console.log('— R8: INV8 nft_listings_reconcile (1.0.9) —');
     REPO = fixNotTla(healthyRepo());
@@ -419,6 +438,28 @@ function fixNotTla(repo) { repo['dex-data/astroport/snapshots/current.json'].poo
     REPO['dex-data/astroport/snapshots/current.json'].pools.push({ pool_name: 'REAL', pool_address: 'pairF', bucket: null, tvl_usd: 10, raw: { staked_liquidity_usd: 80 } });
     out = await M.run();
     check('R9 staked $80 > depth $10 is still a violation; measured stays the list of pools', out.invariants.staked_le_depth.status === 'violation' && Array.isArray(out.invariants.staked_le_depth.measured) && out.invariants.staked_le_depth.measured.length === 1 && out.invariants.staked_le_depth.measured[0].pool === 'REAL' && /1 more under \$50/.test(out.invariants.staked_le_depth.detail), out.invariants.staked_le_depth);
+
+    console.log('— R12 (1.1.2): bucket_label_agreement — every bucket a pair is filed under; the hourly snapshot decides "dust" when the dex has no figure —');
+    // a pair the catalog files under two gauges (stable, paid — and project, off the list, the LAST row): the dex label "stable" agrees
+    REPO = fixNotTla(healthyRepo());
+    REPO['token-catalog/snapshots/current.json'].pools.push({ bucket: 'project', gauge_status: 'dewhitelisted', total_vp: '0', architecture: { pair_address: 'pairA' }, gauge_pool_id: 'g1', underlyings: ['x'] });
+    out = await M.run();
+    { const v = out.invariants.bucket_label_agreement;
+      check('R12 a pair filed under two buckets: the dex label agrees with one of them → ok (the old join compared against the last row only)', v.status === 'ok' && !(v.measured.dust_ignored || []).length, v); }
+    // a real disagreement where the dex adapter has no stake figure
+    const noFigure = (snapStake) => { REPO = fixNotTla(healthyRepo());
+      REPO['token-catalog/snapshots/current.json'].pools.push({ bucket: 'stable', gauge_status: 'dewhitelisted', total_vp: '0', architecture: { pair_address: 'pairE' }, gauge_pool_id: 'g9', underlyings: ['x'] });
+      REPO['dex-data/astroport/snapshots/current.json'].pools.push({ pool_name: 'NO-FIGURE', pool_address: 'pairE', bucket: 'project', tvl_usd: 2, raw: { staked_liquidity_usd: null } });
+      if (snapStake !== undefined) REPO['member-data/tla-snapshot/current.json'].pools.push({ name: 'NO-FIGURE', bucket: 'project', status: 'voted_but_below_threshold', gauge_whitelisted: true, gauge_pool_id: 'g9', pool_address: 'pairE', staked_in_tla_usd: snapStake, voting_power: { vp_human: 0, fixed_human: 0, total_human: 0 }, rewards: { source: 'gauge_infos_next_fallback', annual_emissions_luna: 0 } }); };
+    noFigure(0); out = await M.run();
+    { const v = out.invariants.bucket_label_agreement;
+      check('R12 no stake figure from the dex, $0 in the hourly snapshot → listed as dust, with where the figure came from', v.status === 'ok' && v.measured.dust_ignored.length === 1 && v.measured.dust_ignored[0].staked_from === 'tla-snapshot' && v.measured.dust_ignored[0].catalog_bucket === 'stable', v); }
+    noFigure(500); out = await M.run();
+    { const v = out.invariants.bucket_label_agreement;
+      check('R12 …$500 in the hourly snapshot → raised', v.status === 'violation' && v.measured[0].pool === 'NO-FIGURE' && v.measured[0].staked_usd === 500, v); }
+    noFigure(undefined); out = await M.run();
+    { const v = out.invariants.bucket_label_agreement;
+      check('R12 …no figure anywhere → raised (unknown is not dust)', v.status === 'violation' && v.measured[0].staked_usd === null && v.measured[0].staked_from === null, v); }
 
     console.log(`\n=== MOCK GATE: ${PASS} passed, ${FAIL} failed ===`);
     process.exit(FAIL ? 1 : 0);
