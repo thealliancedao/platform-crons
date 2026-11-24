@@ -9,7 +9,7 @@
 // series = { snapshots: [{date, epoch, pools:[{gauge_pool_id,name,bucket,status,vp,staked_usd}]}] (asc by date),
 //            apr: [{date, pools:[{gauge_pool_id,name,gauge,apr}]}], volume: [{date, pools:[{pool_address,name,bucket,vol}]}] }
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';   // 1.0.1 (2026-11-24): a pool tla-snapshot 1.2.0 marks off its gauge's list is said to be exactly that, not "dropped below the threshold"
 const num = (v) => (v == null || !isFinite(Number(v))) ? null : Number(v);
 const D = 864e5;
 function scale(params, m) { const o = {}; for (const [k, v] of Object.entries(params || {})) o[k] = (typeof v === 'number' && /^(min_|multiple_)/.test(k)) ? v * m : v; return o; }
@@ -32,7 +32,7 @@ function evalRules(cfg, series, mult) {
       const big = (x, y) => Math.max(num(x && x.vp) || 0, num(y && y.vp) || 0) >= p.min_vp;
       for (const [g, x] of Object.entries(byB)) { const q = byA[g]; if (!q) { if (big(x)) out.push(row({ date: b.date, rule: 'gauge_set_change', kind: 'added', gauge_pool_id: g, name: x.name, bucket: x.bucket, label: `${nm(x, g)} joined the TLA gauge list (${x.bucket} bucket)`, value: `${((num(x.vp) || 0) / 1e6).toFixed(2)}M VP · ${x.status || ''}`, raw: { status: x.status, vp: x.vp } })); }
         else if ((q.status || '') !== (x.status || '') && big(x, q)) { const f = MEAN[`${q.status}>${x.status}`]; const v0 = num(q.vp) || 0, v1 = num(x.vp) || 0, dpct = v0 ? (v1 - v0) / v0 * 100 : null; const vpTxt = dpct != null && Math.abs(dpct) >= 10 ? ` (VP ${(v0 / 1e6).toFixed(2)}M → ${(v1 / 1e6).toFixed(2)}M, ${dpct >= 0 ? '+' : ''}${dpct.toFixed(0)}%)` : '';
-          out.push(row({ date: b.date, rule: 'gauge_set_change', kind: 'status', gauge_pool_id: g, name: x.name, bucket: x.bucket, label: (f ? f(nm(x, g)) : `${nm(x, g)}: ${q.status || '?'} → ${x.status || '?'}`) + vpTxt, value: `status ${q.status || '?'} → ${x.status || '?'} · ${(v1 / 1e6).toFixed(2)}M VP now`, raw: { from: q.status, to: x.status, vp_from: v0, vp_to: v1, vp_pct: dpct } })); } }
+          out.push(row({ date: b.date, rule: 'gauge_set_change', kind: 'status', gauge_pool_id: g, name: x.name, bucket: x.bucket, label: (x.status_reason === 'dewhitelisted' ? `${nm(x, g)} is off the ${x.bucket} gauge's reward list — the votes left on it earn nothing` : (f ? f(nm(x, g)) : `${nm(x, g)}: ${q.status || '?'} → ${x.status || '?'}`)) + vpTxt, value: `status ${q.status || '?'} → ${x.status || '?'} · ${(v1 / 1e6).toFixed(2)}M VP now`, raw: { from: q.status, to: x.status, vp_from: v0, vp_to: v1, vp_pct: dpct } })); } }
       for (const [g, q] of Object.entries(byA)) if (!byB[g] && big(q)) out.push(row({ date: b.date, rule: 'gauge_set_change', kind: 'removed', gauge_pool_id: g, name: q.name, bucket: q.bucket, label: `${nm(q, g)} left the TLA gauge list (${q.bucket} bucket)`, value: `was ${((num(q.vp) || 0) / 1e6).toFixed(2)}M VP · ${q.status || ''}`, raw: { was: q.status, vp: q.vp } }));
     }
     const bucketsA = {}, bucketsB = {}; for (const p of a.pools) bucketsA[p.bucket] = (bucketsA[p.bucket] || 0) + (num(p.vp) || 0); for (const p of b.pools) bucketsB[p.bucket] = (bucketsB[p.bucket] || 0) + (num(p.vp) || 0);
@@ -70,7 +70,7 @@ function evaluate(config, series, opts) {
   return { version: VERSION, evaluated_at: new Date(now).toISOString(), history: { days: histDays, from: histCut, snapshots: trimmed.snapshots.length, apr_days: trimmed.apr.length, volume_days: trimmed.volume.length }, rows: rows1, stats, multipliers: mults };
 }
 // adapters: raw product docs → series shapes (kept here so the mock and the cron share one reading)
-function snapshotOf(doc, date) { return { date, epoch: doc.epoch && doc.epoch.currentEpoch != null ? doc.epoch.currentEpoch : null, pools: (doc.pools || []).map(p => ({ gauge_pool_id: p.gauge_pool_id, name: p.name, bucket: p.bucket, status: p.status, vp: p.voting_power && p.voting_power.vp_human, staked_usd: p.staked_in_tla_usd })) }; }
+function snapshotOf(doc, date) { return { date, epoch: doc.epoch && doc.epoch.currentEpoch != null ? doc.epoch.currentEpoch : null, pools: (doc.pools || []).map(p => ({ gauge_pool_id: p.gauge_pool_id, name: p.name, bucket: p.bucket, status: p.status, status_reason: p.status_reason || null, vp: p.voting_power && p.voting_power.vp_human, staked_usd: p.staked_in_tla_usd })) }; }
 function aprOf(doc, date) { return { date, pools: (doc.pools || []).map(p => ({ gauge_pool_id: p.gauge_pool_id, name: p.pool_name, gauge: p.gauge, apr: p.eris_apr_pct })) }; }
 function volumeOf(doc, date) { const pools = Array.isArray(doc.pools) ? doc.pools : Object.values(doc.pools || {}); return { date, pools: pools.filter(p => p.tla_relevant).map(p => ({ pool_address: p.pool_address, name: p.pool_name, bucket: p.bucket, vol: p.volume_24h_usd })) }; }
 module.exports = { VERSION, evaluate, evalRules, snapshotOf, aprOf, volumeOf, scale };

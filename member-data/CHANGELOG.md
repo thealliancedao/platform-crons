@@ -1,5 +1,34 @@
 # member-data — changelog
 
+## 1.7.1 — 2026-11-24 — tla-snapshot 1.2.0: USDC.inj is named; a pool off its gauge's list earns nothing
+
+Found by the pre-promotion health check of TLA Stats (the page read TLA TVL $697.8K where the Eris-method feed read $1.02M, and
+"Epoch rewards" 380,709 LUNA where the chain distributes ~339K).
+
+- **Names.** `tla-snapshot.js` named IBC tokens from a hand registry only. USDC.inj was never added, so since its pools joined the
+  gauges (period 204) that side read `symbol: null / price_source: no_symbol`: four pools had no USD value, no staked value and no APR —
+  LUNA-USDC.inj among them, the largest TLA pool. An IBC denom the registry does not know is now named from the price feed's own
+  denom (the key the price lookup uses) and the token-catalog (`lib/denom-symbol.js`), decimals from the token-catalog only; with no
+  decimals it stays unknown. Registry entries are untouched.
+- **Reward list.** A pool was `active` when it held ≥ 1 % of its gauge's votes in `gauge_infos`. An asset taken off a gauge's list keeps
+  its old votes there but is in no distribution; nine such pools were `active` with an estimated share on top of a chain distribution
+  that already sums to 100 %. The staking contracts' `whitelisted_asset_details` is now read (the token-catalog's `gauge_status` stands
+  in when that read fails; a list that does not name what the chain is paying is dropped, not obeyed). Such a pool is
+  `voted_but_below_threshold` — the existing "has votes, earns nothing" class, so no reader meets a new status value — with
+  `status_reason: 'dewhitelisted'`, `gauge_whitelisted: false`, and rewards of zero with `source: 'dewhitelisted'`.
+- **Additive fields:** `version` (file + heartbeat), `voting_power.{fixed_human,total_human,pct_of_reward_list}`, per bucket
+  `bucket_vp_total_human / reward_list_vp_total_human / off_list_vp_total_human / dewhitelisted_count`,
+  `totals.dewhitelisted_pools_count`, `totals.rewards.{pools_dewhitelisted,tla_tvl_in_distribution_usd}`; heartbeat
+  `stats.{dewhitelisted_pools,unpriced_paid_pools,reward_list_unread}`. Nothing renamed or removed.
+- `lib/tla-alerts.js` 1.0.1: a pool that moves to that class because it is off the list is said to be exactly that.
+- Gate `mock-run-snapshot.js` 19/19 on the real files of 2026-11-24: the four USDC.inj pools value within 3 % of the Eris-method feed
+  (LUNA-USDC.inj $259,776 vs $259,705, APR 49.9 % vs 49.9 %); TLA staked in the paid pools $1,015,424 vs $1,015,773; per-pool
+  emissions add up to 100.2 % of the emission (the published file: 112.1 %).
+- Not changed (to be settled against the reference screen): pool VP and "Total VP" are still the boost part only
+  (`voting_power`); the chain's distribution counts boost + fixed. Both are now in the file.
+- Known: `mock-run-tla-alerts.js` has one failing calibration check on today's history (`pool_apr_move` 15.5/month vs a limit of
+  12) — it fails the same way without this change.
+
 
 ## 1.7.0 — 2026-10-13 — the wallet data + history layer the aDAO dashboard and other apps read
 

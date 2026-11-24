@@ -53,6 +53,22 @@
 const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
+const { buildResolver: buildDenomResolver } = require('../lib/denom-symbol.js');
+
+// 1.2.0 (2026-11-24) — two defects found by the pre-promotion health check, both fixed at the source:
+//   (a) an IBC token the hand registry below does not know is now named from the price feed's own denom (the key the
+//       PriceResolver looks up) and the token-catalog (lib/denom-symbol.js) instead of being left `symbol: null`. USDC.inj
+//       was unnamed since its pools joined the gauges (period 204): four pools read staked $0 / no APR — LUNA-USDC.inj among
+//       them, the largest TLA pool — and TLA TVL read about a third low.
+//   (b) an asset taken OFF a gauge's list keeps its old votes in gauge_infos but is in no distribution. It was classed
+//       `active` and given an estimated share on top of a chain distribution that already sums to 100 % (nine pools; the
+//       sum of per-pool emissions ran ~12 % over the emission). The staking contracts' `whitelisted_asset_details` is now
+//       read: such a pool is `voted_but_below_threshold` (the existing "has votes, earns nothing" class — no new status value
+//       for the many readers of this file), flagged `gauge_whitelisted: false` + `status_reason: 'dewhitelisted'`, and its
+//       rewards are zero with `source: 'dewhitelisted'` — never an estimate.
+//   Additive only: `version`, `voting_power.{fixed_human,total_human,pct_of_reward_list}`, per-bucket reward-list VP,
+//   `totals.dewhitelisted_pools_count`, `totals.rewards.{pools_dewhitelisted,tla_tvl_in_distribution_usd}`.
+const SNAPSHOT_VERSION = 'tla-snapshot-1.2.0';
 
 // -----------------------------------------------------------------------------
 // CONFIG
@@ -446,6 +462,7 @@ async function fetchChainState() {
         stableGauge, projectGauge, bluechipGauge, singleGauge,
         stableStaked, projectStaked, bluechipStaked, singleStaked,
         distributions,
+        stableWl, projectWl, bluechipWl, singleWl,
     ] = await Promise.all([
         queryContract(TLA_GAUGE_CONTROLLER, { gauge_infos: { gauge: 'stable',   time: 'next' } }),
         queryContract(TLA_GAUGE_CONTROLLER, { gauge_infos: { gauge: 'project',  time: 'next' } }),
@@ -456,6 +473,12 @@ async function fetchChainState() {
         queryContract(TLA_STAKING_CONTRACTS.bluechip, { total_staked_balances: {} }),
         queryContract(TLA_STAKING_CONTRACTS.single,   { total_staked_balances: {} }),
         queryContract(TLA_GAUGE_CONTROLLER, { distributions: { time: "current" } }),
+        // 1.2.0: each gauge's own asset list with `whitelisted: true|false` (the complete set — active, below the
+        // threshold and taken off the list). NOT core: a failed read is null and the token-catalog stands in downstream.
+        queryContract(TLA_STAKING_CONTRACTS.stable,   { whitelisted_asset_details: {} }).catch(() => null),
+        queryContract(TLA_STAKING_CONTRACTS.project,  { whitelisted_asset_details: {} }).catch(() => null),
+        queryContract(TLA_STAKING_CONTRACTS.bluechip, { whitelisted_asset_details: {} }).catch(() => null),
+        queryContract(TLA_STAKING_CONTRACTS.single,   { whitelisted_asset_details: {} }).catch(() => null),
     ]);
 
     // COMPLETENESS GATE — these chain queries ARE the snapshot; a null is a query FAILURE
@@ -493,7 +516,75 @@ async function fetchChainState() {
     }
     console.log(`  distributions: ${distributions?.length || 0} bucket entries`);
 
-    return { gauges, stakedBalances, distributions: distributions || [] };
+    // 1.2.0: reward-list truth per bucket (null = that read failed or does not agree with the chain's own distribution)
+    const whitelist = buildWhitelistTruth({ stable: stableWl, project: projectWl, bluechip: bluechipWl, single: singleWl }, distributions || []);
+    for (const b of BUCKETS) {
+        const m = whitelist[b];
+        console.log(`  ${b}: reward list ${m ? `${[...m.values()].filter(Boolean).length} on / ${[...m.values()].filter(v => !v).length} off` : 'UNREAD (token-catalog stands in)'}`);
+    }
+
+    return { gauges, stakedBalances, distributions: distributions || [], whitelist };
+}
+
+// 1.2.0 — `whitelisted_asset_details` rows ({ info: {cw20|native}, config, whitelisted }) → Map(gauge_pool_id → true|false).
+// null when the answer is not a list (the read failed). Never guessed.
+function whitelistOf(rows) {
+    if (!Array.isArray(rows)) return null;
+    const m = new Map();
+    for (const r of rows) {
+        const info = r && r.info;
+        if (!info || typeof r.whitelisted !== 'boolean') continue;
+        const key = info.cw20 ? `cw20:${info.cw20}` : (info.native ? `native:${info.native}` : null);
+        if (key) m.set(key, r.whitelisted);
+    }
+    return m;
+}
+
+// A bucket's list is only trusted when it agrees with the chain's own current distribution: the chain pays whitelisted
+// assets only, so the assets it is paying now must (nearly all) read `true`. A list that fails this — a key-format change,
+// a truncated answer — is dropped (null) rather than allowed to switch every pool off.
+function buildWhitelistTruth(rowsByBucket, distributions) {
+    const out = {};
+    for (const b of BUCKETS) {
+        const m = whitelistOf(rowsByBucket[b]);
+        if (!m || m.size === 0) { out[b] = null; continue; }
+        const paid = [];
+        for (const d of (Array.isArray(distributions) ? distributions : [])) {
+            if (d.gauge !== b) continue;
+            for (const a of (d.assets || [])) {
+                const key = a.asset?.cw20 ? `cw20:${a.asset.cw20}` : (a.asset?.native ? `native:${a.asset.native}` : null);
+                if (key) paid.push(key);
+            }
+        }
+        const agree = paid.filter(k => m.get(k) === true).length;
+        if (paid.length > 0 && agree * 2 < paid.length) {
+            console.warn(`  ⚠ ${b}: whitelisted_asset_details names only ${agree}/${paid.length} of the assets the chain is paying — list not trusted this run`);
+            out[b] = null; continue;
+        }
+        out[b] = m;
+    }
+    return out;
+}
+
+// Is this gauge entry on its bucket's reward list? chain truth first; the token-catalog's `gauge_status` (the same chain
+// query, a few hours older) when the chain read is missing; null when neither knows — the pool is then left as it was.
+function whitelistFor(bucket, poolId, chainWhitelist, catalogStatus) {
+    const m = chainWhitelist && chainWhitelist[bucket];
+    // absent from the gauge's list = not allowed there (a stray vote), same as taken off it
+    if (m) return { whitelisted: m.get(poolId) === true, source: 'chain:whitelisted_asset_details' };
+    const gs = catalogStatus && catalogStatus.get(`${bucket}|${poolId}`);
+    if (gs) return { whitelisted: gs !== 'dewhitelisted', source: 'token-catalog:gauge_status' };
+    return { whitelisted: null, source: null };
+}
+
+// The status vocabulary is unchanged (active · voted_but_below_threshold · zero_vp · deprecated). An asset taken off its
+// gauge's list joins the "has votes, earns nothing" class whatever its vote share; the reason is carried beside it.
+function poolStatus({ isDeprecated, whitelisted, pctOfBucket, vp }) {
+    if (isDeprecated) return { status: 'deprecated', reason: null };
+    if (whitelisted === false) return { status: vp > 0 ? 'voted_but_below_threshold' : 'zero_vp', reason: 'dewhitelisted' };
+    if (pctOfBucket >= ACTIVE_THRESHOLD_PCT) return { status: 'active', reason: null };
+    if (vp > 0) return { status: 'voted_but_below_threshold', reason: null };
+    return { status: 'zero_vp', reason: null };
 }
 
 // -----------------------------------------------------------------------------
@@ -562,7 +653,7 @@ async function resolvePoolId(poolId) {
 // PHASE 4: BUILD POOL CATALOG
 // -----------------------------------------------------------------------------
 
-async function buildPoolCatalog(chainState, astroportData) {
+async function buildPoolCatalog(chainState, astroportData, tokenCatalog) {
     console.log('🔍 Building pool catalog (resolving pool_ids)...');
 
     // Map from astroport-pool-data
@@ -594,11 +685,25 @@ async function buildPoolCatalog(chainState, astroportData) {
         }
     }
 
+    // 1.2.0: reward-list truth per entry + the chain's own vote basis (voting_power + fixed_amount over the listed assets —
+    // what `distributions.total_gauge_vp` is; proven on the 2026-10-09 read: 26.391M = the three paid + two small listed pools)
+    const catalogStatus = new Map();
+    for (const p of (tokenCatalog && Array.isArray(tokenCatalog.pools) ? tokenCatalog.pools : [])) {
+        if (p && p.gauge_pool_id && p.bucket && p.gauge_status) catalogStatus.set(`${p.bucket}|${p.gauge_pool_id}`, p.gauge_status);
+    }
+    const totalOf = (v) => (parseFloat(v?.voting_power) || 0) + (parseFloat(v?.fixed_amount) || 0);
+    const rewardListVp = {};
+    for (const bucket of BUCKETS) {
+        rewardListVp[bucket] = chainState.gauges[bucket].reduce((sum, [poolId, v]) =>
+            sum + (whitelistFor(bucket, poolId, chainState.whitelist, catalogStatus).whitelisted === false ? 0 : totalOf(v)), 0);
+    }
+
     // Resolve each pool entry in parallel batches of 8
     const allEntries = [];
     for (const bucket of BUCKETS) {
         for (const [poolId, voting] of chainState.gauges[bucket]) {
-            allEntries.push({ bucket, poolId, voting, bucketVp: bucketVps[bucket] });
+            const wl = whitelistFor(bucket, poolId, chainState.whitelist, catalogStatus);
+            allEntries.push({ bucket, poolId, voting, bucketVp: bucketVps[bucket], whitelisted: wl.whitelisted, whitelistSource: wl.source, rewardListVp: rewardListVp[bucket] });
         }
     }
     console.log(`  Resolving ${allEntries.length} pool_ids...`);
@@ -630,6 +735,10 @@ async function enrichPool(entry, ctx) {
 
     const vp = parseFloat(voting?.voting_power) || 0;
     const pctOfBucket = bucketVp > 0 ? (vp / bucketVp) * 100 : 0;
+    // 1.2.0 (additive): the fixed part of the vote and the share on the chain's own basis (listed assets, boost + fixed)
+    const vpFixed = parseFloat(voting?.fixed_amount) || 0;
+    const whitelisted = entry.whitelisted === undefined ? null : entry.whitelisted;
+    const pctOfRewardList = (whitelisted !== false && entry.rewardListVp > 0) ? ((vp + vpFixed) / entry.rewardListVp) * 100 : null;
 
     // Pool identity from astroport cron data (most reliable for LP names)
     const astroEntry = resolved.poolAddr ? astroportByPool.get(resolved.poolAddr) : null;
@@ -642,11 +751,7 @@ async function enrichPool(entry, ctx) {
     const isAstroportPool = !!astroEntry;
     const isSsPool = !!ssEntry;
     const isDeprecated = astroEntry?.deprecated === true;
-    let status;
-    if (isDeprecated) status = 'deprecated';
-    else if (pctOfBucket >= ACTIVE_THRESHOLD_PCT) status = 'active';
-    else if (vp > 0) status = 'voted_but_below_threshold';
-    else status = 'zero_vp';
+    const { status, reason: statusReason } = poolStatus({ isDeprecated, whitelisted, pctOfBucket, vp });
 
     // ampLP info from staking contract
     let assetKey;
@@ -761,12 +866,18 @@ async function enrichPool(entry, ctx) {
         is_single: resolved.isSingle,
         source_type: resolved.sourceType,
         status,
+        status_reason: statusReason,                    // 1.2.0: 'dewhitelisted' when the asset is off its gauge's list, else null
+        gauge_whitelisted: whitelisted,                 // 1.2.0: true | false | null (unread — never guessed)
+        gauge_whitelisted_source: entry.whitelistSource || null,
 
         // Voting power
         voting_power: {
             vp,
             vp_human: vp / 1e6,  // ampLP-equivalent display units
             pct_of_bucket: pctOfBucket,
+            fixed_human: vpFixed / 1e6,                 // 1.2.0 (additive)
+            total_human: (vp + vpFixed) / 1e6,          // boost + fixed — the figure the chain's distribution records as total_vp
+            pct_of_reward_list: pctOfRewardList,        // share among the gauge's listed assets (the chain's 1 % basis); null when off the list
         },
 
         // Depth + TVL
@@ -886,10 +997,32 @@ const IBC_REGISTRY = {
 };
 
 class TokenResolver {
-    constructor(queryContractFn) {
+    // opts (1.2.0): { feedByDenom: Map(denom → symbol the price feed is keyed by), catalog: token-catalog doc }
+    constructor(queryContractFn, opts = {}) {
         this.queryContract = queryContractFn;
         this.cache = new Map();      // key (denom or cw20:addr) → { symbol, decimals }
-        this.stats = { hits: 0, queries: 0, ibc_known: 0, ibc_unknown: 0, factory: 0, failures: 0 };
+        this.stats = { hits: 0, queries: 0, ibc_known: 0, ibc_feed: 0, ibc_catalog: 0, ibc_unknown: 0, factory: 0, failures: 0 };
+        this.feedByDenom = opts.feedByDenom instanceof Map ? opts.feedByDenom : new Map();
+        const tokens = (opts.catalog && Array.isArray(opts.catalog.tokens)) ? opts.catalog.tokens : [];
+        this.catalogResolve = tokens.length ? buildDenomResolver(tokens) : null;
+        // decimals are read strictly (the shared resolver defaults to 6; a guessed scale can be wrong by 10^12)
+        this.catalogDecimals = new Map();
+        for (const t of tokens) {
+            if (!t || !t.denom) continue;
+            const d = (t.effective && t.effective.decimals != null) ? t.effective.decimals : (t.discovered && t.discovered.decimals != null ? t.discovered.decimals : null);
+            if (d != null) this.catalogDecimals.set(String(t.denom).replace(/^(native|cw20):/, ''), Number(d));
+        }
+    }
+
+    // 1.2.0: an IBC denom the hand registry does not know. Symbol = the price feed's key for that denom (so the price
+    // lookup hits), else the token-catalog's name; decimals from the token-catalog only. No decimals → still unknown.
+    _resolveUnregisteredIbc(denom) {
+        const fed = this.feedByDenom.get(denom) || null;
+        const cat = this.catalogResolve ? this.catalogResolve(denom) : null;
+        const symbol = fed || (cat && cat.symbol) || null;
+        const decimals = this.catalogDecimals.has(denom) ? this.catalogDecimals.get(denom) : null;
+        if (!symbol || decimals == null || !Number.isFinite(decimals)) return null;
+        return { symbol, decimals, _source: fed ? 'price-feed-denom' : 'token-catalog' };
     }
 
     // Get { symbol, decimals } for a pool asset info object.
@@ -915,9 +1048,13 @@ class TokenResolver {
             result = { symbol: 'LUNA', decimals: 6 };
         }
         else if (denom.startsWith('ibc/')) {
+            const viaData = IBC_REGISTRY[denom] ? null : this._resolveUnregisteredIbc(denom);
             if (IBC_REGISTRY[denom]) {
                 result = IBC_REGISTRY[denom];
                 this.stats.ibc_known++;
+            } else if (viaData) {
+                result = viaData;
+                if (viaData._source === 'price-feed-denom') this.stats.ibc_feed++; else this.stats.ibc_catalog++;
             } else {
                 // Unknown IBC — leave as null so it shows up clearly in output
                 result = { symbol: null, decimals: 6, _unknown_ibc: denom };
@@ -975,8 +1112,8 @@ class TokenResolver {
 
     printStats(logger = console.log) {
         const s = this.stats;
-        const total = s.hits + s.queries + s.ibc_known + s.ibc_unknown + s.factory;
-        logger(`  Token resolver: ${total} lookups (${s.queries} cw20 queries, ${s.hits} cached, ${s.ibc_known} IBC known, ${s.ibc_unknown} IBC unknown, ${s.factory} factory)`);
+        const total = s.hits + s.queries + s.ibc_known + s.ibc_feed + s.ibc_catalog + s.ibc_unknown + s.factory;
+        logger(`  Token resolver: ${total} lookups (${s.queries} cw20 queries, ${s.hits} cached, ${s.ibc_known} IBC known, ${s.ibc_feed} IBC named by the price feed, ${s.ibc_catalog} by the token-catalog, ${s.ibc_unknown} IBC unknown, ${s.factory} factory)`);
         if (s.ibc_unknown > 0) {
             const unknowns = [...this.cache.entries()].filter(([k, v]) => v._unknown_ibc).map(([k]) => k);
             logger(`  ⚠ Unknown IBC denoms (add to IBC_REGISTRY if needed):`);
@@ -1283,6 +1420,7 @@ function computeRollups(pools, bucketVps) {
         voted_pools_count: 0,
         deprecated_pools_count: 0,
         zero_vp_pools_count: 0,
+        dewhitelisted_pools_count: 0,   // 1.2.0 (additive): off their gauge's list — counted in their vote class above as well
         total_pool_count: pools.length,
     };
     const byBucket = {};
@@ -1294,6 +1432,11 @@ function computeRollups(pools, bucketVps) {
             active_count: 0,
             tla_tvl_usd: 0,
             depth_usd: 0,
+            // 1.2.0 (additive) — boost + fixed, the chain's basis
+            bucket_vp_total_human: 0,          // every vote in the gauge
+            reward_list_vp_total_human: 0,     // on listed assets (what the chain divides by)
+            off_list_vp_total_human: 0,        // old votes left on assets taken off the list — they earn nothing
+            dewhitelisted_count: 0,
         };
     }
 
@@ -1306,10 +1449,16 @@ function computeRollups(pools, bucketVps) {
         if (p.staked_in_tla_usd) totals.tla_tvl_usd += p.staked_in_tla_usd;
         if (p.depth_usd) totals.depth_usd_total += p.depth_usd;
 
+        if (p.gauge_whitelisted === false) totals.dewhitelisted_pools_count++;
+
         const b = byBucket[p.bucket];
         if (b) {
             b.pool_count++;
             if (p.status === 'active') b.active_count++;
+            const tv = p.voting_power?.total_human || 0;
+            b.bucket_vp_total_human += tv;
+            if (p.gauge_whitelisted === false) { b.off_list_vp_total_human += tv; b.dewhitelisted_count++; }
+            else b.reward_list_vp_total_human += tv;
             if (p.staked_in_tla_usd) b.tla_tvl_usd += p.staked_in_tla_usd;
             if (p.depth_usd) b.depth_usd += p.depth_usd;
         }
@@ -1401,6 +1550,8 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
         let computedCount = 0;
         let fromChainDistCount = 0;
         let fromGaugeInfosCount = 0;
+        let dewhitelistedCount = 0;
+        let tvlInDistribution = 0;
 
         for (const pool of pools) {
             try {
@@ -1413,6 +1564,21 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
                 if (distShare != null) {
                     distSource = 'chain_distributions_current';
                     fromChainDistCount++;
+                    if (pool.staked_in_tla_usd) tvlInDistribution += pool.staked_in_tla_usd;
+                } else if (pool.gauge_whitelisted === false) {
+                    // 1.2.0: off its gauge's list — the old votes are still in gauge_infos but the chain pays it nothing,
+                    // this epoch or the next. No estimate.
+                    pool.rewards = {
+                        annual_emissions_luna:        0,
+                        annual_emissions_usd:         0,
+                        weekly_emissions_usd:         0,
+                        approx_apr_pct:               null,
+                        distribution_share_of_bucket: 0,
+                        bucket_weight_of_tla:         bucketShareOfTla[bucket],
+                        source:                       'dewhitelisted',
+                    };
+                    dewhitelistedCount++;
+                    continue;
                 } else {
                     // Fallback to gauge_infos pct (this pool isn't in distributions — likely below 1%)
                     const pctOfBucket = pool.voting_power?.pct_of_bucket;
@@ -1471,6 +1637,8 @@ function computeRewards(pools, byBucket, totals, lunaPriceUsd, distributions) {
             pools_with_rewards:    computedCount,
             pools_from_chain_dist: fromChainDistCount,
             pools_from_gauge_infos_fallback: fromGaugeInfosCount,
+            pools_dewhitelisted: dewhitelistedCount,                 // 1.2.0 (additive)
+            tla_tvl_in_distribution_usd: tvlInDistribution,          // staked value of the pools the chain is paying this epoch
             calibration: {
                 calibrated_at:   REWARDS_CALIBRATION_DATE,
                 source:          'Terra block explorer Alliance Assets page',
@@ -1639,11 +1807,14 @@ async function captureTlaSnapshot() {
     const chainState = await fetchChainState();
 
     // Phase 3: build pool catalog (resolve pool_ids → addresses)
-    const catalog = await buildPoolCatalog(chainState, inputs.astroport);
+    const catalog = await buildPoolCatalog(chainState, inputs.astroport, inputs.tokenCatalog || null);
 
     // Phase 4-5: enrich each pool
     console.log('💎 Enriching pools with LP health, ampLP info, USD valuations...');
-    const tokenResolver = new TokenResolver(queryContract);
+    // 1.2.0: denoms the hand registry does not know are named from the price feed's own denom and the token-catalog
+    const feedByDenom = new Map();
+    for (const [sym, e] of Object.entries(tokenPrices)) if (e && typeof e.denom === 'string' && e.denom) feedByDenom.set(e.denom, sym);
+    const tokenResolver = new TokenResolver(queryContract, { feedByDenom, catalog: inputs.tokenCatalog || null });
     // F1: load yesterday's daily (fallback: day-before) as last-resort price
     // carry — feed-grade sources only, so tainted derivations never propagate.
     const prevDailyPrices = new Map();
@@ -1747,6 +1918,7 @@ async function captureTlaSnapshot() {
     // Final assembly
     const snapshot = {
         schemaVersion: 1,
+        version: SNAPSHOT_VERSION,           // 1.2.0 (additive) — which build wrote this file
         capturedAt: startedAt.toISOString(),
         capturedAtUnix: startedAt.getTime(),
         refreshIntervalMs: REFRESH_INTERVAL_MS,
@@ -1825,6 +1997,7 @@ async function captureTlaSnapshot() {
         const heartbeat = {
             schemaVersion: 1,
             cron: 'tla-snapshot',
+            version: SNAPSHOT_VERSION,
             capturedAt: startedAt.toISOString(),
             capturedAtUnix: startedAt.getTime(),
             runId: `tla-${startedAt.toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}`,
@@ -1835,6 +2008,9 @@ async function captureTlaSnapshot() {
                 total_pools: (snapshot.pools || []).length,
                 active_pools: totals.active_pools_count,
                 voted_pools: totals.voted_pools_count,
+                dewhitelisted_pools: totals.dewhitelisted_pools_count,
+                unpriced_paid_pools: (snapshot.pools || []).filter(p => p.rewards?.source === 'chain_distributions_current' && !(p.staked_in_tla_usd > 0)).map(p => p.name),
+                reward_list_unread: BUCKETS.filter(b => !(chainState.whitelist && chainState.whitelist[b])),
                 source_failures: sourceFailures,
             },
             // Freshness-monitoring fields (catches upstream/chain-frozen failures)
@@ -1871,7 +2047,9 @@ async function captureTlaSnapshot() {
     return snapshot;
 }
 
-module.exports = { main: captureTlaSnapshot };
+module.exports = { main: captureTlaSnapshot,
+    // for the gate (mock-run-snapshot.js) — the live functions, never a copy
+    _internals: { SNAPSHOT_VERSION, BUCKETS, IBC_REGISTRY, TokenResolver, PriceResolver, buildLpHealth, whitelistOf, buildWhitelistTruth, whitelistFor, poolStatus, computeRollups, computeRewards } };
 if (require.main === module) captureTlaSnapshot()
     .then(() => process.exit(0))
     .catch((err) => {
