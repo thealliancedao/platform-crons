@@ -1,5 +1,36 @@
 # tla-flows — changelog
 
+## 3.7.0 — 2026-11-25 — contract changes: the state read, the month index, the dates of the catch-up
+
+- **Why.** A transaction's events say that something changed and who sent it; they often do not say what it is now. The
+  clearest case is the TLA address book (the global config's role → address map): `set_addresses` emits no attributes, so the
+  walk filed "the address book was changed" on 2026-11-24 and could not say which role moved. Nothing has read that address
+  book since the legacy registry cron stopped on 2026-08-11.
+- **The state read** (`lib/contract-state.js`, new). Once a day (`ADMIN_STATE_HOURS`, default 24) — and at once in any run
+  whose walk files a change on a watched contract that is not the weekly routine — the cron reads, over the LCD, each watched
+  contract's `contract_info` (code id, admin, creator, label) and the address book (`{"all_addresses":{}}` on the global
+  config, the answer shape stored on 2026-08-11). The result is `tla-core contract-watch/state/current.json`. Every difference
+  from the read before is filed in the contract-watch stream as a record marked `observed: 'state-read'` — kind `role`
+  (`address_book`: role, before, after), `admin`, `upgrade` (`code_id`) — with the two read times and no transaction or
+  signer: the transaction that did it is in the same stream when the walk saw it.
+- **Never from a failed read.** A contract whose read fails keeps its entry and that entry's own read time; an address book
+  that is not a list of `[role, address]` pairs is an error and nothing is compared; a first sighting files nothing. The
+  differences are filed before the new state is written, under keys that do not depend on the time of the read, so a run
+  that fails in between files them once. `ADMIN_STATE=0` switches the read off.
+- **`config/contracts.js`: `GLOBAL_CONFIG`** — the address book's contract (same address as `docs/curated/known_contracts.json`
+  "Eris Global Config" and the legacy registry's `contracts.global_config`).
+- **`contract-watch/index.json`** — the months of the stream and what each holds (records, changes that are not routine,
+  first / last time). A page cannot list a folder. Written whenever a month changes; a failed index write is reported and
+  does not hold the cursor. `backfill-contract-watch.js` 1.1.0 writes it too.
+- **The catch-up walk records dates**: `first_walked` and `last_walked` (`{ height, time }`) on the job, so the span actually
+  walked can be shown as dates.
+- Heartbeat: `counts.contract_state` (read / skipped, contracts read, kept, address book, differences).
+- Gate `mock-run-contract-watch.js` **58/58** (61/61 with `FULL=1`): the new section S runs the real `run()` against a
+  stand-in LCD that answers from two stored chain reads (the address book of 2026-08-11, the contract inventory of
+  2026-09-29) — first read files nothing; not due inside a day; a role that moved, an admin and a code id that changed are
+  filed once, also when the state write fails in between; a node that answers nothing changes nothing; a change the walk
+  files triggers the read in the same run. The other gates of this folder are unchanged (git-batch 9/9, pnl 32/32).
+
 ## 3.6.2 — 2026-11-25 — the catch-up walk at a usable pace
 
 - First production run of 3.6.1: the 701 blocks of the 2026-11-24 window took four minutes (it found the change: height

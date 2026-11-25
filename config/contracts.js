@@ -42,6 +42,14 @@ const COMPOUNDER = {
     addr: 'terra1zly98gvcec54m3caxlqexce7rus6rzgplz7eketsdz7nh750h2rqvu8uzx',
     role: 'Eris LP compounder (asset_configs, user_infos; mints factory amplp)',
 };
+// The TLA address book. The global config answers {all_addresses:{}} with every role → address pair (the asset gauge, the
+// four staking contracts and their connectors, the zapper, and the controller roles). Address as in tla-core
+// docs/curated/known_contracts.json ("Eris Global Config") and the legacy registry's contracts.global_config.
+// 2026-11-25 (contract-watch state read, tla-flows 3.7.0).
+const GLOBAL_CONFIG = {
+    addr: 'terra1hwxg6s732eparz3ys7sa4t5f64ngpd2w8syrca6z7ckv3fs9uqnsvrpcqa',
+    role: 'TLA global config — the address book (all_addresses: role → address)',
+};
 // Credia Finance (lending, not a dex) — docs/ecosystem-knowledge/credia.facts.json (credia.contracts.portfolio,
 // chain-confirmed 2026-07-16). The Portfolio contract answers {metrics:{}} (every market; dex-data/dexes/credia.js)
 // and {portfolio:{address}} (one user's supplies/borrows; ally-positions 1.1.0). 2026-09-22.
@@ -199,6 +207,7 @@ module.exports = {
     VOTING_ESCROW,
     BRIBE_MANAGER,
     COMPOUNDER,
+    GLOBAL_CONFIG,
     CREDIA,
     ZAPPER,
     STAKING_BUCKETS,

@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.6.2';   // v3.6.2 (2026-11-25): the catch-up walk reads a block and its results together, six heights at once (it managed ~3 blocks a second) · v3.6.1 (2026-11-25): contract-watch catch-up walk — block spans listed in tla-core contract-watch/rewalk.json are walked again for contract changes only, a bounded stretch per run, until done (the months before the forward stream, while the public nodes still hold them) · v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.7.0';   // v3.7.0 (2026-11-25): contract-watch STATE READ — once a day (and in the run that records a change) each watched contract's code id / admin and the TLA address book are read from the chain and every difference from the read before is filed (lib/contract-state.js); contract-watch/index.json lists the stream's months; the catch-up walk records the times of the first and last block it walked · v3.6.2 (2026-11-25): the catch-up walk reads a block and its results together, six heights at once (it managed ~3 blocks a second) · v3.6.1 (2026-11-25): contract-watch catch-up walk — block spans listed in tla-core contract-watch/rewalk.json are walked again for contract changes only, a bounded stretch per run, until done (the months before the forward stream, while the public nodes still hold them) · v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -90,6 +90,7 @@ function realGithubApiRequest(method, apiPath, body, accept) {
 }
 const T = { httpGet: realHttpGet, githubApiRequest: realGithubApiRequest, now: () => new Date() };
 const AX = require('./lib/aux-classifiers.js');
+const CS = require('./lib/contract-state.js');     // 3.7.0: what each watched contract IS now (code id, admin) and the TLA address book — read daily, differences filed
 const AD = require('./lib/admin-classifier.js');   // 3.6.0: contract changes (who changed a list, a setting, a role, the code) from the same events
 
 // ----------------------------------------------------------------------------- aux forward capture (registry-driven — SPEC-registry-extensions-pnl)
@@ -579,10 +580,25 @@ function mergeMonth(existing, incoming) {
 // ── 3.6.0 / 3.6.1 contract-watch: publish, and the catch-up walk ──────────────────────────────────────────────────────
 // One keyed merge per month (k = txhash:n), never-shrink; ok:false when any month could not be read or written — the
 // caller then holds its cursor so the same blocks are walked again.
+const ADMIN_INDEX = 'contract-watch/index.json';
+// 3.7.0: contract-watch/index.json — which months the stream has and how much each holds (a page cannot list a folder).
+// Derived from the month files just written; a failed index write is reported and does NOT hold the cursor (the months are
+// filed, and the next change to any month writes the index again).
+async function updateAdminIndex(touched, addErr) {
+  const mks = Object.keys(touched); if (!mks.length) return;
+  const cur = await apiGetJsonAt(ADMIN_INDEX);
+  if (!cur.ok) { addErr('contract-watch:index', new Error('read failed — the months are filed; the index follows with the next change')); return; }
+  const idx = cur.data && typeof cur.data === 'object' && !Array.isArray(cur.data) ? cur.data : { schemaVersion: 1, product: 'contract-watch/index', note: 'The months of contract-watch/events and what each holds (n = records, changes = records that are not the weekly routine). Written by org-tla-flows whenever a month changes.' };
+  idx.months = idx.months && typeof idx.months === 'object' && !Array.isArray(idx.months) ? idx.months : {};
+  for (const mk of mks) idx.months[mk] = AD.monthSummary(touched[mk]);
+  idx.months = Object.fromEntries(Object.keys(idx.months).sort().map(k => [k, idx.months[k]]));
+  idx.updated_at = T.now().toISOString(); idx.builder = VERSION;
+  try { await publishFile(ADMIN_INDEX, idx, `contract-watch index: ${mks.sort().join(', ')}`); } catch (e) { addErr('contract-watch:index', e); }
+}
 async function publishAdminRecords(recs, addErr) {
   const out = { ok: true, added: 0, by_kind: {} };
   if (!recs || !recs.length) return out;
-  const byM = {};
+  const byM = {}, touched = {};
   for (const r of recs) (byM[monthKey(r.timestamp)] ||= []).push(r);
   for (const mk of Object.keys(byM).sort()) {
     const p2 = `${ADMIN_DIR}/${mk}.json`;
@@ -595,10 +611,11 @@ async function publishAdminRecords(recs, addErr) {
     if (!(m.added + m.upgraded)) continue;
     try {
       await publishFile(p2, JSON.stringify(m.merged), `contract-watch ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`);
-      out.added += m.added + m.upgraded;
+      out.added += m.added + m.upgraded; touched[mk] = m.merged;
       const had = new Set(existing.map(r => r.k)); for (const r of byM[mk]) if (!had.has(r.k)) out.by_kind[r.kind] = (out.by_kind[r.kind] || 0) + 1;
     } catch (e) { addErr(`contract-watch-publish:${mk}`, e); out.ok = false; }
   }
+  await updateAdminIndex(touched, addErr);
   return out;
 }
 
@@ -614,7 +631,7 @@ async function walkAdminOnly(from, to) {
   // 3.6.2: a block and its results are read together, several heights at once (ADMIN_REWALK_CONCURRENCY, default 6). 3.6.1 read
   // the results one block at a time and managed ~3 blocks a second in production (701 blocks took four minutes).
   const CONC = Math.max(1, Number(process.env.ADMIN_REWALK_CONCURRENCY) || 6);
-  const recs = []; let N = from, prunedTo = null; const inFlight = new Map();
+  const recs = []; let N = from, prunedTo = null, first = null, last = null; const inFlight = new Map();
   const read = async (h) => { const blk = await getBlock(h); if (blk === PRUNED || !blk.txsB64.length) return { blk, results: null }; return { blk, results: await getBlockResults(h) }; };
   const launch = (h) => { if (h <= to && !inFlight.has(h)) { const pr = read(h); pr.catch(() => {}); inFlight.set(h, pr); } };   // a read still in flight when the walk stops must not become an unhandled rejection
   for (let h = N; h < N + CONC && h <= to; h++) launch(h);
@@ -629,6 +646,7 @@ async function walkAdminOnly(from, to) {
       for (let h = N; h < N + CONC && h <= to; h++) launch(h);
       continue;
     }
+    if (!first) first = { height: N, time: blk.time }; last = { height: N, time: blk.time };
     if (got.results) {
       for (let i = 0; i < blk.txsB64.length; i++) {
         const res = got.results[i]; if (!res || res.code || !adminTouch(res.events)) continue;
@@ -637,7 +655,7 @@ async function walkAdminOnly(from, to) {
     }
     N++; launch(N + CONC - 1);
   }
-  return { recs, prunedTo };
+  return { recs, prunedTo, first, last };
 }
 async function runAdminRewalk({ addErr, runStartedMs }) {
   if (process.env.ADMIN_REWALK === '0') return null;
@@ -659,6 +677,8 @@ async function runAdminRewalk({ addErr, runStartedMs }) {
     const pub = await publishAdminRecords(w.recs, addErr);
     if (!pub.ok) { err = new Error('publish failed'); break; }                                  // not filed → not advanced
     if (w.prunedTo != null) job.pruned_to = Math.max(Number(job.pruned_to) || 0, w.prunedTo);
+    if (w.first && !job.first_walked) job.first_walked = w.first;                              // 3.7.0: the times of the span actually walked (a page shows dates, not block numbers)
+    if (w.last) job.last_walked = w.last;
     added += pub.added; for (const k in pub.by_kind) by_kind[k] = (by_kind[k] || 0) + pub.by_kind[k];
     walked += end - next + 1; next = end + 1;
   }
@@ -673,6 +693,37 @@ async function runAdminRewalk({ addErr, runStartedMs }) {
   }
   console.log(`  contract-watch catch-up${job.id ? ' ' + job.id : ''}: walked ${walked} block(s) to ${next - 1} of ${to}${job.done ? ' — done' : ''} · +${added} change(s) ${JSON.stringify(by_kind)}${err ? ' · stopped: ' + err.message : ''}`);
   return { job: job.id || null, walked, next, to, found: added, done: !!job.done, error: err ? String(err.message) : null };
+}
+
+// 3.7.0 THE STATE READ. tla-core contract-watch/state/current.json holds, for every watched contract, what the chain
+// reports (code id, admin, creator, label) and the TLA address book (the global config's role → address map). Once every
+// ADMIN_STATE_HOURS (default 24), and in any run whose walk filed a change that is not the weekly routine, the chain is
+// read again and every difference from the read before is filed in the contract-watch stream (lib/contract-state.js:
+// kind role / admin / upgrade, observed: 'state-read', no transaction and no signer). The differences are filed BEFORE the
+// new state is written, under keys that do not depend on the time of the read — a run that fails in between files them
+// once. ADMIN_STATE=0 switches it off.
+const STATE_PATH = 'contract-watch/state/current.json';
+const LCDS = (process.env.LCD_ENDPOINTS || 'https://terra-rest.publicnode.com,https://phoenix-lcd.terra.dev,https://terra-lcd.stakely.io').split(',').map(s => s.trim()).filter(Boolean);
+async function lcdGet(p) { let last; for (const base of LCDS) { try { return await T.httpGet(base + p); } catch (e) { last = e; } } throw last || new Error('no LCD endpoint'); }
+async function runAdminState({ addErr, head, changedNow }) {
+  if (process.env.ADMIN_STATE === '0' || !ADMIN_WATCH) return null;
+  const cur = await apiGetJsonAt(STATE_PATH);
+  if (!cur.ok) { addErr('contract-watch-state', new Error('the state on file could not be read — not reading the chain (a read with nothing to compare against would lose the differences)')); return { skipped: 'state on file unreadable' }; }
+  const prev = cur.data && typeof cur.data === 'object' ? cur.data : null;
+  const HOURS = Math.max(1, Number(process.env.ADMIN_STATE_HOURS) || 24);
+  const age = prev && prev.capturedAt ? (T.now().getTime() - Date.parse(prev.capturedAt)) / 3.6e6 : Infinity;
+  if (!changedNow && age < HOURS) return { skipped: 'not due', age_hours: Math.round(age * 10) / 10 };
+  const { state, stats } = await CS.readState({ get: lcdGet, watch: ADMIN_WATCH, bookContract: C.GLOBAL_CONFIG && C.GLOBAL_CONFIG.addr, prev, now: T.now(), conc: Math.max(1, Number(process.env.ADMIN_STATE_CONCURRENCY) || 4), builder: `${VERSION} · ${CS.VERSION}` });
+  for (const m of stats.errors) addErr('contract-watch-state', new Error(m));
+  if (!stats.read && stats.book !== 'read') { addErr('contract-watch-state', new Error('nothing could be read — the state on file is kept')); return { read: false, contracts: stats.contracts, unread: stats.unread.length, address_book: stats.book }; }
+  state.height = head || null;
+  const diffs = CS.diffState(prev, state, { height: head });
+  const pub = await publishAdminRecords(diffs, addErr);
+  if (!pub.ok) { addErr('contract-watch-state', new Error('the differences could not be filed — the state on file is kept, so the next read finds them again')); return { read: true, filed: false, differences: diffs.length }; }
+  try { await publishFile(STATE_PATH, state, `contract-watch state: ${stats.read}/${stats.contracts} contracts read, address book ${stats.book}${diffs.length ? ` · ${diffs.length} difference(s)` : ''}`); }
+  catch (e) { addErr('contract-watch-state', e); return { read: true, filed: true, state_written: false, differences: diffs.length }; }
+  console.log(`  contract-watch state: ${stats.read}/${stats.contracts} contracts read (${stats.unread.length} kept from the read before), address book ${stats.book} · ${diffs.length} difference(s)${changedNow ? ' · read because this run filed a change' : ''}`);
+  return { read: true, contracts: stats.contracts, read_ok: stats.read, unread: stats.unread.length, address_book: stats.book, differences: diffs.length, by: changedNow ? 'change' : 'schedule' };
 }
 
 async function run() {
@@ -887,6 +938,10 @@ async function run() {
     else console.log(`  pnl: epoch ${pnl.epoch} · ${pnl.summary.wallets} wallets · ${pnl.summary.events} events · ${pnl.mode === 'full' ? "the day's re-price" : 'wallets that did something'} · ${pnl.written} written (${pnl.wallet_files_written} wallet files) · ${pnl.held} re-priced only and held · ${pnl.unchanged} unchanged of ${pnl.files}${pnl.commit ? ' · one commit ' + pnl.commit.slice(0, 7) + (pnl.batch && pnl.batch.attempts > 1 ? ' (rebased ×' + (pnl.batch.attempts - 1) + ')' : '') : ''}`);
   } catch (e) { addErr('pnl', e); }
 
+  // 7c-2. 3.7.0 contract-watch state read (daily, and at once when this run's walk filed a change). Isolated.
+  let adminState = null;
+  try { adminState = await runAdminState({ addErr, head, changedNow: adminCounts.added > 0 && (walk.admin || []).some(r => !r.routine && ADMIN_WATCH && ADMIN_WATCH.has(r.contract)) }); } catch (e) { addErr('contract-watch-state', e); }
+
   // 7d. 3.6.1 contract-watch catch-up walk (only when tla-core contract-watch/rewalk.json lists an unfinished span). Isolated and
   //     time-boxed; it never touches the forward cursor.
   let rewalk = null;
@@ -895,7 +950,7 @@ async function run() {
   // 8. heartbeat
   await publishHeartbeat({
     startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added, contract_changes: adminCounts.added, contracts_watched: ADMIN_WATCH ? ADMIN_WATCH.size : 0, contract_catch_up: rewalk },
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added, contract_changes: adminCounts.added, contracts_watched: ADMIN_WATCH ? ADMIN_WATCH.size : 0, contract_catch_up: rewalk, contract_state: adminState },
     lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });

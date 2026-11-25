@@ -1,6 +1,6 @@
 'use strict';
 /**
- * tla-flows / backfill-contract-watch.js 1.0.0 (2026-11-25) — the contract-watch HISTORY, derived from the walks already
+ * tla-flows / backfill-contract-watch.js 1.1.0 (2026-11-25) — the contract-watch HISTORY, derived from the walks already
  * stored in a tla-core checkout. No chain access: it re-reads transactions the capture kept and applies
  * lib/admin-classifier.js (the same classifier the forward walk uses) to them.
  *
@@ -14,14 +14,14 @@
  * contracts and says nothing about others. The forward walk records upgrades and admin changes for every contract.
  *
  * Output: <outDir>/contract-watch/events/<YYYY>/<MM>.json (arrays, sorted by height then key; the forward stream's
- * shape) and <outDir>/contract-watch/backfill-report.json. Merges into month files already in the checkout — a record
+ * shape), <outDir>/contract-watch/index.json (the months and what each holds) and <outDir>/contract-watch/backfill-report.json. Merges into month files already in the checkout — a record
  * the forward walk already filed is kept, never duplicated (k = txhash:n).
  *
  * Usage: TLA_CORE_DIR=<tla-core checkout> node backfill-contract-watch.js <outDir>
  */
 const fs = require('fs'), path = require('path'), zlib = require('zlib');
 const AD = require('./lib/admin-classifier.js'), AX = require('./lib/aux-classifiers.js');
-const VERSION = 'backfill-contract-watch-1.0.0';
+const VERSION = 'backfill-contract-watch-1.1.0';   // 1.1.0: writes contract-watch/index.json (the months of the stream) with the months
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 const readGz = (p) => JSON.parse(zlib.gunzipSync(fs.readFileSync(p)).toString('utf8'));
 const listParts = (dir) => fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => /\.json\.gz$/.test(f)).sort().map(f => path.join(dir, f)) : [];
@@ -79,12 +79,18 @@ function main(SRC, OUT) {
   const { recs, stats, transactions } = derive(SRC);
   const byM = {}; for (const r of recs) (byM[monthKey(r.timestamp)] ||= []).push(r);
   let written = 0, kept = 0;
+  const idxOnDisk = path.join(SRC, 'contract-watch/index.json');
+  const idx = fs.existsSync(idxOnDisk) ? readJson(idxOnDisk) : { schemaVersion: 1, product: 'contract-watch/index', note: 'The months of contract-watch/events and what each holds (n = records, changes = records that are not the weekly routine). Written by org-tla-flows whenever a month changes.' };
+  idx.months = idx.months || {};
   for (const mk of Object.keys(byM).sort()) {
     const rel = `contract-watch/events/${mk}.json`, onDisk = path.join(SRC, rel);
     const existing = fs.existsSync(onDisk) ? readJson(onDisk) : [];
     const m = AX.mergeKeyed(existing, byM[mk]); kept += existing.length;
     const out = path.join(OUT, rel); fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(out, JSON.stringify(m.merged)); written++;
+    idx.months[mk] = AD.monthSummary(m.merged);
   }
+  idx.months = Object.fromEntries(Object.keys(idx.months).sort().map(k => [k, idx.months[k]])); idx.updated_at = new Date().toISOString(); idx.builder = VERSION;
+  fs.mkdirSync(path.join(OUT, 'contract-watch'), { recursive: true }); fs.writeFileSync(path.join(OUT, 'contract-watch/index.json'), JSON.stringify(idx, null, 2));
   const count = (f) => recs.reduce((o, r) => { const k = f(r); o[k] = (o[k] || 0) + 1; return o; }, {});
   const report = { schemaVersion: 1, product: 'contract-watch/backfill-report', builder: VERSION, classifier: AD.VERSION, builtAt: new Date().toISOString(),
     sources: { fcd_archive: { parts: stats.fcd_parts, txs: stats.fcd_txs, covers: 'contract genesis (2024-08) → 2025-01-07' }, archive_walk: { parts: stats.raw_parts, txs: stats.raw_txs, covers: '2025-01-07 → 2026-06-16' }, unreadable_parts: stats.unreadable },

@@ -11,12 +11,18 @@
 //   F  the FCD-era adapter: message boundaries and lifecycle events rebuilt from a transaction's messages
 //   W  the real run() over a small chain built from those transactions: the month file, keyed and sorted; flows still
 //      captured; a second run adds nothing; a failed publish of the stream holds the cursor; the heartbeat counts
+//   R  the catch-up walk (rewalk.json): a bounded stretch per run, progress and the times of the span walked, pruned blocks
+//   S  3.7.0 the state read (lib/contract-state.js): the address book as the chain answered it on 2026-08-11 and the
+//      contract inventory of 2026-09-29 (both stored in the checkout) through the real run() against a stand-in LCD —
+//      first read files nothing; not due inside a day; a role that moved, an admin and a code id that changed are filed
+//      once (also when the state write fails in between); a change the walk files triggers a read in the same run;
+//      a node that answers nothing changes nothing; contract-watch/index.json lists the months
 //   D  (FULL=1, ~3 min) the whole stored corpus: every reward-list change is a DAO proposal being executed
 // Usage: TLA_CORE_DIR=<tla-core checkout> [FULL=1] node mock-run-contract-watch.js
 const fs = require('fs'), path = require('path'), zlib = require('zlib');
 const SRC = process.env.TLA_CORE_DIR; if (!SRC) { console.error('TLA_CORE_DIR required'); process.exit(1); }
-process.env.GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'mock-token'; process.env.PNL = '0';
-const AD = require('./lib/admin-classifier.js'), BF = require('./backfill-contract-watch.js'), C = require('../config/contracts.js');
+process.env.GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'mock-token'; process.env.PNL = '0'; process.env.ADMIN_STATE = '0';   // the state read is switched on in section S
+const AD = require('./lib/admin-classifier.js'), BF = require('./backfill-contract-watch.js'), C = require('../config/contracts.js'), CS = require('./lib/contract-state.js');
 let pass = 0, fail = 0; const check = (n, ok, x) => { if (ok) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n + (x !== undefined ? ' — ' + JSON.stringify(x).slice(0, 420) : '')); } };
 const readGz = (p) => JSON.parse(zlib.gunzipSync(fs.readFileSync(p)).toString('utf8'));
 const cache = new Map(); const part = (rel) => cache.get(rel) || cache.set(rel, readGz(path.join(SRC, rel))).get(rel);
@@ -84,7 +90,7 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
   const BASE = 5000000; const CHAIN = new Map();   // one transaction per block, 3 blocks apart, plus a block holding an unrelated transaction
   order.forEach((k, i) => { const r = raw(...R[k]); CHAIN.set(BASE + 3 * i, [{ b64: Buffer.from(r.x).toString('base64'), code: r.c || 0, events: r.e, ts: String(r.t).slice(0, 19) + 'Z' }]); });
   CHAIN.set(BASE + 1, [{ b64: Buffer.from('noise').toString('base64'), code: 0, ts: '2025-01-01T00:00:00Z', events: [{ type: 'wasm', attributes: [{ key: '_contract_address', value: 'terra1' + 'z'.repeat(58) }, { key: 'action', value: 'update_config' }] }] }]);
-  const HEAD = BASE + 3 * order.length; const M = { store: {}, failAdminPut: 0, puts: [], head: BASE - 1, prunedBelow: 0 };
+  const HEAD = BASE + 3 * order.length; const M = { store: {}, failAdminPut: 0, failStatePut: 0, puts: [], head: BASE - 1, prunedBelow: 0, lcd: { book: [], info: {}, down: false, calls: 0 } };
   const OLD = BASE - 2000;   // an older stretch of the same chain, for the catch-up walk: the same transactions, 4 blocks apart
   order.forEach((k, i) => { const r = raw(...R[k]); CHAIN.set(OLD + 4 * i, [{ b64: Buffer.from('old' + r.x).toString('base64'), code: r.c || 0, events: r.e, ts: String(r.t).slice(0, 19) + 'Z' }]); });
   const OLD_END = OLD + 4 * order.length;
@@ -94,12 +100,20 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
     if (url.includes('/block_results?height=')) { const N = Number(url.split('height=')[1]); return { result: { txs_results: (CHAIN.get(N) || []).map(t => ({ code: t.code, events: t.events })) } }; }
     if (url.includes('/block?height=')) { const N = Number(url.split('height=')[1]); if (N < M.prunedBelow) throw new Error(`height ${N} is not available, lowest height is ${M.prunedBelow}`); const txs = CHAIN.get(N) || []; return { result: { block: { header: { time: (txs.length ? txs[0].ts : '2025-01-01T00:00:00Z').replace('Z', '.000000000Z') }, data: { txs: txs.map(t => t.b64) } } } }; }
     if (url.includes('raw.githubusercontent.com')) return rawFile((url.match(/main\/(.+?)(\?|$)/) || [])[1]);
+    if (url.includes('/cosmwasm/wasm/v1/contract/')) {   // the stand-in LCD of section S
+      M.lcd.calls++; if (M.lcd.down) throw new Error('mock LCD 503');
+      const m = url.match(/contract\/(terra1[0-9a-z]+)(?:\/smart\/([A-Za-z0-9+/=]+))?$/); if (!m) throw new Error('mock LCD: bad path ' + url);
+      if (m[2]) { const q = JSON.parse(Buffer.from(m[2], 'base64').toString('utf8')); if (m[1] === C.GLOBAL_CONFIG.addr && q.all_addresses && !Object.keys(q.all_addresses).length) return { data: M.lcd.book }; throw new Error('mock LCD: unknown smart query'); }
+      const i = M.lcd.info[m[1]]; if (!i) throw new Error('mock LCD 404: not a contract');
+      return { address: m[1], contract_info: { code_id: i.code_id, creator: i.creator, admin: i.admin || '', label: i.label, created: null, ibc_port_id: '', extension: null } };
+    }
     throw new Error('mock httpGet: unhandled ' + url);
   };
   cron.T.githubApiRequest = async (method, apiPath, body, accept) => {
     const p = decodeURIComponent((apiPath.match(/contents\/(.+?)(\?|$)/) || [])[1] || '');
     if (method === 'GET') { if (M.store[p] === undefined) { const e = new Error('404'); e.statusCode = 404; throw e; } if (/raw/.test(accept || '')) return JSON.parse(M.store[p]); return { sha: 's' + M.store[p].length, content: Buffer.from(M.store[p]).toString('base64') }; }
-    if (method === 'PUT') { if (/^contract-watch\//.test(p) && M.failAdminPut > 0) { M.failAdminPut--; const e = new Error('mock 500'); e.statusCode = 500; throw e; } M.store[p] = Buffer.from(body.content, 'base64').toString('utf8'); M.puts.push(p); return { ok: 1 }; }
+    if (method === 'PUT') { if (p === 'contract-watch/state/current.json' && M.failStatePut > 0) { M.failStatePut--; const e = new Error('mock 500 (state)'); e.statusCode = 500; throw e; }
+      if (/^contract-watch\//.test(p) && M.failAdminPut > 0) { M.failAdminPut--; const e = new Error('mock 500'); e.statusCode = 500; throw e; } M.store[p] = Buffer.from(body.content, 'base64').toString('utf8'); M.puts.push(p); return { ok: 1 }; }
     throw new Error('mock gh: ' + method);
   };
   global.fetch = async () => { throw new Error('mock: no network in the gate'); };   // the pressure duty reads through fetch; P&L is off (PNL=0)
@@ -121,8 +135,10 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
   check('each month file is an array sorted by height then key, keys unique, every record schemaVersion 1 with txhash / height / timestamp / kind / action / signer', months().every(k => { const a = JSON.parse(M.store[k]); return Array.isArray(a) && a.every((r, i) => r.schemaVersion === 1 && r.k && r.txhash && r.height && r.timestamp && r.kind && r.action && 'signer' in r && (i === 0 || a[i - 1].height < r.height || (a[i - 1].height === r.height && a[i - 1].k < r.k))); }) && new Set(all.map(r => r.k)).size === all.length);
   check('kinds on the chain: list 1 · upgrade 1 · admin 1 · governance 4 · epoch 5 · setting 1', (() => { const k = all.reduce((o, r) => { o[r.kind] = (o[r.kind] || 0) + 1; return o; }, {}); return Object.keys(k).length === 6 && k.list === 1 && k.upgrade === 1 && k.admin === 1 && k.governance === 4 && k.epoch === 5 && k.setting === 1; })(), all.reduce((o, r) => { o[r.kind] = (o[r.kind] || 0) + 1; return o; }, {}));
   { const rm = all.find(r => r.action === 'asset/remove_assets'); check('the list change as the walk filed it: proposal 117 of the PD DAO, the two assets, a wallet as signer', rm && rm.via && rm.via.proposal_id === '117' && rm.via.dao === PD && /uLP$/.test(rm.detail.assets) && isWallet(rm.signer), rm); }
+  { const idx = JSON.parse(M.store['contract-watch/index.json'] || 'null'); const ok = idx && months().every(k => { const mk = k.slice('contract-watch/events/'.length, -5), a = JSON.parse(M.store[k]), e = idx.months[mk]; return e && e.n === a.length && e.changes === a.filter(r => !r.routine).length && e.first === a[0].timestamp && e.last === a[a.length - 1].timestamp; });
+    check(`contract-watch/index.json lists every month of the stream with its record and change counts (${idx ? Object.keys(idx.months).length : 0} months)`, !!ok && Object.keys(idx.months).length === months().length && Object.keys(idx.months).join() === Object.keys(idx.months).sort().join(), idx); }
   check('flows are captured as before (the zap deposit is in tla-flows/events, the claim too) and are not in the changes stream', flows().length === 2 && flows().some(f => f.type === 'deposit') && flows().some(f => f.type === 'claim'), flows().map(f => f.type));
-  check('the cursor advanced to the head and the heartbeat counts the changes and the watched set', cursor() === HEAD && hb().counts.contract_changes === want && hb().counts.contracts_watched === watch.size && /^org-tla-flows-3\.6\./.test(hb().version), { cursor: cursor(), counts: hb().counts, v: hb().version });
+  check('the cursor advanced to the head and the heartbeat counts the changes and the watched set', cursor() === HEAD && hb().counts.contract_changes === want && hb().counts.contracts_watched === watch.size && /^org-tla-flows-3\.7\./.test(hb().version), { cursor: cursor(), counts: hb().counts, v: hb().version });
   { const before = JSON.stringify(months().map(k => M.store[k])); const cur = JSON.parse(M.store['tla-flows/events/cursor.json']); cur.last_block = BASE - 1; M.store['tla-flows/events/cursor.json'] = JSON.stringify(cur); M.puts = []; await quiet(() => cron.run());   // walk the same window again
     check('walking the same window again adds nothing and rewrites no month of the stream', JSON.stringify(months().map(k => M.store[k])) === before && !M.puts.some(p => /^contract-watch\//.test(p)) && hb().counts.contract_changes === 0, M.puts.filter(p => /^contract-watch\//.test(p))); }
 
@@ -135,6 +151,7 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
     check('a job of 33 blocks at 20 a run: the first run walks 20, files what those blocks hold and writes its progress', j1.next === OLD + 20 && j1.walked === 20 && !j1.done && n1 > 0 && n1 < 13 && j1.found === n1 && hb().counts.contract_catch_up.walked === 20 && hb().counts.contract_catch_up.done === false, { job: j1, n1 });
     await step(); const j2 = job(), n2 = changes().length - base;
     check('the second run finishes the span: done, all 13 changes of that stretch filed under their own keys', j2.done === true && j2.next === OLD_END + 1 && j2.walked === OLD_END - OLD + 1 && n2 === 13 && j2.found === 13 && !!j2.finished_at, { job: j2, n2 });
+    check('the job records the first and the last block it walked, each with its time (a page shows dates, not block numbers)', j1.first_walked && j1.first_walked.height === OLD && /^\d{4}-\d\d-\d\dT/.test(j1.first_walked.time) && j1.last_walked.height === OLD + 19 && j2.first_walked.height === OLD && j2.last_walked.height === OLD_END && /^\d{4}-\d\d-\d\dT/.test(j2.last_walked.time), { j1: [j1.first_walked, j1.last_walked], j2: [j2.first_walked, j2.last_walked] });
     check('the catch-up walk files contract changes only — the flows of those blocks are not filed again', JSON.stringify(flows()) === flowsBefore);
     await step(); check('every job done → idle; nothing is written', hb().counts.contract_catch_up && hb().counts.contract_catch_up.idle === true && changes().length === base + 13, hb().counts.contract_catch_up);
     const all2 = changes().length; M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'again', from: OLD, to: OLD_END }] }); process.env.ADMIN_REWALK_BLOCKS = '4000';
@@ -143,8 +160,58 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
     await step(); check('a failed publish: progress is NOT advanced and the run reports the error', job().next === undefined && !job().done && hb().counts.contract_catch_up.error === 'publish failed' && hb().counts.contract_catch_up.walked === 0, { job: job(), hb: hb().counts.contract_catch_up });
     M.failAdminPut = 0; await step(); check('…and the next run files the stretch and finishes it', job().done === true && changes().filter(r => r.height < BASE - 5).length === 13, { job: job(), n: changes().filter(r => r.height < BASE - 5).length });
     M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'pruned', from: OLD - 500, to: OLD_END }] }); M.prunedBelow = OLD - 100;
-    await step(); check('a span that starts below what the nodes still hold: the pruned stretch is jumped and recorded, the rest walked', job().done === true && job().pruned_to === OLD - 101, job()); M.prunedBelow = 0;
+    await step(); check('a span that starts below what the nodes still hold: the pruned stretch is jumped and recorded, the rest walked — the first block walked is the first one the nodes hold', job().done === true && job().pruned_to === OLD - 101 && job().first_walked.height === OLD - 100, job()); M.prunedBelow = 0;
     process.env.ADMIN_REWALK = '0'; M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'off', from: OLD, to: OLD_END }] }); await step(); check('ADMIN_REWALK=0 switches it off', hb().counts.contract_catch_up === null && job().next === undefined); delete process.env.ADMIN_REWALK; }
+
+  console.log(`— S the state read (${CS.VERSION}) —`);
+  { const legacy = JSON.parse(fs.readFileSync(path.join(SRC, 'docs/archive/legacy-registry/tla-chain-registry-2026-08-11.json'), 'utf8'));
+    const BOOK = legacy.raw.global_config_all_addresses, seen = JSON.parse(fs.readFileSync(path.join(SRC, 'docs/deep-history/contracts-seen.json'), 'utf8')).contracts;
+    const pb = CS.parseAddressBook(BOOK);
+    check(`the address book as the chain answered it on 2026-08-11 parses: ${pb.ok ? Object.keys(pb.entries).length : 0} roles, the four staking contracts are the config's, six controller roles point at the PD DAO`, pb.ok && Object.keys(pb.entries).length === 20 && ['stable', 'project', 'bluechip', 'single'].every(b => pb.entries['ASSET_STAKING__' + b] === C.STAKING_BUCKETS[b]) && pb.entries.ASSET_GAUGE === C.GAUGE_CONTROLLER.addr && Object.values(pb.entries).filter(a => a === PD).length === 6 && pb.entries.ASSET_WHITELIST_CONTROLLER === PD && legacy.contracts.global_config === C.GLOBAL_CONFIG.addr, pb.ok ? Object.keys(pb.entries) : pb);
+    check('an answer of another shape is refused, never compared: an object, an empty list, a triple, a role twice, a value that is no address', [{ a: 1 }, [], [['A', PD, 'x']], [['A', PD], ['A', PD]], [['A', 'not-an-address']], null].every(x => CS.parseAddressBook(x).ok === false));
+    check('contract info: code id as text, an empty admin is no admin, an answer without contract_info is nothing', JSON.stringify(CS.parseContractInfo({ contract_info: { code_id: '3494', creator: PD, admin: '', label: 'x' } })) === JSON.stringify({ code_id: '3494', admin: null, creator: PD, label: 'x' }) && CS.parseContractInfo({}) === null && CS.parseContractInfo({ contract_info: { code_id: 'abc' } }) === null);
+    // the stand-in LCD answers from the stored inventory (2026-09-29) and the stored address book
+    const inSeen = [...watch].filter(a => seen[a] && seen[a].code_id); const missing = [...watch].filter(a => !(seen[a] && seen[a].code_id));
+    for (const a of inSeen) M.lcd.info[a] = { code_id: String(seen[a].code_id), admin: seen[a].admin || null, creator: seen[a].creator || null, label: seen[a].label || null };
+    M.lcd.book = BOOK.map(p => p.slice());
+    const ST = 'contract-watch/state/current.json'; const state = () => JSON.parse(M.store[ST]); const obs = () => changes().filter(r => r.observed === 'state-read');
+    let clock = Date.parse('2026-11-25T05:00:00Z'); cron.T.now = () => new Date(clock); const tick = async (hours) => { clock += hours * 3.6e6; M.head++; M.puts = []; await quiet(() => cron.run()); };
+    delete process.env.ADMIN_STATE; const monthsBefore = JSON.stringify(months().map(k => M.store[k]));
+    await tick(0); const s1 = state();
+    check(`first read: every watched contract the inventory knows is read (${inSeen.length} of ${watch.size}; ${missing.length} the stand-in node does not have are listed as not read), the address book too, and NOTHING is filed — a first sighting is not a change`, Object.keys(s1.contracts).length === inSeen.length && s1.counts.read_this_time === inSeen.length && s1.counts.not_read_this_time === missing.length && Object.keys(s1.address_book.entries).length === 20 && s1.address_book.contract === C.GLOBAL_CONFIG.addr && obs().length === 0 && JSON.stringify(months().map(k => M.store[k])) === monthsBefore && hb().counts.contract_state.read === true && hb().counts.contract_state.differences === 0, { n: Object.keys(s1.contracts).length, counts: s1.counts, hb: hb().counts.contract_state });
+    check('…each entry is the chain\'s own report and carries the time of its read', (() => { const a = C.STAKING_BUCKETS.single, e = s1.contracts[a]; return e && e.code_id === String(seen[a].code_id) && e.admin === (seen[a].admin || null) && e.creator === seen[a].creator && e.capturedAt === s1.capturedAt && s1.height === M.head; })(), s1.contracts[C.STAKING_BUCKETS.single]);
+    const calls = M.lcd.calls; await tick(3);
+    check('three hours later: not due — the chain is not read, nothing is written', M.lcd.calls === calls && hb().counts.contract_state.skipped === 'not due' && !M.puts.some(p => /^contract-watch\//.test(p)) && state().capturedAt === s1.capturedAt, hb().counts.contract_state);
+    // the chain changes: a controller role moves from the DAO to a wallet, one contract gets a new admin, another new code
+    const WALLET = pb.entries.PDT_CONFIG_OWNER, A1 = C.STAKING_BUCKETS.stable, A2 = C.ZAPPER.addr, oldAdmin = M.lcd.info[A1].admin, oldCode = M.lcd.info[A2].code_id;
+    M.lcd.book.find(p => p[0] === 'ASSET_WHITELIST_CONTROLLER')[1] = WALLET; M.lcd.info[A1].admin = WALLET; M.lcd.info[A2].code_id = String(Number(oldCode) + 7);
+    M.failStatePut = 1; await tick(22);   // the differences are filed, then the state write fails
+    const o1 = obs();
+    check('a day later the read finds three differences and files them — the role with before (the PD DAO) and after (a wallet), the admin, the code id — each marked observed, with no transaction and no signer, and the window between the two reads', o1.length === 3 && o1.every(r => r.observed === 'state-read' && r.txhash === null && r.signer === null && r.via === null && r.detail.seen_after === s1.capturedAt && r.detail.seen_by === r.timestamp && /^state:[0-9a-f]{20}$/.test(r.k)) &&
+      (() => { const role = o1.find(r => r.kind === 'role'), adm = o1.find(r => r.kind === 'admin'), up = o1.find(r => r.kind === 'upgrade'); return role && role.contract === C.GLOBAL_CONFIG.addr && role.action === 'address_book' && role.detail.role === 'ASSET_WHITELIST_CONTROLLER' && role.detail.before === PD && role.detail.after === WALLET && adm && adm.contract === A1 && adm.detail.before === oldAdmin && adm.detail.after === WALLET && up && up.contract === A2 && up.detail.before === oldCode && up.detail.after === String(Number(oldCode) + 7); })(), o1.map(r => [r.kind, r.action, r.detail]));
+    check('…the state write failed, so the state on file is still the first read and the run says so', state().capturedAt === s1.capturedAt && hb().counts.contract_state.state_written === false && hb().error_count > 0, hb().counts.contract_state);
+    await tick(0.25); const o2 = obs();
+    check('the next run reads again, files nothing twice (the keys do not depend on the time of the read) and writes the state', o2.length === 3 && JSON.stringify(o2.map(r => r.k).sort()) === JSON.stringify(o1.map(r => r.k).sort()) && state().capturedAt !== s1.capturedAt && state().address_book.entries.ASSET_WHITELIST_CONTROLLER === WALLET && state().contracts[A1].admin === WALLET && hb().counts.contract_state.differences === 3, { n: o2.length, hb: hb().counts.contract_state });
+    { const idx = JSON.parse(M.store['contract-watch/index.json']); check('the differences are in the month of their read and the index counts them', idx.months['2026/11'] && idx.months['2026/11'].n === o2.length && idx.months['2026/11'].changes === 3, idx.months['2026/11']); }
+    // a node that answers nothing
+    const sBefore = M.store[ST]; M.lcd.down = true; await tick(30);
+    check('a node that answers nothing: nothing is filed, the state on file is untouched, the heartbeat reports it', obs().length === 3 && M.store[ST] === sBefore && hb().counts.contract_state.read === false && hb().error_count > 0, hb().counts.contract_state);
+    // one contract unreadable: its entry (and its read time) is kept, no difference invented
+    M.lcd.down = false; const gone = M.lcd.info[A2]; delete M.lcd.info[A2]; const a2Before = state().contracts[A2]; await tick(0.25);
+    check('one contract the node cannot answer for: its entry is kept with its own earlier read time, and nothing is filed about it', obs().length === 3 && JSON.stringify(state().contracts[A2]) === JSON.stringify(a2Before) && state().contracts[A2].capturedAt !== state().capturedAt && state().counts.not_read_this_time === missing.length + 1, state().counts);
+    M.lcd.info[A2] = gone;
+    // a change filed by the walk triggers a read in the same run
+    const cfg = raw(...R.config); const H2 = M.head + 1; CHAIN.set(H2, [{ b64: Buffer.from('again' + cfg.x).toString('base64'), code: 0, events: cfg.e, ts: '2026-11-26T12:00:00Z' }]);
+    M.lcd.info[A2].code_id = String(Number(M.lcd.info[A2].code_id) + 1); const c3 = M.lcd.calls; await tick(1);
+    check('a change the walk files (a settings change on a watched contract) makes the same run read the chain, though a day has not passed — and the read finds the new code id', M.lcd.calls > c3 && hb().counts.contract_changes === 1 && hb().counts.contract_state.by === 'change' && obs().length === 4 && obs().some(r => r.kind === 'upgrade' && r.contract === A2 && r.detail.after === M.lcd.info[A2].code_id), hb().counts.contract_state);
+    // the pure compare: carried-over entries and first sightings file nothing; a later repeat of the same transition has its own key
+    const prev = { address_book: { contract: 'c', capturedAt: 't1', entries: { R: PD } }, contracts: { x: { code_id: '1', admin: null, capturedAt: 't1' }, y: { code_id: '5', admin: PD, capturedAt: 't1' } } };
+    const cur = { address_book: { contract: 'c', capturedAt: 't2', entries: { R: WALLET, NEW: PD } }, contracts: { x: { code_id: '1', admin: null, capturedAt: 't1' }, y: { code_id: '6', admin: null, capturedAt: 't2' }, z: { code_id: '9', admin: null, capturedAt: 't2' } } };
+    const d = CS.diffState(prev, cur, { height: 7 });
+    check('the compare alone: a role that moved and a role that is new, a code id, an admin that was cleared — four records; the entry carried over from a failed read and the contract seen for the first time file nothing', d.length === 4 && d.filter(r => r.kind === 'role').length === 2 && d.some(r => r.detail.role === 'NEW' && r.detail.before === null && r.detail.after === PD) && d.some(r => r.kind === 'upgrade' && r.contract === 'y') && d.some(r => r.kind === 'admin' && r.contract === 'y' && r.detail.after === null) && !d.some(r => r.contract === 'x' || r.contract === 'z') && d.every(r => r.height === 7), d.map(r => [r.kind, r.contract, r.detail]));
+    const again = CS.diffState({ ...prev, address_book: { ...prev.address_book, capturedAt: 't9' } }, { ...cur, address_book: { ...cur.address_book, capturedAt: 't10' } }, {});
+    check('the same transition seen from a later read has another key (it is another event); seen again from the same read it has the same key', again.find(r => r.detail.role === 'R').k !== d.find(r => r.detail.role === 'R').k && CS.diffState(prev, { ...cur, address_book: { ...cur.address_book, capturedAt: 't3' } }, {}).find(r => r.detail.role === 'R').k === d.find(r => r.detail.role === 'R').k);
+    process.env.ADMIN_STATE = '0'; const c4 = M.lcd.calls; await tick(48); check('ADMIN_STATE=0 switches it off', M.lcd.calls === c4 && hb().counts.contract_state === null); }
 
   if (process.env.FULL === '1') {
     console.log('— D the whole stored corpus (FCD archive + archive walk) —');

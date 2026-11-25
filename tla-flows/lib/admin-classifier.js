@@ -134,4 +134,10 @@ function adminWatchFrom({ config, known, registry, extra } = {}) {
   return set;
 }
 
-module.exports = { VERSION, classifyAdminTx, adminWatchFrom, kindOfAction, CHANGE_RE, EPOCH_RE, LIFECYCLE };
+// One month of the stream, as contract-watch/index.json lists it (records sorted by height, as filed).
+function monthSummary(arr) {
+  const ch = arr.filter(r => !r.routine);
+  return { n: arr.length, changes: ch.length, first: arr.length ? arr[0].timestamp : null, last: arr.length ? arr[arr.length - 1].timestamp : null, last_change: ch.length ? ch[ch.length - 1].timestamp : null };
+}
+
+module.exports = { VERSION, classifyAdminTx, adminWatchFrom, kindOfAction, monthSummary, CHANGE_RE, EPOCH_RE, LIFECYCLE };
