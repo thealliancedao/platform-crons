@@ -1,5 +1,21 @@
 # tla-flows — changelog
 
+## 3.7.1 — 2026-11-25 — the catch-up walk and a node's empty answer
+
+- First run of the long catch-up span (blocks 21,481,531 → 23,905,364) stopped at once: `Cannot read properties of null
+  (reading 'header')`. A node that no longer holds a block answered `{ block: null }` — an empty result, not the "height is
+  not available" error the walk knew — and the walk read a field of it.
+- `getBlock`: an empty answer is asked again at the other endpoint, then at the first once more (a load balancer may reach a
+  node that still has the block). Still empty: for the catch-up walk the block is not held — the stretch is jumped and
+  recorded exactly like a pruned one (`pruned_to`); for the forward walk it is an error with a name and the window is walked
+  again next run, so a block at the head is never declared pruned on an empty answer.
+- The catch-up walk: an old block whose **results** the nodes no longer hold counts as one block not held; results that do
+  not match a block's transactions stop the walk with the block named — nothing is skipped silently.
+- Gate `mock-run-contract-watch.js` 63/63 (+5: the empty answer over a stretch, the empty answer from one endpoint only,
+  results no longer held, results that do not match, the forward walk at the head). The fourth case hung the first
+  version of this fix (a block that is held, with results that are not, sent the search for the next held block back to
+  the same block) — the gate caught it.
+
 ## 3.7.0 — 2026-11-25 — contract changes: the state read, the month index, the dates of the catch-up
 
 - **Why.** A transaction's events say that something changed and who sent it; they often do not say what it is now. The

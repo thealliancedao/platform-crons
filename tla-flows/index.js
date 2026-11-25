@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.7.0';   // v3.7.0 (2026-11-25): contract-watch STATE READ — once a day (and in the run that records a change) each watched contract's code id / admin and the TLA address book are read from the chain and every difference from the read before is filed (lib/contract-state.js); contract-watch/index.json lists the stream's months; the catch-up walk records the times of the first and last block it walked · v3.6.2 (2026-11-25): the catch-up walk reads a block and its results together, six heights at once (it managed ~3 blocks a second) · v3.6.1 (2026-11-25): contract-watch catch-up walk — block spans listed in tla-core contract-watch/rewalk.json are walked again for contract changes only, a bounded stretch per run, until done (the months before the forward stream, while the public nodes still hold them) · v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.7.1';   // v3.7.1 (2026-11-25): the catch-up walk treats a node's EMPTY answer for a block it no longer holds as 'not held' (the long span stopped on it: "Cannot read properties of null (reading 'header')"), asks the other endpoint first, and stops loudly when a block's results do not match its transactions · v3.7.0 (2026-11-25): contract-watch STATE READ — once a day (and in the run that records a change) each watched contract's code id / admin and the TLA address book are read from the chain and every difference from the read before is filed (lib/contract-state.js); contract-watch/index.json lists the stream's months; the catch-up walk records the times of the first and last block it walked · v3.6.2 (2026-11-25): the catch-up walk reads a block and its results together, six heights at once (it managed ~3 blocks a second) · v3.6.1 (2026-11-25): contract-watch catch-up walk — block spans listed in tla-core contract-watch/rewalk.json are walked again for contract changes only, a bounded stretch per run, until done (the months before the forward stream, while the public nodes still hold them) · v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -166,12 +166,20 @@ async function getHead() {
   const s = await rpcGet('/status', 'head');
   return Number(s.result.sync_info.latest_block_height);
 }
-async function getBlock(N) {
+async function getBlock(N, { nullIsPruned = false } = {}) {
   let r;
   try { r = await rpcGet(`/block?height=${N}`, `block ${N}`); }
   catch (e) { if (isPrunedError(e)) return PRUNED; throw e; }
   if (r.error) { if (isPrunedError(r.error)) return PRUNED; throw new Error(`block ${N}: ${JSON.stringify(r.error).slice(0, 120)}`); }
-  const b = r.result.block;
+  let b = r.result && r.result.block;
+  // 3.7.1: a node that no longer holds a block can answer with an EMPTY result ({ block: null }) instead of an error — the first
+  // probe of the long catch-up span died on it. Ask the other endpoint, then the first again (a load balancer may reach a node
+  // that still has it). Still empty: for the catch-up walk the block is not held (PRUNED); for the forward walk it is an error
+  // with a name, and the window is walked again next run — a block at the head is never declared pruned on an empty answer.
+  for (const base of b ? [] : [RPC_FALLBACK, RPC_PRIMARY]) {
+    try { const r2 = await T.httpGet(base + `/block?height=${N}`); if (r2 && r2.result && r2.result.block) { b = r2.result.block; break; } } catch (e) { /* the next endpoint */ }
+  }
+  if (!b) { if (nullIsPruned) return PRUNED; throw new Error(`block ${N}: the node returned no block`); }
   return { time: String(b.header.time).slice(0, 19) + 'Z', txsB64: b.data.txs || [] };
 }
 async function getBlockResults(N) {
@@ -239,11 +247,11 @@ function touchesOf(events) {
 function touchesWatched(events) { return touchesOf(events).core; }   // compat (harness)
 
 // Binary-search the lowest available block in (lo..hi] after hitting pruning.
-async function firstAvailable(lo, hi) {
+async function firstAvailable(lo, hi, opt) {
   let lb = lo, ub = hi, best = hi;
   while (lb <= ub) {
     const mid = Math.floor((lb + ub) / 2);
-    if ((await getBlock(mid)) === PRUNED) lb = mid + 1;
+    if ((await getBlock(mid, opt)) === PRUNED) lb = mid + 1;
     else { best = mid; ub = mid - 1; }
   }
   return best;
@@ -632,7 +640,14 @@ async function walkAdminOnly(from, to) {
   // the results one block at a time and managed ~3 blocks a second in production (701 blocks took four minutes).
   const CONC = Math.max(1, Number(process.env.ADMIN_REWALK_CONCURRENCY) || 6);
   const recs = []; let N = from, prunedTo = null, first = null, last = null; const inFlight = new Map();
-  const read = async (h) => { const blk = await getBlock(h); if (blk === PRUNED || !blk.txsB64.length) return { blk, results: null }; return { blk, results: await getBlockResults(h) }; };
+  // 3.7.1: an old block whose RESULTS the nodes no longer hold is not held either; results that do not match the block's
+  // transactions stop the walk (nothing is skipped silently).
+  const read = async (h) => {
+    const blk = await getBlock(h, { nullIsPruned: true }); if (blk === PRUNED || !blk.txsB64.length) return { blk, results: null };
+    let results; try { results = await getBlockResults(h); } catch (e) { if (/could not find results|no results|not available|lowest height|pruned/i.test(String(e && e.message))) return { blk: PRUNED, results: null, noResults: true }; throw e; }
+    if (results.length !== blk.txsB64.length) throw new Error(`block_results ${h}: ${results.length} result(s) for ${blk.txsB64.length} transaction(s)`);
+    return { blk, results };
+  };
   const launch = (h) => { if (h <= to && !inFlight.has(h)) { const pr = read(h); pr.catch(() => {}); inFlight.set(h, pr); } };   // a read still in flight when the walk stops must not become an unhandled rejection
   for (let h = N; h < N + CONC && h <= to; h++) launch(h);
   while (N <= to) {
@@ -640,7 +655,8 @@ async function walkAdminOnly(from, to) {
     try { got = await inFlight.get(N); } finally { inFlight.delete(N); }
     const blk = got.blk;
     if (blk === PRUNED) {
-      const avail = await firstAvailable(N, to + 1); prunedTo = avail - 1;
+      // the block itself is not held → find the first one that is; the block is held but its results are not → that one block is not held
+      const avail = got.noResults ? N + 1 : await firstAvailable(N, to + 1, { nullIsPruned: true }); prunedTo = avail - 1;
       for (const k of [...inFlight.keys()]) if (k < avail) inFlight.delete(k);
       N = avail; if (N > to) break;
       for (let h = N; h < N + CONC && h <= to; h++) launch(h);
@@ -669,7 +685,7 @@ async function runAdminRewalk({ addErr, runStartedMs }) {
   // a span that begins below what the nodes still hold: find the first block either node has — once, over the whole span
   // (searching chunk by chunk would spend days of runs skipping pruned blocks)
   let skipped = 0;
-  try { if (next <= to && (await getBlock(next)) === PRUNED) { const avail = await firstAvailable(next, to + 1); job.pruned_to = Math.max(Number(job.pruned_to) || 0, avail - 1); skipped = avail - next; next = avail; } }
+  try { if (next <= to && (await getBlock(next, { nullIsPruned: true })) === PRUNED) { const avail = await firstAvailable(next, to + 1, { nullIsPruned: true }); job.pruned_to = Math.max(Number(job.pruned_to) || 0, avail - 1); skipped = avail - next; next = avail; } }
   catch (e) { err = e; }
   while (!err && next <= to && walked < BUDGET && T.now().getTime() - runStartedMs < LIMIT_MS) {
     const end = Math.min(next + CHUNK - 1, to, next + (BUDGET - walked) - 1);
