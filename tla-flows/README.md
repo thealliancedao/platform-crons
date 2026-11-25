@@ -30,6 +30,10 @@ known_contracts.json` + the capture registry + the optional `docs/curated/contra
 History before the forward stream: `backfill-contract-watch.js` (no chain access — it re-reads the stored walks).
 Gate: `TLA_CORE_DIR=<checkout> [FULL=1] node mock-run-contract-watch.js`.
 
+**What was sent (3.8.0)** — a change that was sent directly carries `sent`: the message as the transaction's own bytes hold
+it (`lib/tx-messages.js`; the body's messages only — no memo, no signatures), attached only when the bytes agree with the
+events (message index, type, sender).
+
 **State (3.7.0)** — `contract-watch/state/current.json`: each watched contract as the chain reports it (code id, admin,
 creator, label) and the TLA address book (`config/contracts.js` `GLOBAL_CONFIG`, `{"all_addresses":{}}`), read once a day
 and in any run that files a change (`lib/contract-state.js`). Every difference from the read before is filed in the same

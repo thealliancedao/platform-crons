@@ -1,5 +1,24 @@
 # tla-flows — changelog
 
+## 3.8.0 — 2026-11-25 — contract changes: what was sent
+
+- **Why.** A change record says that a contract changed and who sent it. For many changes the events carry no values:
+  `set_addresses` on the address book emits nothing, most `update_config` calls emit nothing (58 settings records, most
+  with an empty detail). The transaction's own message has them, and the walk already holds the bytes — it hashes them.
+- **`lib/tx-messages.js`** (new). Reads `TxRaw.body_bytes → TxBody.messages` and nothing else — not the memo, not the fee,
+  not keys or signatures — and opens `MsgExecuteContract`, `MsgMigrateContract`, `MsgUpdateAdmin`, `MsgClearAdmin` and
+  authz `MsgExec`. A change that was **sent** (not a proposal being executed, not the weekly routine) gets
+  `sent: { to, msg?, code_id?, new_admin?, funds? }` and `schemaVersion: 2` — **only when the bytes agree with the events**:
+  same message index, same message type, same sender. Bytes that do not parse or do not agree attach nothing and the record
+  is filed as before. A message over 6,000 characters is noted with its length.
+- **`lib/admin-classifier.js` 1.1.0**: every record carries `msg_index` (the event's own `msg_index`; the count of message
+  boundaries where an archive kept none).
+- Both walks attach it (forward and catch-up). A record filed earlier without a message is replaced when its block is walked
+  again (the keyed merge takes the higher schema) — one record, not two.
+- Gate `mock-run-contract-watch.js` **72/72** (new section M). The stored walks kept events, not transaction bytes, so the
+  bytes of section M are built in the gate from the wire format around real senders, contracts and events; the first record
+  filed in production is the proof on real bytes.
+
 ## 3.7.1 — 2026-11-25 — the catch-up walk and a node's empty answer
 
 - First run of the long catch-up span (blocks 21,481,531 → 23,905,364) stopped at once: `Cannot read properties of null

@@ -17,12 +17,16 @@
 //      first read files nothing; not due inside a day; a role that moved, an admin and a code id that changed are filed
 //      once (also when the state write fails in between); a change the walk files triggers a read in the same run;
 //      a node that answers nothing changes nothing; contract-watch/index.json lists the months
+//   M  3.8.0 what was sent (lib/tx-messages.js): the stored walks kept events, not transaction bytes, so the bytes here are
+//      BUILT in this file from the wire format (TxRaw → body → messages) around real senders, contracts and events — the
+//      decoder, the agreement rule (bytes must say what the events said), the memo never read, and the upgrade of a
+//      record filed before by a second walk of its block. The proof on real bytes is the first production record.
 //   D  (FULL=1, ~3 min) the whole stored corpus: every reward-list change is a DAO proposal being executed
 // Usage: TLA_CORE_DIR=<tla-core checkout> [FULL=1] node mock-run-contract-watch.js
 const fs = require('fs'), path = require('path'), zlib = require('zlib');
 const SRC = process.env.TLA_CORE_DIR; if (!SRC) { console.error('TLA_CORE_DIR required'); process.exit(1); }
 process.env.GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'mock-token'; process.env.PNL = '0'; process.env.ADMIN_STATE = '0';   // the state read is switched on in section S
-const AD = require('./lib/admin-classifier.js'), BF = require('./backfill-contract-watch.js'), C = require('../config/contracts.js'), CS = require('./lib/contract-state.js');
+const AD = require('./lib/admin-classifier.js'), BF = require('./backfill-contract-watch.js'), C = require('../config/contracts.js'), CS = require('./lib/contract-state.js'), TM = require('./lib/tx-messages.js');
 let pass = 0, fail = 0; const check = (n, ok, x) => { if (ok) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n + (x !== undefined ? ' — ' + JSON.stringify(x).slice(0, 420) : '')); } };
 const readGz = (p) => JSON.parse(zlib.gunzipSync(fs.readFileSync(p)).toString('utf8'));
 const cache = new Map(); const part = (rel) => cache.get(rel) || cache.set(rel, readGz(path.join(SRC, rel))).get(rel);
@@ -138,7 +142,7 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
   { const idx = JSON.parse(M.store['contract-watch/index.json'] || 'null'); const ok = idx && months().every(k => { const mk = k.slice('contract-watch/events/'.length, -5), a = JSON.parse(M.store[k]), e = idx.months[mk]; return e && e.n === a.length && e.changes === a.filter(r => !r.routine).length && e.first === a[0].timestamp && e.last === a[a.length - 1].timestamp; });
     check(`contract-watch/index.json lists every month of the stream with its record and change counts (${idx ? Object.keys(idx.months).length : 0} months)`, !!ok && Object.keys(idx.months).length === months().length && Object.keys(idx.months).join() === Object.keys(idx.months).sort().join(), idx); }
   check('flows are captured as before (the zap deposit is in tla-flows/events, the claim too) and are not in the changes stream', flows().length === 2 && flows().some(f => f.type === 'deposit') && flows().some(f => f.type === 'claim'), flows().map(f => f.type));
-  check('the cursor advanced to the head and the heartbeat counts the changes and the watched set', cursor() === HEAD && hb().counts.contract_changes === want && hb().counts.contracts_watched === watch.size && /^org-tla-flows-3\.7\./.test(hb().version), { cursor: cursor(), counts: hb().counts, v: hb().version });
+  check('the cursor advanced to the head and the heartbeat counts the changes and the watched set', cursor() === HEAD && hb().counts.contract_changes === want && hb().counts.contracts_watched === watch.size && /^org-tla-flows-3\.\d+\./.test(hb().version), { cursor: cursor(), counts: hb().counts, v: hb().version });
   { const before = JSON.stringify(months().map(k => M.store[k])); const cur = JSON.parse(M.store['tla-flows/events/cursor.json']); cur.last_block = BASE - 1; M.store['tla-flows/events/cursor.json'] = JSON.stringify(cur); M.puts = []; await quiet(() => cron.run());   // walk the same window again
     check('walking the same window again adds nothing and rewrites no month of the stream', JSON.stringify(months().map(k => M.store[k])) === before && !M.puts.some(p => /^contract-watch\//.test(p)) && hb().counts.contract_changes === 0, M.puts.filter(p => /^contract-watch\//.test(p))); }
 
@@ -223,6 +227,41 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
     const again = CS.diffState({ ...prev, address_book: { ...prev.address_book, capturedAt: 't9' } }, { ...cur, address_book: { ...cur.address_book, capturedAt: 't10' } }, {});
     check('the same transition seen from a later read has another key (it is another event); seen again from the same read it has the same key', again.find(r => r.detail.role === 'R').k !== d.find(r => r.detail.role === 'R').k && CS.diffState(prev, { ...cur, address_book: { ...cur.address_book, capturedAt: 't3' } }, {}).find(r => r.detail.role === 'R').k === d.find(r => r.detail.role === 'R').k);
     process.env.ADMIN_STATE = '0'; const c4 = M.lcd.calls; await tick(48); check('ADMIN_STATE=0 switches it off', M.lcd.calls === c4 && hb().counts.contract_state === null); }
+
+  console.log(`— M what was sent (${TM.VERSION}) —`);
+  { // the wire format, written out: varint tags, length-delimited fields
+    const vi = (n) => { const o = []; let v = BigInt(n); do { let b = Number(v & 0x7fn); v >>= 7n; if (v) b |= 0x80; o.push(b); } while (v); return Buffer.from(o); };
+    const ld = (no, b) => Buffer.concat([vi((no << 3) | 2), vi(b.length), Buffer.isBuffer(b) ? b : Buffer.from(b)]);
+    const vf = (no, n) => Buffer.concat([vi((no << 3) | 0), vi(n)]);
+    const any = (type, value) => Buffer.concat([ld(1, type), ld(2, value)]);
+    const exec = (sender, contract, msg, funds) => any('/cosmwasm.wasm.v1.MsgExecuteContract', Buffer.concat([ld(1, sender), ld(2, contract), ld(3, typeof msg === 'string' ? msg : JSON.stringify(msg)), ...(funds || []).map(([d, a]) => ld(5, Buffer.concat([ld(1, d), ld(2, a)])))]));
+    const migrate = (sender, contract, codeId, msg) => any('/cosmwasm.wasm.v1.MsgMigrateContract', Buffer.concat([ld(1, sender), ld(2, contract), vf(3, codeId), ld(4, JSON.stringify(msg))]));
+    const updAdmin = (sender, newAdmin, contract) => any('/cosmwasm.wasm.v1.MsgUpdateAdmin', Buffer.concat([ld(1, sender), ld(2, newAdmin), ld(3, contract)]));
+    const txRaw = (msgs, memo = 'A MEMO THAT MUST NEVER BE KEPT') => Buffer.concat([ld(1, Buffer.concat([...msgs.map(m => ld(1, m)), ld(2, memo), vf(3, 0)])), ld(2, Buffer.from('auth-info-bytes')), ld(3, Buffer.from('a-signature'))]).toString('base64');
+    const cfg = cls('config')[0], W1 = cfg.signer, W2 = cls('migrate')[0].signer;
+    const msgs = TM.messagesOf(txRaw([exec(W1, C.ZAPPER.addr, { update_config: { fee: '0.003', collector: W2 } }, [['uluna', '1000']]), migrate(W2, C.BRIBE_MANAGER.addr, 3494, {}), updAdmin(W1, W2, C.COMPOUNDER.addr)]));
+    check('a transaction\'s bytes → its messages in order: an execute (sender, contract, the JSON, funds), a migrate (code id), an admin change (new admin) — and the memo, fee and signatures are not read at all', msgs.length === 3 && msgs[0].sender === W1 && msgs[0].contract === C.ZAPPER.addr && msgs[0].msg.update_config.fee === '0.003' && msgs[0].funds[0].denom === 'uluna' && msgs[0].funds[0].amount === '1000' && msgs[1].type.endsWith('MsgMigrateContract') && msgs[1].code_id === '3494' && msgs[1].contract === C.BRIBE_MANAGER.addr && msgs[2].new_admin === W2 && msgs[2].contract === C.COMPOUNDER.addr && !/MEMO|signature|auth-info/.test(JSON.stringify(msgs)), msgs);
+    check('every record of the classifier names the message it came from: the event\'s own index on the walk\'s events (a sub-DAO adoption: four records, all message 0), the count of message boundaries where an archive kept no index (four upgrades → 0,1,2,3)', cls('adopt').every(r => r.msg_index === 0) && cls('config')[0].msg_index === 0 && AD.classifyAdminTx(BF.fcdToTxr(fcd(...F.migrate)), watch).filter(r => r.kind === 'upgrade').map(r => r.msg_index).join() === '0,1,2,3', [cls('adopt').map(r => r.msg_index), AD.classifyAdminTx(BF.fcdToTxr(fcd(...F.migrate)), watch).map(r => r.msg_index)]);
+    const fresh = () => cls('config'); const sentMsg = { update_config: { fee: '0.003' } };
+    { const r = fresh(); const n = TM.attachSent(r, txRaw([exec(W1, C.ZAPPER.addr, sentMsg)])); check('a settings change sent directly gets the message as sent — to which contract, the JSON — and becomes schemaVersion 2', n === 1 && r[0].sent && r[0].sent.to === C.ZAPPER.addr && JSON.stringify(r[0].sent.msg) === JSON.stringify(sentMsg) && r[0].schemaVersion === 2, r[0]); }
+    { const a = fresh(), b = fresh(), c = fresh(), d = fresh(), e = fresh();
+      TM.attachSent(a, txRaw([exec(W2, C.ZAPPER.addr, sentMsg)])); TM.attachSent(b, txRaw([updAdmin(W1, W2, C.ZAPPER.addr)])); TM.attachSent(c, 'not base64 of a transaction'); TM.attachSent(d, txRaw([exec(W2, C.ZAPPER.addr, {}), exec(W1, C.ZAPPER.addr, sentMsg)])); TM.attachSent(e, Buffer.from('noise').toString('base64'));
+      check('the bytes must say what the events said: another sender, another message type, another message at that index, or bytes that are no transaction → nothing is attached, the record stays as the events made it', [a, b, c, d, e].every(x => x[0].sent === undefined && x[0].schemaVersion === 1), [a, b, c, d, e].map(x => [x[0].schemaVersion, x[0].sent])); }
+    { const r = cls('remove'), e = cls('epoch'); const n = TM.attachSent(r, txRaw([exec(r[0].signer, PD_MODULE, { execute: { proposal_id: 117 } })])) + TM.attachSent(e, txRaw([exec(e[0].signer, e[0].contract, { set_distribution: {} })]));
+      check('a proposal being executed and the weekly routine never get one (the proposal\'s messages are in the governance capture)', n === 0 && r[0].sent === undefined && e.every(x => x.sent === undefined)); }
+    { const r = fresh(); TM.attachSent(r, txRaw([exec(W1, C.ZAPPER.addr, JSON.stringify({ update_config: { note: 'x'.repeat(TM.MAX_JSON + 10) } }))])); check('a message longer than the cap is noted with its length, not stored', r[0].sent && r[0].sent.msg.too_long > TM.MAX_JSON && JSON.stringify(r[0]).length < 2000, r[0].sent); }
+    { const r = cls('migrate'); TM.attachSent(r, txRaw([migrate(r[0].signer, r[0].contract, 3494, { some: 'migrate-msg' })])); check('an upgrade sent directly carries the migrate message and the code id the bytes name', r[0].sent && r[0].sent.code_id === '3494' && r[0].sent.msg.some === 'migrate-msg' && r[0].sent.to === r[0].contract, r[0].sent); }
+    // through the real run(): a block whose transaction has real bytes around the same events
+    const ev = raw(...R.config).e, HM = M.head + 1; const bytes = txRaw([exec(W1, C.ZAPPER.addr, sentMsg)]);
+    CHAIN.set(HM, [{ b64: bytes, code: 0, events: ev, ts: '2026-11-27T09:00:00Z' }]); process.env.ADMIN_STATE = '0'; process.env.ADMIN_REWALK = '0';
+    M.head = HM - 1; M.head++; await quiet(() => cron.run());
+    const filed = changes().find(r => r.height === HM);
+    check('the walk files it with the record: sent.to, sent.msg, schemaVersion 2 — the key is still the transaction hash', filed && filed.sent && filed.sent.to === C.ZAPPER.addr && filed.sent.msg.update_config.fee === '0.003' && filed.schemaVersion === 2 && /^[0-9A-F]{64}:0$/.test(filed.k) && filed.k.startsWith(require('crypto').createHash('sha256').update(Buffer.from(bytes, 'base64')).digest('hex').toUpperCase()), filed);
+    // a record filed before 3.8.0 (no message) is replaced when its block is walked again
+    const mk = Object.keys(M.store).find(k => /^contract-watch\/events\//.test(k) && JSON.parse(M.store[k]).some(r => r.height === HM)); const old = JSON.parse(M.store[mk]).map(r => { if (r.height !== HM) return r; const { sent, msg_index, ...rest } = r; return { ...rest, schemaVersion: 1 }; }); M.store[mk] = JSON.stringify(old);
+    delete process.env.ADMIN_REWALK; M.store['contract-watch/rewalk.json'] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'again-with-messages', from: HM, to: HM }] }); M.head++; await quiet(() => cron.run());
+    const up = changes().filter(r => r.height === HM);
+    check('walking a block again replaces the earlier record of the same change with the one that carries the message (one record, not two)', up.length === 1 && up[0].sent && up[0].schemaVersion === 2 && JSON.parse(M.store['contract-watch/rewalk.json']).jobs[0].done === true && JSON.parse(M.store['contract-watch/rewalk.json']).jobs[0].found === 1, up); }
 
   if (process.env.FULL === '1') {
     console.log('— D the whole stored corpus (FCD archive + archive walk) —');

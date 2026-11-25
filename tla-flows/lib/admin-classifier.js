@@ -1,6 +1,8 @@
 'use strict';
 /**
- * tla-flows / lib/admin-classifier.js 1.0.0 (2026-11-25) — CONTRACT CHANGES, read from a transaction's events.
+ * tla-flows / lib/admin-classifier.js 1.1.0 (2026-11-25) — CONTRACT CHANGES, read from a transaction's events.
+ * 1.1.0: each record carries msg_index — which message of the transaction it came from (the event's own msg_index, else the
+ * count of message boundaries) — so the message as sent can be put beside it (lib/tx-messages.js).
  *
  * Why: on 2026-11-24 the single gauge's reward list lost two assets and nothing we capture could say who sent it — the walk
  * saw the transaction (it touches a watched staking contract) and dropped it, because it is not a deposit, withdrawal or
@@ -30,7 +32,7 @@
  * transaction's events), and settings whose contract emits no action attribute. The daily state read catches both as a
  * before → after without a sender.
  */
-const VERSION = 'admin-classifier-1.0.0';
+const VERSION = 'admin-classifier-1.1.0';
 const MAX_VALUE = 1500;   // one attribute value as kept in a record (an asset list can run long)
 
 const LIFECYCLE = {
@@ -74,14 +76,15 @@ const DROP = new Set(['_contract_address', 'msg_index', 'authz_msg_index']);
 
 /**
  * txr: { txhash, height, timestamp, code, events }   watch: Set (or anything with .has) of watched contract addresses
- * → [ { schemaVersion, k (= txhash:n — the key of the shared mergeKeyed law), txhash, height, timestamp, kind, contract, action, detail, signer, msg_type, via, routine? } ]
+ * → [ { schemaVersion, k (= txhash:n — the key of the shared mergeKeyed law), txhash, height, timestamp, kind, contract, action, detail, signer, msg_type, msg_index, via, routine? } ]
  */
 function classifyAdminTx(txr, watch) {
   if (!txr || Number(txr.code || 0) !== 0) return [];
-  const out = []; let msg = null, firstSender = null, feePayer = null, via = null, lastUpgrade = null;
+  const out = []; let msg = null, firstSender = null, feePayer = null, via = null, lastUpgrade = null, msgCount = -1, evIndex = null;
+  const idxOf = (pairs) => { const v = get(pairs, 'msg_index'); return v != null && /^\d+$/.test(String(v)) ? Number(v) : null; };
   const push = (kind, contract, action, detail, extra) => {
     const rec = { schemaVersion: 1, k: `${txr.txhash}:${out.length}`, txhash: txr.txhash, height: Number(txr.height), timestamp: txr.timestamp,
-      kind, contract: contract || null, action, detail, signer: (msg && msg.sender) || firstSender || feePayer || null, msg_type: msg ? msg.type : null,
+      kind, contract: contract || null, action, detail, signer: (msg && msg.sender) || firstSender || feePayer || null, msg_type: msg ? msg.type : null, msg_index: msg ? (evIndex != null ? evIndex : msg.index) : null,
       via: via || (msg && /\.MsgExec$/.test(msg.type || '') ? { kind: 'authz', grantee: msg.sender || null } : null) };
     if (extra) Object.assign(rec, extra);
     out.push(rec); return rec;
@@ -91,10 +94,10 @@ function classifyAdminTx(txr, watch) {
     if (t === 'tx') { const fp = get(pairs, 'fee_payer'); if (fp && !feePayer) feePayer = fp; continue; }
     if (t === 'message') {
       const a = get(pairs, 'action'), s = get(pairs, 'sender'); if (s && !firstSender) firstSender = s;
-      if (a) { msg = { type: a, sender: s || null }; via = null; lastUpgrade = null; }   // a new message: what came before does not explain it
+      if (a) { msgCount++; const mi = idxOf(pairs); msg = { type: a, sender: s || null, index: mi != null ? mi : msgCount }; via = null; lastUpgrade = null; }   // a new message: what came before does not explain it
       continue;
     }
-    const contract = get(pairs, '_contract_address');
+    const contract = get(pairs, '_contract_address'); evIndex = idxOf(pairs);
     if (LIFECYCLE[t]) {
       const L = LIFECYCLE[t], d = detailOf(pairs, DROP);
       const action = t === 'update_contract_admin' && !d.new_admin_address ? 'clear_admin' : L.action;
