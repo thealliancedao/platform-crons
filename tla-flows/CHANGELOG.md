@@ -1,5 +1,13 @@
 # tla-flows — changelog
 
+## 3.6.2 — 2026-11-25 — the catch-up walk at a usable pace
+
+- First production run of 3.6.1: the 701 blocks of the 2026-11-24 window took four minutes (it found the change: height
+  23,900,625, two records). The walk fetched each block's results one at a time — about 3 blocks a second, so a run's 7-minute
+  box held ~1,200 blocks and the long span would have needed ten days while the nodes prune ~15,000 blocks a day.
+- A block and its results are now read together, six heights at once (`ADMIN_REWALK_CONCURRENCY`). Same records, same order.
+- Gate `mock-run-contract-watch.js` 40/40 (43/43 with `FULL=1`), unchanged cases.
+
 ## 3.6.1 — 2026-11-25 — contract changes: the catch-up walk
 
 - The forward stream (3.6.0) starts at block 23,905,365 (2026-11-25 ~03:47 UTC). The stored walks end at 2026-06-16. What lies
