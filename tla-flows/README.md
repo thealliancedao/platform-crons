@@ -19,6 +19,17 @@ tla-voting; positions/valuations = adao-positions; NFT flows = nfts/adao.
 Addresses come from `../config/contracts.js` (ZAPPER added 2026-07-08) —
 never hardcoded.
 
+## Contract changes (3.6.0) — `tla-core/contract-watch/events/`
+
+The same walk keeps every event that changes what a contract is or does (`lib/admin-classifier.js`, events only):
+upgrades, admin changes and stored code for **every** contract on the chain; list / setting / role / governance /
+delegation changes for the watched contracts; and anything a watched DAO's passed proposal changes. Each record carries
+the signer and, when it applies, the DAO proposal it executes. Monthly arrays keyed by `k` (`txhash:n`), merged like
+the transfers stream; a failed publish holds the cursor. Watched set: `config/contracts.js` + `docs/curated/
+known_contracts.json` + the capture registry + the optional `docs/curated/contract-watch.json`.
+History before the forward stream: `backfill-contract-watch.js` (no chain access — it re-reads the stored walks).
+Gate: `TLA_CORE_DIR=<checkout> [FULL=1] node mock-run-contract-watch.js`.
+
 ## Reliability behavior (org F-checklist)
 
 - **F1** resilient ASC pager (verbatim from org-tla-voting).

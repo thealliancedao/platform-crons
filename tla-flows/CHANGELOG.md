@@ -1,5 +1,46 @@
 # tla-flows — changelog
 
+## 3.6.0 — 2026-11-25 — contract changes: who changed a list, a setting, a role, the code
+
+- **Why.** On 2026-11-24 the single gauge's reward list lost two assets. The hourly snapshot showed the list change; nothing
+  captured could say who sent it. The walk had seen the transaction — it touches a watched staking contract — and dropped it,
+  because it is not a deposit, a withdrawal or a claim.
+- **`lib/admin-classifier.js` 1.0.0** reads the same events the walk already has (block_results; no tx body, no extra chain read):
+  - for **every contract on the chain**: an upgrade (`migrate`, with the code id and the contract's own previous → new version
+    when it reports one), an admin change (`update_contract_admin`), new code stored (`store_code`);
+  - for the **watched contracts**: a list / setting / role / governance / delegation / reserve change, picked by the action's
+    name (`CHANGE_RE`), and the weekly distribution (kind `epoch`, `routine: true`);
+  - **anything a watched DAO's passed proposal changes**, on whatever contract it lands (its member group, a sub-DAO, a
+    treasury tool).
+  - Each record says who and how: `signer` (the account that sent the message) and `via` — `{ kind: 'dao_proposal', dao,
+    proposal_module, proposal_id }` when a DAO DAO proposal module's execute precedes it in the same message, `{ kind: 'authz' }`
+    for an authz exec, `null` when it was sent directly.
+  - The vocabulary is the census of the stored walk: 1,103,059 transactions, 238 distinct wasm action names; 20 are changes
+    (121 events in 17 months) and no user action or callback matches.
+- **The walk** (`index.js`): one cheap look per transaction (`adminTouch`), the classifier on the ones that pass, and a new
+  stream — `tla-core contract-watch/events/<YYYY>/<MM>.json` — with the transfers stream's rules: keyed merge (`k` =
+  `txhash:n`), never-shrink, a failed publish holds the cursor. Watched = `config/contracts.js` + `docs/curated/
+  known_contracts.json` + the capture registry + the optional `docs/curated/contract-watch.json` (158 contracts today). The
+  heartbeat counts `contract_changes` and `contracts_watched`.
+- **History** (`backfill-contract-watch.js`): the same classifier over the walks already stored in a tla-core checkout — the
+  FCD archive (contract genesis → 2025-01-07; message boundaries and lifecycle events rebuilt from each transaction's messages)
+  and the archive walk (2025-01-07 → 2026-06-16). No chain access. On the 2026-11-15 checkout: 1,155,072 transactions → 741
+  records in 27 months — 467 weekly distributions, 112 list changes (47 on the reward lists — 25 whitelist, 22 remove — and 65 amp assets
+  initialised in the compounder), 58 settings, 45 upgrades, 29 delegation changes, 14 admin changes, 7 governance, 7 reserve
+  withdrawals, 2 role changes (`set_addresses` on the global config, 2024-08-09 and 2024-10-07).
+  **All 47 reward-list changes are a Phoenix Directive Stewardship proposal being executed (27 proposals); none was sent
+  directly.** Every upgrade was sent directly by a wallet.
+- **Not covered, stated on the product:** 2026-06-16 → the first forward record (the walk kept only flows then; public nodes
+  hold about the last 2½ months of it); changes made by chain governance at the end of a block (not in a transaction's
+  events); settings whose contract emits no action. A daily state read (code id, admin, settings — before → after) is the next
+  piece and covers the last two without a sender.
+- **Gate** `mock-run-contract-watch.js` 33/33 on real stored transactions found by height + hash: the classifier (A), the
+  FCD-era adapter (F), the real `run()` over a chain built from them — month files, flows untouched, idempotent re-walk, a
+  failed publish holding the cursor, heartbeat counts (W) — and with `FULL=1` the whole corpus (D). `mock-run-pressure` 12/12;
+  `gate-nft-aux` 6/10 and `mock-run-nft-v2` (a fixture path that no longer exists) as before this change.
+- Noted, not changed: `mock-run.js` builds its chain from the FCD archive's old uncompressed layout (`state.json`, `part-*.json`);
+  since the archive was compacted to `.json.gz` it builds an empty chain and stops in scenario B.
+
 ## 3.5.15 — 2026-11-25 — a wallet's P&L file is written when the wallet did something (pnl 1.8.0)
 
 - **Measured first.** Nine days of tla-core's history (2026-11-15 → 11-25, 19,236 commits) pack to 458.6 MB: the data repo grows

@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.5.15';   // v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.6.0';   // v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -90,6 +90,7 @@ function realGithubApiRequest(method, apiPath, body, accept) {
 }
 const T = { httpGet: realHttpGet, githubApiRequest: realGithubApiRequest, now: () => new Date() };
 const AX = require('./lib/aux-classifiers.js');
+const AD = require('./lib/admin-classifier.js');   // 3.6.0: contract changes (who changed a list, a setting, a role, the code) from the same events
 
 // ----------------------------------------------------------------------------- aux forward capture (registry-driven — SPEC-registry-extensions-pnl)
 // The capture registry is the single source of watched extension addresses:
@@ -97,6 +98,7 @@ const AX = require('./lib/aux-classifiers.js');
 // failure disables aux for THIS run only (warned + heartbeat-noted) — core
 // flows capture is never blocked by the extension layer.
 let AUX = null;
+let ADMIN_WATCH = null;   // 3.6.0: the contracts whose list / setting / role / governance changes are kept; upgrades and admin changes are kept for every contract
 let DENOM_RESOLVE = null;   // 3.4.3: token-catalog denom → symbol (shared lib); null when the catalog read failed (records then carry denom_symbol:null + reason)
 const DS = require('../lib/denom-symbol.js');
 // 2026-09-12 aDAO migration: the NFT aux stream (aDAO transfers) is an aDAO product, so it can live in the aDAO
@@ -178,6 +180,38 @@ async function getBlockResults(N) {
 }
 const txHashOf = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex').toUpperCase();
 
+// ── 3.6.0 CONTRACT CHANGES (lib/admin-classifier.js) ───────────────────────────────────────────────────────────────
+// The walk already sees every transaction of every block; until now it kept deposits, withdrawals and claims and dropped
+// the rest — including the transaction that takes an asset off a reward list. This stream keeps the changes:
+//   • for EVERY contract on the chain: an upgrade (migrate), an admin change, new code stored;
+//   • for the watched contracts: a list / setting / role / governance / delegation change, and anything a watched DAO's
+//     passed proposal changes anywhere.
+// Watched = config/contracts.js + tla-core docs/curated/known_contracts.json + the capture registry + the optional
+// docs/curated/contract-watch.json. A list that cannot be read costs coverage of what it alone names, never the walk.
+// Records go to tla-core contract-watch/events/<YYYY>/<MM>.json — one keyed merge per month, never-shrink, and a failed
+// publish holds the cursor exactly like the transfers stream.
+const ADMIN_DIR = 'contract-watch/events';
+async function loadAdminWatch() {
+  const base = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}`;
+  const [known, registry, extra] = await Promise.all([
+    tryGetJson(`${base}/docs/curated/known_contracts.json?t=${Date.now()}`, 'known_contracts (contract-watch)'),
+    tryGetJson(`${base}/tla-voting/capture-registry.json?t=${Date.now()}`, 'capture-registry (contract-watch)'),
+    T.httpGet(`${base}/docs/curated/contract-watch.json?t=${Date.now()}`).catch(() => null),   // optional: absent is normal
+  ]);
+  const watch = AD.adminWatchFrom({ config: C, known, registry, extra });
+  console.log(`  contract-watch: ${watch.size} contracts watched for list / setting / role / governance changes (${known ? 'registry' : 'NO registry'}, ${registry ? 'capture registry' : 'NO capture registry'}${extra ? ', extra list' : ''}); upgrades and admin changes are kept for every contract`);
+  return watch;
+}
+// the cheap look before a transaction is hashed and classified: does it carry a lifecycle event, or touch a watched contract or DAO?
+function adminTouch(events) {
+  for (const e of events || []) {
+    if (AD.LIFECYCLE[e.type]) return true;
+    if (e.type !== 'wasm' || !ADMIN_WATCH) continue;
+    for (const a of e.attributes || []) if ((a.key === '_contract_address' || a.key === 'dao') && ADMIN_WATCH.has(a.value)) return true;
+  }
+  return false;
+}
+
 // Only txs touching a watched contract are classified — block data sees the
 // whole chain, unlike tx_search; without this gate the classifier's claim
 // fallback would capture other protocols (spec D4). Classifier unchanged.
@@ -218,7 +252,7 @@ async function firstAvailable(lo, hi) {
 // { records, processedTo, gaps } — safe to commit partial progress.
 async function walkBlocks(from, to, budgetNote) {
   const CONC = Number(process.env.WALK_CONCURRENCY || 4);
-  const records = [], gaps = [], transfers = [];
+  const records = [], gaps = [], transfers = [], admin = [];
   const aux = { votion: [], dex: [], nft: [], rawSamples: [] };
   let N = from, inFlight = new Map();
   const launch = (h) => { if (h <= to && !inFlight.has(h)) inFlight.set(h, getBlock(h)); };
@@ -242,8 +276,10 @@ async function walkBlocks(from, to, budgetNote) {
       for (let i = 0; i < blk.txsB64.length; i++) {
         const res = results[i]; if (!res) continue;
         const t2 = touchesOf(res.events);
-        if (!t2.core && !t2.aux && !t2.transfer) continue;
+        const adm = !(res.code) && adminTouch(res.events);
+        if (!t2.core && !t2.aux && !t2.transfer && !adm) continue;
         const txr = { txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: res.code || 0, events: res.events };
+        if (adm) admin.push(...AD.classifyAdminTx(txr, ADMIN_WATCH));
         if (t2.core) { const rec = classifyFlowTx(txr); if (rec) records.push(rec); }
         if (t2.transfer) {
           const watchedAll = new Set([...Object.keys(WATCH), ...((AUX && AUX.watch) ? AUX.watch : [])]);
@@ -260,7 +296,7 @@ async function walkBlocks(from, to, budgetNote) {
     if (Date.now() - lastLog > 15000) { console.log(`  walked to ${N} (${to - N} to go, ${records.length} flows)`); lastLog = Date.now(); }
     N++; launch(N + CONC - 1);
   }
-  return { records, processedTo: to, gaps, note: budgetNote, aux, transfers };
+  return { records, processedTo: to, gaps, note: budgetNote, aux, transfers, admin };
 }
 
 // SHARED CLASSIFIER — Marker: <<FLOWS CLASSIFIER v3>>
@@ -567,6 +603,7 @@ async function run() {
 
   // 1b. aux watch-sets (registry-driven; failure disables aux this run only)
   AUX = await loadAuxRegistry();
+  try { ADMIN_WATCH = await loadAdminWatch(); } catch (e) { ADMIN_WATCH = AD.adminWatchFrom({ config: C }); console.warn(`  ⚠ contract-watch: watch lists unreadable (${e.message}) — the crons' own contracts only this run`); }
   try { const cat = await tryGetJson(`https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/token-catalog/snapshots/current.json?t=${Date.now()}`, 'token-catalog (denom symbols)'); if (cat) { DENOM_RESOLVE = DS.buildResolver(cat); console.log(`  token-catalog: ${DENOM_RESOLVE.size} denoms resolvable`); } } catch (e) { console.warn('  ⚠ token-catalog read failed — aux records carry denom_symbol:null:', e.message); }
   if (!AUX) console.warn('  ⚠ aux registry unavailable — extension streams skipped THIS run (core capture unaffected)');
 
@@ -656,6 +693,29 @@ async function run() {
       try { await publishFile(p2, JSON.stringify(m.merged), `tla-flows/transfers ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`); transferCounts.added += m.added + m.upgraded; }
       catch (e) { addErr(`transfers-publish:${mk}`, e); allComplete = false; }
     }
+  }
+
+  // 5b-admin. 3.6.0 CONTRACT CHANGES stream — own stream, keyed merge (txhash:n), never-shrink; a failed publish holds the cursor.
+  const adminCounts = { added: 0, by_kind: {} };
+  if (walk.admin && walk.admin.length) {
+    const byM = {};
+    for (const r of walk.admin) (byM[monthKey(r.timestamp)] ||= []).push(r);
+    for (const mk of Object.keys(byM).sort()) {
+      const p2 = `${ADMIN_DIR}/${mk}.json`;
+      const mr = await apiGetJsonAt(p2);
+      if (!mr.ok) { addErr(`contract-watch:${mk}`, new Error('read failed — skipping publish this run')); allComplete = false; continue; }
+      const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
+      if (existing === null) { addErr(`contract-watch:${mk}`, new Error('existing is not an array — refusing to overwrite')); allComplete = false; continue; }
+      const m = AX.mergeKeyed(existing, byM[mk]);
+      if (m.merged.length < existing.length) { addErr(`contract-watch:${mk}`, new Error('never-shrink violation')); allComplete = false; continue; }
+      if (!(m.added + m.upgraded)) continue;
+      try {
+        await publishFile(p2, JSON.stringify(m.merged), `contract-watch ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`);
+        adminCounts.added += m.added + m.upgraded;
+        const had = new Set(existing.map(r => r.k)); for (const r of byM[mk]) if (!had.has(r.k)) adminCounts.by_kind[r.kind] = (adminCounts.by_kind[r.kind] || 0) + 1;
+      } catch (e) { addErr(`contract-watch-publish:${mk}`, e); allComplete = false; }
+    }
+    if (adminCounts.added) console.log(`  contract-watch: +${adminCounts.added} change(s) ${JSON.stringify(adminCounts.by_kind)}`);
   }
 
   // 5b. aux streams (registry-driven; publish failures hold the cursor — the
@@ -749,7 +809,7 @@ async function run() {
   // 8. heartbeat
   await publishHeartbeat({
     startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added },
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added, contract_changes: adminCounts.added, contracts_watched: ADMIN_WATCH ? ADMIN_WATCH.size : 0 },
     lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });
