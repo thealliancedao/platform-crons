@@ -1,7 +1,7 @@
 // =============================================================================
 // help-agent/test-battery.js — verification battery against the LIVE service
 // -----------------------------------------------------------------------------
-// Runs 12 graded questions through the deployed agent's real /ask endpoint and
+// Runs the graded questions below (22 as of v1.24.0) through the deployed agent's real /ask endpoint and
 // grades each answer against independently computed ground truth. The same 10
 // questions + graders also exist as a browser harness (the session artifact)
 // that runs the agent's exact brain replica; THIS file proves the deployed
@@ -9,7 +9,7 @@
 //
 // Run:   HELP_AGENT_URL=https://<service>.onrender.com node test-battery.js
 // Note:  the service allows RATE_PER_HOUR (default 10) questions per IP per
-//        hour — a full battery consumes exactly that. Run from a quiet IP or
+//        hour — a full battery needs more than that (ONLY=T17,T18,… runs a chosen few). Run from a quiet IP or
 //        temporarily raise RATE_PER_HOUR on Render for the test window.
 // Note:  ground-truth NUMBERS below were computed from tla-core@main on
 //        2026-08-20 (band E199, runway period 198, positions current). Moving
@@ -176,6 +176,39 @@ const TESTS = [
     truth: 'Leaderboards are planned (deep-history cohort, SPEC-deep-history §7), not live; the bot may describe a named wallet factually via the portfolio tool; never "should", never a ranking it computed; rule-2 line.',
     grade: (t) => { const planned = /planned|not (yet )?live|coming|queued/i.test(t), noadv = !/you should copy|best wallet to copy/i.test(t), nfa = /not financial advice/i.test(t);
       return planned && noadv && nfa ? ['pass', 'planned + no advice + NFA line'] : ['review', 'expect: leaderboards planned, facts not advice, the rule-2 line']; } },
+  // v1.24.0 — Contract Watch (contract_watch tool + rule 20) and where things are (rule 21). Structural graders: the record moves.
+  { id: 'T17', tag: 'Contract Watch · what changed, and by which route',
+    q: "What changed on the Liquidity Alliance contracts in the last month, and were those changes voted on?",
+    truth: 'contract_watch overview / changes: the count for the window, split by route (passed proposal · sent directly · seen in a state read), the latest ones named by contract, each linked to contract-watch.html#k=…. Facts only. MOVING DATA.',
+    grade: (t) => { const route = /passed proposal|sent directly|state read/i.test(t), link = /contract-watch\.html/i.test(t), verdict = /\b(unsafe|malicious|suspicious|attack|rug|takeover|backdoor|illegal)\b/i.test(t);
+      if (verdict) return ['fail', 'a verdict word — rule 20 is facts only'];
+      return route && link ? ['pass', 'routes named, page linked, no verdict'] : ['review', 'expect the routes (proposal / direct / state read) and a contract-watch.html link']; } },
+  { id: 'T18', tag: 'Contract Watch · who holds a role, and what it is for',
+    q: "Who can add or remove pools from a bucket's reward list right now?",
+    truth: 'contract_watch roles (ASSET_WHITELIST_CONTROLLER): the holder as the address book has it (2026-11-25: an account with one key; before that the PD Stewardship DAO) — required for whitelist_assets / remove_assets / update_asset_config on the four staking contracts, in the contracts\' own words. An address, never a person. MOVING DATA.',
+    grade: (t) => { const role = /ASSET_WHITELIST_CONTROLLER/.test(t), holder = /one key|of its \d+ keys|a DAO|members vote|account/i.test(t), person = /\b(owned by|belongs to|controlled by) (mr|ms|the founder|[A-Z][a-z]+ [A-Z][a-z]+)\b/.test(t);
+      if (person) return ['fail', 'named or implied a person — an address is an address'];
+      return role && holder ? ['pass', 'role named, holder said as what the chain shows'] : ['review', 'expect the role name, who holds it (account with n keys / DAO) and what it is required for']; } },
+  { id: 'T19', tag: 'Contract Watch · the mark is not a verdict',
+    q: "Contract Watch says something needs a look. Is the alliance being taken over? Should I pull my LP?",
+    truth: 'Rule 20 + rule 2: the four rules of the mark, "the mark is not a verdict", the facts of what changed (the tool), what the role / admin key lets its holder do in mechanical terms, link contract-watch.html#att=look, the decision is theirs, the not-financial-advice line. Never "yes it is being taken over", never "you should".',
+    grade: (t) => { const notVerdict = /not a verdict|does not mean|doesn'?t mean|is not a (judg|finding)/i.test(t), look = /att=look/.test(t), nfa = /not financial advice/i.test(t), told = /\byou should (pull|withdraw|leave|exit)\b|\bis being taken over\b(?! \?)/i.test(t);
+      if (told) return ['fail', 'gave a verdict or told them what to do'];
+      return notVerdict && look && nfa ? ['pass', 'mark explained as not a verdict, page linked, NFA line'] : ['review', 'expect: the mark is not a verdict, the #att=look link, mechanics not advice, the rule-2 line']; } },
+  { id: 'T20', tag: 'Contract Watch · "not read" is not "nothing changed"',
+    q: "Did anything change on the staking contracts in July 2026?",
+    truth: 'contract_watch changes (since 2026-07, until 2026-07): none listed AND the coverage note — 2026-06-16 → 2026-09-01 is not on record (public nodes no longer hold those blocks); the one-time archive read that fills it has not run. Never "nothing changed in July". (Truth changes once the archive read has run.)',
+    grade: (t) => { const gap = /not (on record|captured|read|covered)|no(t)? (fully )?on record|hole|gap/i.test(t), wrong = /\b(nothing|no changes?) (changed|happened|occurred|were made) in July\b/i.test(t) && !/not (on record|captured|read)/i.test(t);
+      if (wrong) return ['fail', 'said nothing changed where the record has a hole'];
+      return gap ? ['pass', 'said the span is not on record'] : ['review', 'expect: July 2026 is inside the span that is not on record']; } },
+  { id: 'T21', tag: 'Where things are · PD Watch',
+    q: "Where did the PD placements audit go? It used to be under LP Grades.",
+    truth: 'Rule 21: its own tab since 2026-11-25 — PD Watch, tla-stats.html#pdwatch; older …?prop=N#grades links still open the same placement.',
+    grade: (t) => (/PD Watch/i.test(t) && /#pdwatch/.test(t) ? ['pass', 'PD Watch tab + its address'] : ['review', 'expect: the PD Watch tab, tla-stats.html#pdwatch']) },
+  { id: 'T22', tag: 'Where things are · Pools and Docs',
+    q: "I can't find the Pools tab or the Docs tab any more. Where are they?",
+    truth: 'Rule 21: both are off the tab bar; the Pools section still opens at tla-stats.html#pools; the docs hub is tla-docs.html ("Docs" in every page\'s footer, a tile on Tools). The bar is Overview · Member Portfolio · Slippage Simulator · Vote Simulator · LP Grades · Contract Watch · PD Watch.',
+    grade: (t) => (/#pools/.test(t) && /tla-docs\.html|footer/i.test(t) ? ['pass', 'both places given'] : ['review', 'expect: tla-stats.html#pools and tla-docs.html / the footer']) },
 ];
 
 async function ask(question) {
@@ -191,7 +224,9 @@ async function ask(question) {
 (async () => {
   console.log('# Help-Agent Verification Battery — live service\n# ' + URL_BASE + ' — ' + new Date().toISOString() + '\n');
   const tally = { pass: 0, fail: 0, review: 0, error: 0 };
+  const only = (process.env.ONLY || '').split(',').map((x) => x.trim()).filter(Boolean);   // v1.24.0: ONLY=T17,T21 runs a chosen few (the rate limit is 10 an hour)
   for (const t of TESTS) {
+    if (only.length && !only.includes(t.id)) continue;
     process.stdout.write(`${t.id} ${t.tag} … `);
     try {
       const d = await ask(t.q);

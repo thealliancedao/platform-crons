@@ -1,5 +1,15 @@
 // =============================================================================
 // help-agent/server.js — the site's grounded Q&A + triage service (v1)
+// v1.24.0 (2026-11-25, owner: "get the help bot brought up to speed … so it can answer questions on what we have added in here"):
+//   CONTRACT WATCH — tool contract_watch (lib/contract-watch-tool.js) reads the SAME record contract-watch.html renders (tla-core
+//   contract-watch/**): overview / changes / contract / roles / address — who changed a contract, what, when, by which route (a passed
+//   proposal, sent directly, seen in a state read), who holds each role, what a role is required for in the contracts' own words, how an
+//   account signs. Facts only: the page's "needs a look" mark stays the page's. Rule 20 = how to use it and how to say it (no verdict,
+//   no motive, no person). Rule 21 = WHERE THINGS ARE: the TLA tab bar is Overview · Member Portfolio · Slippage Simulator · Vote
+//   Simulator · LP Grades · Contract Watch · PD Watch (PD placements moved out of LP Grades; Pools and Docs are off the bar). Corpus:
+//   the Contract Watch chapter + the head of its changelog; a source can carry its own length cap, and the DATA-MAP is read whole again
+//   (its last two sections had fallen past the 20,000-character cap). read_product may read contract-watch/**. Gate
+//   gate-contract-watch-tool.mjs on the real record.
 // v1.23.0 (2026-10-16): rule 19 adds PD's Votion holding via a verified sub-DAO
 // v1.22.0 (2026-10-16): rule 19 adds influence detail (bribe-dollar share, per bucket) and the placement lead-up file
 // v1.21.0 (2026-10-16): rule 19 adds who trades (trading.*) and who holds the vote (lp-grades/scorecard/holders.json)
@@ -70,8 +80,10 @@
 const http = require('http');
 const NFT = require('./lib/nft-tools.js');
 const VMT = require('./lib/vote-market-tool.js');
+const CWT = require('./lib/contract-watch-tool.js');   // v1.24.0: Contract Watch (the record the page renders; facts only)
 const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfolio tool (reads the page's own products; coded findings)   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
+const VERSION = '1.24.0';
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
 // browser treats them as different origins, and allowing only the apex
@@ -94,7 +106,7 @@ const CORE = 'https://raw.githubusercontent.com/thealliancedao/tla-core/main';
 const CORPUS_SOURCES = [
   ['README',            `${CORE}/README.md`],
   ['repo-catalog',      `${CORE}/docs/REPO-CATALOG.md`],
-  ['data-map',          `${CORE}/docs/agent/DATA-MAP.md`],
+  ['data-map',          `${CORE}/docs/agent/DATA-MAP.md`, 30000],   // v1.24.0: read whole — at 20,000 its last sections (what the site shows and why · Lion DAO) were cut off
   ['known-contracts',   `${CORE}/docs/curated/known_contracts.json`],
   ['grading-config',    `${CORE}/docs/curated/grading_config.json`],
   ['pricing-doctrine',  `${CORE}/docs/ecosystem-knowledge/PRICING-DOCTRINE.md`],
@@ -150,7 +162,11 @@ const CORPUS_SOURCES = [
   // v1.17.0: the Member Portfolio — every card, its source + cadence, the honesty rules, the diagnosis table; and what is planned
   ['member-portfolio',  `${CORE}/docs/ecosystem-knowledge/member-portfolio.md`],
   ['spec-deep-history', `${CORE}/docs/pending-changes/SPEC-deep-history.md`],
-  ['spec-portfolio-solid', `${CORE}/docs/pending-changes/SPEC-portfolio-solid.md`],   // v1.15.0: the Lion DAO ecosystem — ROAR, pyROAR and the festival, ROAR20, pixeLions, Burning Lions, where each number lives
+  ['spec-portfolio-solid', `${CORE}/docs/pending-changes/SPEC-portfolio-solid.md`],
+  // v1.24.0: Contract Watch — the page, the route of a change, the "needs a look" mark, roles and what each is for, what the record covers;
+  // and the newest entries of its changelog (a changelog is newest-first, so its head is what changed last)
+  ['contract-watch',    `${CORE}/docs/ecosystem-knowledge/contract-watch.md`],
+  ['contract-watch-changelog', `${CORE}/docs/changelogs/contract-watch-log.md`, 9000],   // v1.15.0: the Lion DAO ecosystem — ROAR, pyROAR and the festival, ROAR20, pixeLions, Burning Lions, where each number lives
 ];
 const LIVE_HEADS = [
   ['system-health',     `${CORE}/system-health/current.json`],
@@ -158,20 +174,39 @@ const LIVE_HEADS = [
   ['snapshot-heartbeat',`${CORE}/member-data/tla-snapshot/heartbeat.json`],
   ['bribe-runway',      `${CORE}/tla-voting/bribe-state/runway.json`],
 ];
-let corpusCache = { at: 0, text: '' };
+// v1.24.0: THE CORPUS HAS A BUDGET. Every source had a cap, but their sum had none: as chapters and changelogs grew, the prompt crept
+// toward the model's window (about 493,000 characters of corpus before this version — some 160k tokens of 200k with the rules and
+// the tools), where a question that needs several tool results fails outright instead of being answered. Above CORPUS_BUDGET the
+// sources whose tail matters least — changelogs (newest first), specs, the build queue, the cron table — are shortened in proportion,
+// never below SOFT_FLOOR; knowledge chapters, the data map and the live heads are never shortened. /health reports the size.
+const CORPUS_BUDGET = parseInt(process.env.CORPUS_BUDGET_CHARS || '460000', 10);
+const SOFT = /-changelog$|^spec-|^build-queue$|^cron-fleet$/, SOFT_FLOOR = 6000;
+function fitCorpus(list, budget) {   // list: [{ name, body, cut }] with body already at its own cap; returns the characters taken off
+  const over = list.reduce((s, p) => s + (p.body ? p.body.length : 0), 0) - budget; if (over <= 0) return 0;
+  const soft = list.filter((p) => p.body && SOFT.test(p.name) && p.body.length > SOFT_FLOOR);
+  const room = soft.reduce((s, p) => s + (p.body.length - SOFT_FLOOR), 0); if (!room) return 0;
+  const f = Math.min(1, over / room); let off = 0;
+  for (const p of soft) { const drop = Math.ceil((p.body.length - SOFT_FLOOR) * f); if (drop > 0) { p.body = p.body.slice(0, p.body.length - drop); p.cut = true; off += drop; } }
+  return off;
+}
+let corpusCache = { at: 0, text: '' }, corpusInfo = null;
 async function grounding() {
   if (Date.now() - corpusCache.at < 15 * 60 * 1000 && corpusCache.text) return corpusCache.text;
-  const parts = [];
-  for (const [name, url] of [...CORPUS_SOURCES, ...LIVE_HEADS]) {
+  const list = [];
+  for (const [name, url, cap] of [...CORPUS_SOURCES, ...LIVE_HEADS]) {   // v1.24.0: an entry may carry its own cap (third item); 20,000 otherwise
+    const max = cap || 20000;
     try {
       const r = await fetch(url, { headers: { 'User-Agent': 'tla-help-agent' } });
-      if (!r.ok) { parts.push(`<${name}>UNAVAILABLE (${r.status})</${name}>`); continue; }
-      let t = await r.text();
-      if (t.length > 20000) t = t.slice(0, 20000) + '\n…[truncated]';
-      parts.push(`<${name}>\n${t}\n</${name}>`);
-    } catch (e) { parts.push(`<${name}>FETCH ERROR</${name}>`); }
+      if (!r.ok) { list.push({ name, miss: `UNAVAILABLE (${r.status})` }); continue; }
+      const t = await r.text();
+      list.push({ name, body: t.length > max ? t.slice(0, max) : t, cut: t.length > max });
+    } catch (e) { list.push({ name, miss: 'FETCH ERROR' }); }
   }
-  corpusCache = { at: Date.now(), text: parts.join('\n\n') };
+  const shortened = fitCorpus(list, CORPUS_BUDGET);
+  const text = list.map((p) => (p.miss ? `<${p.name}>${p.miss}</${p.name}>` : `<${p.name}>\n${p.body}${p.cut ? '\n…[truncated]' : ''}\n</${p.name}>`)).join('\n\n');
+  corpusInfo = { chars: text.length, budget: CORPUS_BUDGET, sources: list.length, not_read: list.filter((p) => p.miss).map((p) => p.name), shortened_to_fit: shortened, built_at: new Date().toISOString() };
+  console.log('[corpus]', JSON.stringify(corpusInfo));
+  corpusCache = { at: Date.now(), text };
   return corpusCache.text;
 }
 
@@ -383,6 +418,8 @@ Hard rules, in priority order:
      out of the field from 2026-09-11 (winding down). Credit what fits (e.g. a high selection match) as plainly as what does not.
    - NEVER characterize people or motives — no "unfair", "manipulating", "dishonest", no claims about any person. State numbers and let
      the visitor conclude. Link the placement (its "link" field) so they can check it themselves; for the grades, link tla-stats.html#grades.
+     Since 2026-11-25 the placements audit is its own tab, PD WATCH (tla-stats.html#pdwatch, a placement: tla-stats.html?prop=<id>#pdwatch);
+     LP Grades keeps the pools view (earned vs received). An older …?prop=<id>#grades link opens the same placement on PD Watch.
    - WHO TRADES (v1.21.0): placements carry trading.top3_pct / twoway_pct (the picked pools' volume in the week before, share from each
      pool's largest 3 wallets and from wallets trading both ways) and trading.new_pool_luna_pct (LUNA on pools under 28 days old or with no
      history). Say plainly that market makers and arbitrage concentrate volume and trade both ways by nature — a high share is a fact to
@@ -402,6 +439,44 @@ Hard rules, in priority order:
      "who holds Votion?" — groups (Votion vaults / named DAOs and protocols / individual wallets with or without TLA liquidity) x activity
      (active / set-and-forget / not voting), by_entity, concentration, votion.by_entity. Name organisations only as the file names them;
      individuals only as totals and counts — never point at a wallet. Link the Overview (tla-stats.html#overview).
+20. CONTRACT WATCH (v1.24.0) — "who changed a contract?", "what changed lately?", "who can upgrade X?", "who holds role Y / who can
+   edit the reward list?", "was that change voted on?", "is this change normal?" go through the contract_watch tool first (the
+   <contract-watch> chapter in the corpus is the map; the page is https://theadao.com/contract-watch.html — the Contract Watch tab).
+   - WHICH ACTION: what changed lately / since a date / of one kind → changes (since, until, kind, how) or overview. One contract — its
+     changes, the code it runs, who can upgrade it → contract. Who holds a role, what the role is for → roles (role=NAME for one in
+     full). What an address is to the alliance → address. A tx hash or a proposal number (A236) → changes with q.
+   - SAY IT THE PAGE'S WAY, facts only: what changed ("what"), on which contract (the tool's name and group), when (the UTC date), and
+     the ROUTE — a passed proposal (name the DAO and the proposal number, link it); sent directly (by whom: the tool's signs_with words —
+     "an account with one key", "an account that needs m of n keys", a DAO, a contract); or seen in a state read (before, now, the two
+     read dates — and say plainly that such a record does not show who sent the change). What a role is REQUIRED FOR is the contracts'
+     own answer in a simulation (required_for) — say that is where it comes from. The admin of a contract is the address that can
+     replace its code.
+   - NO VERDICT, NO MOTIVE, NO PERSON. Never "safe", "unsafe", "risky", "attack", "rug", "malicious", "suspicious", "illegal",
+     "backdoor", "takeover", "compromised". Never why someone did it. An address is an address: name it only as the tool names it,
+     never guess who holds a key — "one key" says how many keys sign, not who holds it or how it is kept. "Sent directly" is the usual
+     route for a power that belongs to an account; it is not, by itself, a finding.
+   - "NEEDS A LOOK" is the PAGE'S mark. Its four rules (chapter): control moved from a DAO to an account · not the route this kind of
+     change took before · a vote on it was open or did not pass · no transaction explains a difference. A passed proposal and the weekly
+     routine are never marked. The tool does not carry the mark and you do not decide it: explain the rules, give the facts of the change,
+     and link https://theadao.com/contract-watch.html#att=look (what is marked now) plus the change's own link. The mark is not a verdict.
+   - "IS MY MONEY SAFE?", "SHOULD I LEAVE?" → rule 2. Say in mechanical terms what the role or the admin key lets its holder DO (the
+     admin can replace the contract's code; ASSET_WHITELIST_CONTROLLER can add or remove assets on a bucket's reward list, which decides
+     which pools earn; DELEGATION_CONTROLLER can move the alliance's delegated stake), who holds it now and how they sign, what changed
+     and when — and that the decision is theirs. End with the rule-2 line.
+   - COVERAGE: when the tool returns coverage_note, or the dates asked about fall between 2026-06-16 and 2026-11-25, say it — "not read"
+     is not "nothing changed". The one-time archive read that fills the hole is started by a person, never on a timer, and has not run
+     until the tool's coverage says so. Never say why it has not run.
+   - Link the change (its "link"), the contract or address page, and the proposal when there is one — so the visitor can check it.
+21. WHERE THINGS ARE (v1.24.0) — since 2026-11-25 every TLA page shows the same seven tabs, in this order:
+   Overview (tla-stats.html#overview) · Member Portfolio (member-portfolio.html) · Slippage Simulator (slippage.html) · Vote Simulator
+   (vote-market.html — the Vote Market planner; rule 16's tool is the same engine) · LP Grades (tla-stats.html#grades — the LP
+   Scorecard's pools view, earned vs received) · Contract Watch (contract-watch.html) · PD Watch (tla-stats.html#pdwatch — the audit of
+   Phoenix Directive's bribe placements; it was a view inside LP Grades before).
+   - "Where did the PD placements / the PD audit go?" → the PD Watch tab. "Where is the Pools tab?" → off the tab bar for now; its
+     section still opens at tla-stats.html#pools. "Where are the Docs?" → off the tab bar; the docs hub is tla-docs.html, "Docs" in every
+     page's footer and a tile on Tools. "Is there a vote simulator?" → the Vote Simulator tab.
+   - A chapter or changelog in the corpus that says "LP Grades → PD placements", "the Pools tab" or "the Docs tab" describes the bar
+     before that day — give the place above.
 18. TICKETS (v1.19.0, owner 2026-10-13: "people will ask the bot when they find problems … get answers or a ticket they can forward to
    me") — when the visitor reports something broken, wrong, missing or not loading and you could NOT resolve it from the data (a fault, a
    claim you cannot refute, CANNOT VERIFY, a page error you cannot explain), answer as usual, then end with a ticket in EXACTLY this form:
@@ -563,7 +638,7 @@ async function walletExtract(question, explicitWallet) {
 // hash, time, memo, per-msg action summary (wasm actions included), transfers.
 // Bounds: max 3 tool calls per question, 20 txs per search, 8s timeout each.
 const LCD = process.env.LCD_URL || 'https://terra-lcd.publicnode.com';
-const PRODUCT_PREFIXES = ['dao-originations/','member-data/','nfts/','nft-collections/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/'];
+const PRODUCT_PREFIXES = ['dao-originations/','member-data/','nfts/','nft-collections/','tla-voting/','lp-grades/','votion/','network-and-prices/','dex-data/','system-health/','catalog/','token-catalog/','tla-flows/','dex-liquidity/','docs/','contract-watch/'];   // v1.24.0: contract-watch/** (the contract_watch tool is the better reader; this is for a raw file)
 const CHAIN_TOOLS = [
   { name: 'read_product', /* input.key: pool/token name for surgical extraction from big keyed files (apr-history, pool-status-history, token-catalog…) — ALWAYS use key for per-pool questions */
     description: 'Fetch a data file from the public tla-core repo (the same files the site renders). Use for questions needing actual records: e.g. nfts/adao/transfers/2026/08.json for NFT transfer/stake/unstake events, nfts/adao/flows/2026/08.json for sales/listings, tla-voting/events/locks/2026/08.json for lock events, member-data/positions/current.json, lp-grades/snapshots/current.json, tla-voting/bribe-state/runway.json. Monthly streams use {yyyy}/{mm}.json. The REPO-CATALOG in your corpus maps everything.',
@@ -586,6 +661,9 @@ const CHAIN_TOOLS = [
   { name: 'portfolio',   // v1.17.0
     description: 'A wallet\'s Member Portfolio as the page builds it, plus a DIAGNOSIS: the hourly record (totals incl. receipts staked in a DAO = custody, locks, LP, wallet, Credia, VP), the live LP rows (pool, bucket, amplified, active/inactive, USD, distance to the 1% line), the P&L ledger (net USD/LUNA, open / flagged / top closed positions with not_held, held_in, moves = where a receipt went, disputed, unpriced trips), Votion stories (USD in → now = LUNA price + LST staking + Votion legs, real vs advertised APR), each product\'s freshness, and coded findings {code, kind: known|check|fault, says} with a report block when something is a fault. Use for ANY question about a wallet\'s portfolio, "why does my portfolio show X", "is this number right", "what does wallet Y do / hold / how did it do", and before telling anyone a number is wrong.',
     input_schema: { type: 'object', properties: { wallet: { type: 'string', description: 'terra1… address (the visitor\'s own, or a public wallet they name — a DAO treasury, a registered member, the GMC Backing Wallet)' } }, required: ['wallet'] } },
+  { name: 'contract_watch',   // v1.24.0
+    description: 'Contract Watch — who changed a Liquidity Alliance contract, what, when, and by which route (a passed proposal, sent directly, or seen in a state read). The SAME record contract-watch.html renders. Actions: overview (the record at a glance — counts by route and kind, the latest changes, what the record covers); changes (the changes that match: contract by name or address, kind, how, since / until, sender, q = a word, a proposal number like A236, or a tx hash); contract (one contract: its group, code id, admin and how that admin signs, what each kind of change on it requires, its changes); roles (the TLA address book: who holds each role, what the role is required for in the contracts\' own words, how the holder signs — role=<NAME> for one role in full, with the change that set it); address (one address: the roles it holds, the contracts it can upgrade, how it signs, the changes it sent). Facts only — it does not carry the page\'s "needs a look" mark. Use for ANY question about contract changes, upgrades, admins, roles, reward-list edits, or who can change what.',
+    input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['overview', 'changes', 'contract', 'roles', 'address'] }, contract: { type: 'string', description: 'a contract by the name the page shows ("Single bucket staking", "Bribe manager", "Address book", "Gauge") or its terra1… address' }, kind: { type: 'string', description: 'changes: list (reward lists) | upgrade | admin | role | setting | governance (DAO structure) | delegation | reserve | guard (pause & blacklist) | code (new code uploaded) | weekly (the routine distribution)' }, how: { type: 'string', description: 'changes: proposal | direct | observed (seen in a state read)' }, since: { type: 'string', description: 'changes: YYYY-MM-DD or YYYY-MM' }, until: { type: 'string', description: 'changes: YYYY-MM-DD or YYYY-MM' }, sender: { type: 'string', description: 'changes: a terra1… address — the account that sent it, or the DAO whose proposal it was' }, q: { type: 'string', description: 'changes: a search word — an asset, an action, a proposal number (A236), a tx hash' }, role: { type: 'string', description: 'roles: one role by name, e.g. ASSET_WHITELIST_CONTROLLER' }, address: { type: 'string', description: 'address: a terra1… address' }, days: { type: 'integer', description: 'overview: the window in days (default 30)' }, limit: { type: 'integer', description: 'rows (default 10, max 25)' } }, required: ['action'] } },
   { name: 'search_address_txs',
     description: 'Fetch recent transactions SENT by a terra1 address (message.sender) from the public LCD. Use for "what did this address do" questions. Newest first.',
     input_schema: { type: 'object', properties: { address: { type: 'string' }, limit: { type: 'integer', description: '1-20, default 10' } }, required: ['address'] } },
@@ -962,6 +1040,7 @@ async function runTool(name, input) {
   if (name === 'nft_wallet' || name === 'nft_token') return nftTool(name, input);   // v1.14.0
   if (name === 'vote_market') return VMT.run(input);   // v1.16.0
   if (name === 'portfolio') return PT.run(input);   // v1.17.0
+  if (name === 'contract_watch') return CWT.run(input);   // v1.24.0
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };
@@ -1137,7 +1216,7 @@ const server = http.createServer(async (req, res) => {
   const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
   if (req.method === 'GET' && req.url === '/health') {
-    return send(200, { ok: true, model: MODEL, month_spend_usd: Math.round(spend.usd * 1000) / 1000, budget_usd: BUDGET });
+    return send(200, { ok: true, version: VERSION, model: MODEL, month_spend_usd: Math.round(spend.usd * 1000) / 1000, budget_usd: BUDGET, corpus: corpusInfo });   // v1.24.0: the version (so a deploy can be told from the outside) and the corpus as last built (null until the first question)
   }
   if (req.method === 'POST' && req.url === '/ask') {
     if (!API_KEY) return send(503, { error: 'Assistant not configured (no API key). Use the report form — a maintainer reads every report.' });

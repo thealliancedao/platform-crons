@@ -1,5 +1,22 @@
 # help-agent — the site's grounded Q&A service (v1)
 
+> **v1.24.0 (2026-11-25)** — **Contract Watch.** Tool `contract_watch` (`lib/contract-watch-tool.js`) reads the same record
+> `contract-watch.html` renders (tla-core `contract-watch/**`, `docs/curated/contract-watch.json`): `overview` / `changes` /
+> `contract` / `roles` / `address` — who changed a contract, what, when, by which route (a passed proposal, sent directly, seen in a
+> state read), who holds each role, what a role is required for in the contracts' own words, how an account signs. Facts only: the
+> page's "needs a look" mark stays the page's (its four rules are in the chapter; the bot links `#att=look`). **Rule 20** = when to
+> use it and how to say it (no verdict, no motive, no person; "not read" is not "nothing changed"). **Rule 21** = where things are:
+> the TLA tab bar is Overview · Member Portfolio · Slippage Simulator · Vote Simulator · LP Grades · Contract Watch · PD Watch (the
+> PD placements audit moved out of LP Grades to PD Watch; Pools and Docs are off the bar). Corpus: the Contract Watch chapter and the
+> head of its changelog; `DATA-MAP.md` is read whole again (a source may carry its own cap). **The corpus has a budget**
+> (`CORPUS_BUDGET_CHARS`, default 460,000): above it the changelogs, specs, build queue and cron table are shortened in proportion
+> (never below 6,000 characters each) and the knowledge chapters never — the sum of the per-source caps was unbounded and the prompt
+> had crept close to the model's window. `GET /health` now returns `version` and `corpus` (size, what was shortened, what could not
+> be read). `read_product` may read `contract-watch/**`. Gate `gate-contract-watch-tool.mjs`
+> (`TLA_CORE_DIR=… [CW_DIR=…] [SITE_DIR=…] node gate-contract-watch-tool.mjs`, 72/72 with the site checkout: every count against a
+> recount of the files, the tool's words against the page's for every record, and the server end to end with the model replaced by a
+> script). Battery +T17–T22 (`ONLY=T17,T21 node test-battery.js` runs a chosen few). No new env var is required.
+
 > **v1.17.1 (2026-09-30)** — rule 17 updated: the Solid card is LIVE (debt with no collateral explained); deep history is CAPTURED
 > (1,159 wallets) but the raw archive is private and not on the page yet — the bot never estimates a wallet's past from it and never
 > guesses who owns a wallet. No new env vars, no corpus change. Redeploy picks it up.
