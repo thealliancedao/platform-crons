@@ -84,12 +84,15 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
   const BASE = 5000000; const CHAIN = new Map();   // one transaction per block, 3 blocks apart, plus a block holding an unrelated transaction
   order.forEach((k, i) => { const r = raw(...R[k]); CHAIN.set(BASE + 3 * i, [{ b64: Buffer.from(r.x).toString('base64'), code: r.c || 0, events: r.e, ts: String(r.t).slice(0, 19) + 'Z' }]); });
   CHAIN.set(BASE + 1, [{ b64: Buffer.from('noise').toString('base64'), code: 0, ts: '2025-01-01T00:00:00Z', events: [{ type: 'wasm', attributes: [{ key: '_contract_address', value: 'terra1' + 'z'.repeat(58) }, { key: 'action', value: 'update_config' }] }] }]);
-  const HEAD = BASE + 3 * order.length; const M = { store: {}, failAdminPut: 0, puts: [], head: BASE - 1 };
+  const HEAD = BASE + 3 * order.length; const M = { store: {}, failAdminPut: 0, puts: [], head: BASE - 1, prunedBelow: 0 };
+  const OLD = BASE - 2000;   // an older stretch of the same chain, for the catch-up walk: the same transactions, 4 blocks apart
+  order.forEach((k, i) => { const r = raw(...R[k]); CHAIN.set(OLD + 4 * i, [{ b64: Buffer.from('old' + r.x).toString('base64'), code: r.c || 0, events: r.e, ts: String(r.t).slice(0, 19) + 'Z' }]); });
+  const OLD_END = OLD + 4 * order.length;
   const rawFile = (p) => { if (M.store[p] !== undefined) return JSON.parse(M.store[p]); const f = path.join(SRC, p); if (/^(docs\/curated\/known_contracts\.json|tla-voting\/capture-registry\.json|token-catalog\/snapshots\/current\.json)$/.test(p) && fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8')); throw new Error('HTTP 404 (mock raw)'); };
   cron.T.httpGet = async (url) => {
     if (url.includes('/status')) return { result: { sync_info: { latest_block_height: String(M.head) } } };
     if (url.includes('/block_results?height=')) { const N = Number(url.split('height=')[1]); return { result: { txs_results: (CHAIN.get(N) || []).map(t => ({ code: t.code, events: t.events })) } }; }
-    if (url.includes('/block?height=')) { const N = Number(url.split('height=')[1]); const txs = CHAIN.get(N) || []; return { result: { block: { header: { time: (txs.length ? txs[0].ts : '2025-01-01T00:00:00Z').replace('Z', '.000000000Z') }, data: { txs: txs.map(t => t.b64) } } } }; }
+    if (url.includes('/block?height=')) { const N = Number(url.split('height=')[1]); if (N < M.prunedBelow) throw new Error(`height ${N} is not available, lowest height is ${M.prunedBelow}`); const txs = CHAIN.get(N) || []; return { result: { block: { header: { time: (txs.length ? txs[0].ts : '2025-01-01T00:00:00Z').replace('Z', '.000000000Z') }, data: { txs: txs.map(t => t.b64) } } } }; }
     if (url.includes('raw.githubusercontent.com')) return rawFile((url.match(/main\/(.+?)(\?|$)/) || [])[1]);
     throw new Error('mock httpGet: unhandled ' + url);
   };
@@ -122,6 +125,26 @@ const cls = (k) => AD.classifyAdminTx(BF.rawToTxr(raw(...R[k])), watch);
   check('the cursor advanced to the head and the heartbeat counts the changes and the watched set', cursor() === HEAD && hb().counts.contract_changes === want && hb().counts.contracts_watched === watch.size && /^org-tla-flows-3\.6\./.test(hb().version), { cursor: cursor(), counts: hb().counts, v: hb().version });
   { const before = JSON.stringify(months().map(k => M.store[k])); const cur = JSON.parse(M.store['tla-flows/events/cursor.json']); cur.last_block = BASE - 1; M.store['tla-flows/events/cursor.json'] = JSON.stringify(cur); M.puts = []; await quiet(() => cron.run());   // walk the same window again
     check('walking the same window again adds nothing and rewrites no month of the stream', JSON.stringify(months().map(k => M.store[k])) === before && !M.puts.some(p => /^contract-watch\//.test(p)) && hb().counts.contract_changes === 0, M.puts.filter(p => /^contract-watch\//.test(p))); }
+
+  console.log('— R the catch-up walk (contract-watch/rewalk.json) —');
+  { const RW = 'contract-watch/rewalk.json'; const job = () => JSON.parse(M.store[RW]).jobs[0]; const step = async () => { M.head++; await quiet(() => cron.run()); };
+    const flowsBefore = JSON.stringify(flows()); const base = changes().length;
+    await step(); check('no rewalk.json → nothing walked again, the heartbeat says so (contract_catch_up null)', hb().counts.contract_catch_up === null && changes().length === base, hb().counts.contract_catch_up);
+    M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'gate', from: OLD, to: OLD_END }] }); process.env.ADMIN_REWALK_BLOCKS = '20';
+    await step(); const j1 = job(), n1 = changes().length - base;
+    check('a job of 33 blocks at 20 a run: the first run walks 20, files what those blocks hold and writes its progress', j1.next === OLD + 20 && j1.walked === 20 && !j1.done && n1 > 0 && n1 < 13 && j1.found === n1 && hb().counts.contract_catch_up.walked === 20 && hb().counts.contract_catch_up.done === false, { job: j1, n1 });
+    await step(); const j2 = job(), n2 = changes().length - base;
+    check('the second run finishes the span: done, all 13 changes of that stretch filed under their own keys', j2.done === true && j2.next === OLD_END + 1 && j2.walked === OLD_END - OLD + 1 && n2 === 13 && j2.found === 13 && !!j2.finished_at, { job: j2, n2 });
+    check('the catch-up walk files contract changes only — the flows of those blocks are not filed again', JSON.stringify(flows()) === flowsBefore);
+    await step(); check('every job done → idle; nothing is written', hb().counts.contract_catch_up && hb().counts.contract_catch_up.idle === true && changes().length === base + 13, hb().counts.contract_catch_up);
+    const all2 = changes().length; M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'again', from: OLD, to: OLD_END }] }); process.env.ADMIN_REWALK_BLOCKS = '4000';
+    await step(); check('walking a span that is already filed adds nothing (keyed merge) and still completes', changes().length === all2 && job().done === true && job().found === 0, job());
+    M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'fail', from: OLD, to: OLD_END }] }); for (const k of months()) delete M.store[k]; M.failAdminPut = 99;
+    await step(); check('a failed publish: progress is NOT advanced and the run reports the error', job().next === undefined && !job().done && hb().counts.contract_catch_up.error === 'publish failed' && hb().counts.contract_catch_up.walked === 0, { job: job(), hb: hb().counts.contract_catch_up });
+    M.failAdminPut = 0; await step(); check('…and the next run files the stretch and finishes it', job().done === true && changes().filter(r => r.height < BASE - 5).length === 13, { job: job(), n: changes().filter(r => r.height < BASE - 5).length });
+    M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'pruned', from: OLD - 500, to: OLD_END }] }); M.prunedBelow = OLD - 100;
+    await step(); check('a span that starts below what the nodes still hold: the pruned stretch is jumped and recorded, the rest walked', job().done === true && job().pruned_to === OLD - 101, job()); M.prunedBelow = 0;
+    process.env.ADMIN_REWALK = '0'; M.store[RW] = JSON.stringify({ schemaVersion: 1, jobs: [{ id: 'off', from: OLD, to: OLD_END }] }); await step(); check('ADMIN_REWALK=0 switches it off', hb().counts.contract_catch_up === null && job().next === undefined); delete process.env.ADMIN_REWALK; }
 
   if (process.env.FULL === '1') {
     console.log('— D the whole stored corpus (FCD archive + archive walk) —');

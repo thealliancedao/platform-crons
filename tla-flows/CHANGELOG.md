@@ -1,5 +1,20 @@
 # tla-flows — changelog
 
+## 3.6.1 — 2026-11-25 — contract changes: the catch-up walk
+
+- The forward stream (3.6.0) starts at block 23,905,365 (2026-11-25 ~03:47 UTC). The stored walks end at 2026-06-16. What lies
+  between is only on the public nodes, for as long as they keep those blocks — a rolling ~2½ months.
+- `tla-core contract-watch/rewalk.json` lists block spans to walk again **for contract changes only** (the flows of those
+  blocks are already filed): `{ jobs: [{ id, from, to }] }`. Each run takes the first unfinished job, walks at most
+  `ADMIN_REWALK_BLOCKS` of it (default 3,000) and never past `ADMIN_REWALK_MINUTES` of the run (default 7), files what it finds
+  through the stream's keyed merge, and writes `next` / `walked` / `found` / `pruned_to` / `done` back. No file, or every job
+  done: nothing happens. `ADMIN_REWALK=0` switches it off.
+- A span that begins below what the nodes still hold is searched once for its first available block, over the whole span.
+  An RPC error or a failed publish leaves `next` at the last filed block: nothing is skipped, nothing is filed twice.
+- It never touches the forward cursor. The heartbeat reports each run as `counts.contract_catch_up`.
+- Gate `mock-run-contract-watch.js` 43/43 (with `FULL=1`): section R — no file, a job taken in two runs, idle, a span already
+  filed, a failed publish, a pruned start, the off switch.
+
 ## 3.6.0 — 2026-11-25 — contract changes: who changed a list, a setting, a role, the code
 
 - **Why.** On 2026-11-24 the single gauge's reward list lost two assets. The hourly snapshot showed the list change; nothing

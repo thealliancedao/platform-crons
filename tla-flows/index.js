@@ -44,7 +44,7 @@ const OUT_DIR       = 'tla-flows/events';
 
 const SCHEMA_VERSION   = 2;                       // cursor schema: { last_block }
 const CADENCE_MINUTES  = 15;
-const VERSION          = 'org-tla-flows-3.6.0';   // v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
+const VERSION          = 'org-tla-flows-3.6.1';   // v3.6.1 (2026-11-25): contract-watch catch-up walk — block spans listed in tla-core contract-watch/rewalk.json are walked again for contract changes only, a bounded stretch per run, until done (the months before the forward stream, while the public nodes still hold them) · v3.6.0 (2026-11-25): CONTRACT CHANGES — the walk keeps what it used to drop: for every contract an upgrade, an admin change, new code stored; for the watched contracts (and anything a watched DAO's proposal changes) a list / setting / role / governance / delegation change, with who sent it and through which proposal (lib/admin-classifier.js → tla-core contract-watch/events) · v3.5.15 (2026-11-25): pnl 1.8.0 — a wallet's P&L file is written when the wallet did something, and every wallet is re-priced once a day (the folder was 39 MB of the data repo's 50 MB a day) · v3.5.14 (2026-11-24): pnl 1.7.2 — the published integrity check exempts zap / carried positions, as the gate has since pnl 1.5.0 (it had reported 916 of them as faults) · v3.5.13 (2026-10-17): pnl 1.7.1 (the constant stayed at 3.5.12) · v3.5.12 (2026-10-14): a partly amplified add still owns its legs (pnl 1.7.0) · v3.5.11 (2026-10-14): P&L rebuilds when new events came in (at most every 2 h; pnl 1.6.1) · v3.5.10 (2026-10-14): a make (LUNA → arbLUNA at Eris' arb vault) is a cost leg like a swap (kind:'make'), so the P&L undoes it too · v3.5.9 (2026-10-14): P&L open positions carry tok_start (pool tokens at entry, both sides; pnl 1.6.0) · v3.5.8 (2026-10-14): P&L — a deposit costs what left the wallet (zap / conversion swaps undone; pnl 1.5.0) · v3.5.1 (2026-09-27): the weekly P&L publishes as ONE commit (lib/git-batch.js — trees + fast-forward ref, rebuilt on a moved head) and lists folders via git trees · v3.5.0 v3.5.0 (2026-09-27): weekly P&L duty = build-pnl v3 (pnl.js 1.2.0 + lib/pnl-positions.js — positions, FIFO round trips + market/LP attribution, value curve per epoch, bribes; catalog symbols from `effective`) · v3.4.3 v3.4.3 (2026-09-17): NFT aux records (sale / bid / list) carry denom_symbol + denom_decimals from THE shared resolver (lib/denom-symbol.js, token-catalog effective layer) — no page maps a denom again · v3.4.2 (2026-09-17): NFT aux bid classifier — bids on unwatched collections dropped (the marketplace is contract-wide; seven Pixel Lions buy-nows had landed in aDAO's transfers as bids), a place_bid settled in-tx is never a bid, bid denom read from the same-tx payment leg (cw20 send / bank transfer), labeled · v3.4.1 (2026-09-15): pnl duty folds event months one at a time (3.4.0 held all 273 MB → heap OOM every run since Mon 03:30, epoch-203 rollup never built) · v3.4 (2026-09-13): weekly P&L rollup duty folded in (pnl.js, moved from the build-pnl.js Action; writes only changed files) · v3.3 (2026-09-12): NFT aux stream may publish to a second repo (NFT_AUX_REPO / NFT_AUX_ROOT — aDAO migration)   // v3.2: pressure duty (reward fates + token pressure per epoch) rides after the walk   // v3.1: registry-driven aux forward capture (votion / dex-liquidity / NFT / price samples) riding the same walk
 const DEFAULT_LOOKBACK = Number(process.env.TLA_LOOKBACK || 1200);      // first-run depth, blocks (~2h)
 
 // One-contract-one-owner: the six shared custody contracts cover every pool.
@@ -576,6 +576,102 @@ function mergeMonth(existing, incoming) {
 }
 
 // ----------------------------------------------------------------------------- main
+// ── 3.6.0 / 3.6.1 contract-watch: publish, and the catch-up walk ──────────────────────────────────────────────────────
+// One keyed merge per month (k = txhash:n), never-shrink; ok:false when any month could not be read or written — the
+// caller then holds its cursor so the same blocks are walked again.
+async function publishAdminRecords(recs, addErr) {
+  const out = { ok: true, added: 0, by_kind: {} };
+  if (!recs || !recs.length) return out;
+  const byM = {};
+  for (const r of recs) (byM[monthKey(r.timestamp)] ||= []).push(r);
+  for (const mk of Object.keys(byM).sort()) {
+    const p2 = `${ADMIN_DIR}/${mk}.json`;
+    const mr = await apiGetJsonAt(p2);
+    if (!mr.ok) { addErr(`contract-watch:${mk}`, new Error('read failed — skipping publish this run')); out.ok = false; continue; }
+    const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
+    if (existing === null) { addErr(`contract-watch:${mk}`, new Error('existing is not an array — refusing to overwrite')); out.ok = false; continue; }
+    const m = AX.mergeKeyed(existing, byM[mk]);
+    if (m.merged.length < existing.length) { addErr(`contract-watch:${mk}`, new Error('never-shrink violation')); out.ok = false; continue; }
+    if (!(m.added + m.upgraded)) continue;
+    try {
+      await publishFile(p2, JSON.stringify(m.merged), `contract-watch ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`);
+      out.added += m.added + m.upgraded;
+      const had = new Set(existing.map(r => r.k)); for (const r of byM[mk]) if (!had.has(r.k)) out.by_kind[r.kind] = (out.by_kind[r.kind] || 0) + 1;
+    } catch (e) { addErr(`contract-watch-publish:${mk}`, e); out.ok = false; }
+  }
+  return out;
+}
+
+// 3.6.1 THE CATCH-UP WALK. The forward stream starts the day it shipped; the months before it are only on the public nodes
+// for as long as they keep those blocks (a rolling ~2½ months). tla-core contract-watch/rewalk.json lists block spans to walk
+// again for contract changes ONLY (flows of those blocks are already filed): { jobs: [{ id, from, to, next?, done? }] }.
+// Each run takes the first unfinished job, walks at most ADMIN_REWALK_BLOCKS of it (default 3000; never past
+// ADMIN_REWALK_MINUTES of the run, default 7), files what it finds through the same keyed merge, and writes its progress
+// back. No file, or every job done = nothing happens. A pruned stretch is jumped and recorded (pruned_to). An RPC error
+// or a failed publish leaves `next` where the last filed block ended, so nothing is skipped and nothing is filed twice.
+const REWALK_PATH = 'contract-watch/rewalk.json';
+async function walkAdminOnly(from, to) {
+  const CONC = Number(process.env.WALK_CONCURRENCY || 4);
+  const recs = []; let N = from, prunedTo = null; const inFlight = new Map();
+  const launch = (h) => { if (h <= to && !inFlight.has(h)) { const pr = getBlock(h); pr.catch(() => {}); inFlight.set(h, pr); } };   // a read still in flight when the walk stops must not become an unhandled rejection
+  for (let h = N; h < N + CONC && h <= to; h++) launch(h);
+  while (N <= to) {
+    let blk;
+    try { blk = await inFlight.get(N); } finally { inFlight.delete(N); }
+    if (blk === PRUNED) {
+      const avail = await firstAvailable(N, to + 1); prunedTo = avail - 1;
+      for (const k of [...inFlight.keys()]) if (k < avail) inFlight.delete(k);
+      N = avail; if (N > to) break;
+      for (let h = N; h < N + CONC && h <= to; h++) launch(h);
+      continue;
+    }
+    if (blk.txsB64.length) {
+      const results = await getBlockResults(N);
+      for (let i = 0; i < blk.txsB64.length; i++) {
+        const res = results[i]; if (!res || res.code || !adminTouch(res.events)) continue;
+        recs.push(...AD.classifyAdminTx({ txhash: txHashOf(blk.txsB64[i]), height: N, timestamp: blk.time, code: 0, events: res.events }, ADMIN_WATCH));
+      }
+    }
+    N++; launch(N + CONC - 1);
+  }
+  return { recs, prunedTo };
+}
+async function runAdminRewalk({ addErr, runStartedMs }) {
+  if (process.env.ADMIN_REWALK === '0') return null;
+  const st = await apiGetJsonAt(REWALK_PATH);
+  if (!st.ok || !st.data || !Array.isArray(st.data.jobs)) return null;                       // no list = no catch-up asked for
+  const job = st.data.jobs.find(j => j && !j.done && Number.isFinite(Number(j.from)) && Number.isFinite(Number(j.to)) && Number(j.to) >= Number(j.from));
+  if (!job) return { idle: true };
+  const BUDGET = Math.max(1, Number(process.env.ADMIN_REWALK_BLOCKS) || 3000), CHUNK = 500;
+  const LIMIT_MS = Math.max(1, Number(process.env.ADMIN_REWALK_MINUTES) || 7) * 60000;
+  const to = Number(job.to); let next = Number(job.next != null ? job.next : job.from), walked = 0, added = 0, err = null; const by_kind = {};
+  // a span that begins below what the nodes still hold: find the first block either node has — once, over the whole span
+  // (searching chunk by chunk would spend days of runs skipping pruned blocks)
+  let skipped = 0;
+  try { if (next <= to && (await getBlock(next)) === PRUNED) { const avail = await firstAvailable(next, to + 1); job.pruned_to = Math.max(Number(job.pruned_to) || 0, avail - 1); skipped = avail - next; next = avail; } }
+  catch (e) { err = e; }
+  while (!err && next <= to && walked < BUDGET && T.now().getTime() - runStartedMs < LIMIT_MS) {
+    const end = Math.min(next + CHUNK - 1, to, next + (BUDGET - walked) - 1);
+    let w; try { w = await walkAdminOnly(next, end); } catch (e) { err = e; break; }
+    const pub = await publishAdminRecords(w.recs, addErr);
+    if (!pub.ok) { err = new Error('publish failed'); break; }                                  // not filed → not advanced
+    if (w.prunedTo != null) job.pruned_to = Math.max(Number(job.pruned_to) || 0, w.prunedTo);
+    added += pub.added; for (const k in pub.by_kind) by_kind[k] = (by_kind[k] || 0) + pub.by_kind[k];
+    walked += end - next + 1; next = end + 1;
+  }
+  if (err) addErr('contract-watch-rewalk', err);
+  if (walked > 0 || skipped > 0) {
+    const nowIso = T.now().toISOString();
+    job.next = next; job.walked = (Number(job.walked) || 0) + walked; job.found = (Number(job.found) || 0) + added; job.updated_at = nowIso;
+    if (!job.started_at) job.started_at = nowIso;
+    if (next > to) { job.done = true; job.finished_at = nowIso; }
+    try { await publishFile(REWALK_PATH, st.data, `contract-watch catch-up ${job.id || ''}: walked to ${next - 1} of ${to}${job.done ? ' — done' : ''} · +${added}`); }
+    catch (e) { addErr('contract-watch-rewalk:progress', e); }                                 // the records are keyed: walking those blocks again files nothing twice
+  }
+  console.log(`  contract-watch catch-up${job.id ? ' ' + job.id : ''}: walked ${walked} block(s) to ${next - 1} of ${to}${job.done ? ' — done' : ''} · +${added} change(s) ${JSON.stringify(by_kind)}${err ? ' · stopped: ' + err.message : ''}`);
+  return { job: job.id || null, walked, next, to, found: added, done: !!job.done, error: err ? String(err.message) : null };
+}
+
 async function run() {
   const startedAt = T.now();
   const errors = [];
@@ -696,27 +792,9 @@ async function run() {
   }
 
   // 5b-admin. 3.6.0 CONTRACT CHANGES stream — own stream, keyed merge (txhash:n), never-shrink; a failed publish holds the cursor.
-  const adminCounts = { added: 0, by_kind: {} };
-  if (walk.admin && walk.admin.length) {
-    const byM = {};
-    for (const r of walk.admin) (byM[monthKey(r.timestamp)] ||= []).push(r);
-    for (const mk of Object.keys(byM).sort()) {
-      const p2 = `${ADMIN_DIR}/${mk}.json`;
-      const mr = await apiGetJsonAt(p2);
-      if (!mr.ok) { addErr(`contract-watch:${mk}`, new Error('read failed — skipping publish this run')); allComplete = false; continue; }
-      const existing = Array.isArray(mr.data) ? mr.data : (mr.data ? null : []);
-      if (existing === null) { addErr(`contract-watch:${mk}`, new Error('existing is not an array — refusing to overwrite')); allComplete = false; continue; }
-      const m = AX.mergeKeyed(existing, byM[mk]);
-      if (m.merged.length < existing.length) { addErr(`contract-watch:${mk}`, new Error('never-shrink violation')); allComplete = false; continue; }
-      if (!(m.added + m.upgraded)) continue;
-      try {
-        await publishFile(p2, JSON.stringify(m.merged), `contract-watch ${mk}: +${m.added + m.upgraded} (${m.merged.length} total)`);
-        adminCounts.added += m.added + m.upgraded;
-        const had = new Set(existing.map(r => r.k)); for (const r of byM[mk]) if (!had.has(r.k)) adminCounts.by_kind[r.kind] = (adminCounts.by_kind[r.kind] || 0) + 1;
-      } catch (e) { addErr(`contract-watch-publish:${mk}`, e); allComplete = false; }
-    }
-    if (adminCounts.added) console.log(`  contract-watch: +${adminCounts.added} change(s) ${JSON.stringify(adminCounts.by_kind)}`);
-  }
+  const adminCounts = await publishAdminRecords(walk.admin, addErr);
+  if (!adminCounts.ok) allComplete = false;
+  if (adminCounts.added) console.log(`  contract-watch: +${adminCounts.added} change(s) ${JSON.stringify(adminCounts.by_kind)}`);
 
   // 5b. aux streams (registry-driven; publish failures hold the cursor — the
   //     extension streams can never silently gap while core advances)
@@ -806,10 +884,15 @@ async function run() {
     else console.log(`  pnl: epoch ${pnl.epoch} · ${pnl.summary.wallets} wallets · ${pnl.summary.events} events · ${pnl.mode === 'full' ? "the day's re-price" : 'wallets that did something'} · ${pnl.written} written (${pnl.wallet_files_written} wallet files) · ${pnl.held} re-priced only and held · ${pnl.unchanged} unchanged of ${pnl.files}${pnl.commit ? ' · one commit ' + pnl.commit.slice(0, 7) + (pnl.batch && pnl.batch.attempts > 1 ? ' (rebased ×' + (pnl.batch.attempts - 1) + ')' : '') : ''}`);
   } catch (e) { addErr('pnl', e); }
 
+  // 7d. 3.6.1 contract-watch catch-up walk (only when tla-core contract-watch/rewalk.json lists an unfinished span). Isolated and
+  //     time-boxed; it never touches the forward cursor.
+  let rewalk = null;
+  try { rewalk = await runAdminRewalk({ addErr, runStartedMs: startedAt.getTime() }); } catch (e) { addErr('contract-watch-rewalk', e); }
+
   // 8. heartbeat
   await publishHeartbeat({
     startedAt, status: allComplete ? 'ok' : 'partial', errors, runMode, note,
-    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added, contract_changes: adminCounts.added, contracts_watched: ADMIN_WATCH ? ADMIN_WATCH.size : 0 },
+    counts: { new_events: totalAdded, classified: records.length, by_type: byType, blocks_walked: cursorTarget - fromB + 1, aux: auxCounts, aux_enabled: !!AUX, transfers: transferCounts.added, contract_changes: adminCounts.added, contracts_watched: ADMIN_WATCH ? ADMIN_WATCH.size : 0, contract_catch_up: rewalk },
     lastHeights: { cursor: allComplete ? cursorTarget : (lastBlock != null ? lastBlock : null), head, window_from: fromB },
     gaps,
   });
