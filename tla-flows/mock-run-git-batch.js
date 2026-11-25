@@ -6,8 +6,9 @@
 //      head: ONE new commit, the other person's file is still there, nothing force-pushed
 //   B3 identical content → no commit at all
 //   B4 listTree lists 1,500 files in one folder (the Contents API stops at 1,000) with git's blob shas
-//   B5 runPnlDuty on a real build with main already holding it → ONE batch of just the 3 builtAt files; with main empty → ONE
-//      batch of every file (vs ~790 commits before)
+//   B5 runPnlDuty on a real build with main already holding it → ONE batch of just the 4 builtAt files; with main empty → ONE
+//      batch of every file (vs ~790 commits before); B5c (pnl 1.8.0) an 'events' build whose wallet files were re-priced only →
+//      ONE commit of the 4 bookkeeping files, no wallet file touched
 // Usage: TLA_CORE_DIR=<tla-core checkout> node --max-old-space-size=400 mock-run-git-batch.js
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const GB = require('./lib/git-batch.js'), P = require('./pnl.js');
@@ -59,7 +60,12 @@ const quiet = async (fn) => { const l = console.log, w = console.warn; console.l
   const SRC = process.env.TLA_CORE_DIR;
   if (SRC) {
     const R = fakeRepo(); const rawBase = 'https://raw.test'; const J = (p) => JSON.parse(fs.readFileSync(path.join(SRC, p), 'utf8'));
-    const fetchJson = async (u) => { const rel = String(u).replace(rawBase + '/', '').split('?')[0]; if (rel === 'tla-flows/pnl/heartbeat.json') { const c = R.fileAt(rel); if (!c) { const e = new Error('HTTP 404'); throw e; } return JSON.parse(c); } const f = path.join(SRC, rel); if (!fs.existsSync(f)) throw new Error('HTTP 404 ' + rel); return J(rel); };
+    // the two files the duty reads back from main (its own heartbeat and the ledger index with the wallet signatures) come from the fake repo
+    const later = { on: false };   // B5c: the hourly read two hours on, and one more event filed
+    const fetchJson = async (u) => { const rel = String(u).replace(rawBase + '/', '').split('?')[0]; if (rel === 'tla-flows/pnl/heartbeat.json' || rel === 'tla-flows/pnl/ledger/index.json') { const c = R.fileAt(rel); if (!c) { const e = new Error('HTTP 404'); throw e; } return JSON.parse(c); } const f = path.join(SRC, rel); if (!fs.existsSync(f)) throw new Error('HTTP 404 ' + rel); const d = J(rel);
+      if (later.on && rel === 'member-data/participants/current.json') { const t = new Date(Date.parse(d.capturedAt) + 2 * 3600e3).toISOString(); return { ...d, capturedAt: t, capturedAtUnix: Date.parse(t) }; }
+      if (later.on && rel === 'tla-flows/events/index.json') return { ...d, total_events: d.total_events + 1 };
+      return d; };
     const listDir = (dir) => GB.listTree({ api: R.api, repo: 'o/r', branch: 'main', dir });
     const batches = []; const publishBatch = async (files, message) => { batches.push(files.length); return GB.publishBatch({ api: R.api, repo: 'o/r', branch: 'main', files, message }); };
     const perFile = []; const publishFile = async (p) => { perFile.push(p); };
@@ -67,7 +73,15 @@ const quiet = async (fn) => { const l = console.log, w = console.warn; console.l
     const r1 = await quiet(() => P.runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env, now }));
     check(`B5a main empty → ONE batch of all ${r1.files} files, one commit, 0 per-file PUTs`, batches.length === 1 && batches[0] === r1.files && r1.written === r1.files && perFile.length === 0 && !!r1.commit && R.calls.commits === 1, { batches, written: r1.written });
     const r2 = await quiet(() => P.runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env, now: () => new Date('2026-09-28T04:31:00Z') }));
-    check(`B5b main already holds the build → ONE batch of just the 3 builtAt files (${r2.unchanged} unchanged)`, batches.length === 2 && batches[1] === 3 && r2.written === 3 && r2.unchanged === r2.files - 3 && perFile.length === 0, { batches, written: r2.written });
+    check(`B5b main already holds the build → ONE batch of just the 4 files that carry builtAt — rollup, heartbeat, integrity, ledger index (${r2.unchanged} unchanged)`, batches.length === 2 && batches[1] === 4 && r2.written === 4 && r2.unchanged === r2.files - 4 && perFile.length === 0, { batches, written: r2.written });
+    // B5c (pnl 1.8.0) — the default cadence, three hours on: the hourly read moved (wallet files re-price) and one event was filed, but no wallet's
+    // signature moved → the build goes out as ONE commit of the 4 bookkeeping files; the re-priced wallet files stay as they are on main
+    const ledgerBefore = new Map([...R.files()].filter(([fp]) => /ledger\/terra1/.test(fp)));
+    later.on = true; const r3 = await quiet(() => P.runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env: {}, now: () => new Date('2026-09-28T07:31:00Z') })); later.on = false;
+    const ledgerAfter = new Map([...R.files()].filter(([fp]) => /ledger\/terra1/.test(fp)));
+    const hb3 = JSON.parse(R.fileAt('tla-flows/pnl/heartbeat.json'));
+    check(`B5c an 'events' build through the real batch: ${r3.held} wallet files re-priced only → held; ONE commit of 4 files; no wallet file on the branch changed`, r3.status === 'ok' && r3.mode === 'events' && r3.held > 20 && batches.length === 3 && batches[2] === 4 && r3.wallet_files_written === 0 && ledgerBefore.size === ledgerAfter.size && [...ledgerBefore].every(([fp, sha]) => ledgerAfter.get(fp) === sha), { status: r3.status, why: r3.reason, mode: r3.mode, held: r3.held, batches });
+    check('B5c the heartbeat on the branch: publish.mode events, the held count, and the last full publish kept', hb3.publish && hb3.publish.mode === 'events' && hb3.publish.wallet_files_held === r3.held && hb3.full_publish_at === '2026-09-28T04:31:00.000Z' && hb3.events_index_total === J('tla-flows/events/index.json').total_events + 1, hb3.publish);
   } else console.log('  (TLA_CORE_DIR not given — B5 skipped)');
   console.log(`\n=== MOCK GATE (git-batch): ${pass} passed, ${fail} failed ===`); process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('GATE CRASH', e); process.exit(1); });

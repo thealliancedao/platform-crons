@@ -1,5 +1,44 @@
 # tla-flows — changelog
 
+## 3.5.15 — 2026-11-25 — a wallet's P&L file is written when the wallet did something (pnl 1.8.0)
+
+- **Measured first.** Nine days of tla-core's history (2026-11-15 → 11-25, 19,236 commits) pack to 458.6 MB: the data repo grows
+  **50 MB a day**. `tla-flows/pnl/ledger/<wallet>.json` is 355.9 MB of it — **39 MB a day, 78 %**, in 24,440 file versions. The next
+  writers are small beside it: `member-data/participants` 3.5 MB a day, `member-data/positions` 1.6, `dex-liquidity/events` 1.1,
+  `price-history/reserve-implied` 1.0. (A daily archive that repeats `current.json` byte for byte costs nothing: git stores one
+  blob.)
+- **Why.** "Write only the files that changed" has saved nothing since v3. Every build re-prices every wallet with something open —
+  the rate curves end at the hourly "now" sample, so even earlier points of a value curve move a little from one build to the next —
+  and each of those files then differs from main. Under the 'events' cadence that was ~230 wallet files every ~2¼ hours. Over twelve
+  consecutive builds (2026-11-24 02:35 → 11-25 03:05 UTC) 2,702 wallet files were rewritten; in **40** of them the wallet had done
+  anything. Moving nothing but the hourly read's capture time by two hours re-prices 103 of 809 files on a 2026-11-15 checkout.
+- **pnl 1.8.0 — the rule.** A wallet's file is written when the wallet did something since its file was last written, or the file is
+  new. A file that differs only by prices and rates waits for **the day's re-price**: the first build at/after 03:30 UTC (also a
+  forced build, a new builder version, and any run that cannot read the signatures on main). `rollup.json`, `heartbeat.json`,
+  `integrity.json` and `ledger/index.json` are written by every build as before, in the same single commit.
+  - "Did something" is `activitySignature(doc)`: everything in the file that only the wallet's own events move — per-epoch counts
+    and units, cumulative units, each position's counts / open units / receipts moved / not held / disputed, bribes claimed — and
+    nothing a price or a rate moves (no key holding USD, no value, no curve). Kept per wallet in `ledger/index.json → signatures`.
+  - `heartbeat.full_publish_at` is the last re-price; `heartbeat.publish` says what this build did
+    (`mode: full | events`, `wallet_files_written`, `wallet_files_held`). The day's re-price is read from `full_publish_at`, so a
+    build made after midnight for new events no longer counts as the day's build.
+  - No figure in any ledger changes. What changes is how old the prices in an idle wallet's file can be: up to a day, where it was
+    about two hours. The page already states the basis ("positions valued at epoch N") and reads this product as daily.
+- **Expected:** ~2,440 wallet-file versions a day → ~270 (the re-price plus the wallets that acted); this folder from ~39 MB a day
+  to ~4; the repo from ~50 to ~15.
+- **Gates.** `mock-run-pnl.js` 32/32 — R2 and R3 rewritten: both had been red since the cadence left weekly and a build came to
+  depend on inputs newer than the cases' 2026-09 `now` (5/9 before this change). R2 covers weekly, daily and 'events' and which kind
+  of publish each makes; R3 covers the rule on a real build (a later hourly read re-prices 103 files and moves no signature → 0
+  written, 103 held; one moved signature → that file; a file new on main → written; no signatures on main, or the day's re-price →
+  all 103) and the signature on a real wallet file. `mock-run-git-batch.js` 9/9 — B5b counts the four files that carry `builtAt`
+  (it expected three, from before `integrity.json`); new B5c runs an 'events' build through the real batch and tree listing: 97
+  files held, one commit of 4 files, no wallet file on the branch touched. `mock-run-pnl-v3.js` 37/39 and `mock-run-pnl-zap.js`
+  19/19, as before.
+- `runPnlDuty` takes an optional `build` (default `buildPnl`) so the gate reuses one real build instead of deriving one per case.
+- **Not done here, noted:** the earlier points of a value curve should not move at all. They do because a rate is interpolated
+  between the last measured sample and "now", and "now" moves. Pinning them (a stored daily rate per pool) would make an idle
+  wallet's file byte-stable between events and change P&L figures slightly — a separate, gated change.
+
 ## 3.5.14 — 2026-11-24 — the integrity report stops calling zap positions faults (pnl 1.7.2)
 
 - `tla-flows/pnl/integrity.json` reported `foreign_tokens_in_cost: fault` on 878 positions the day pnl 1.5.0 went live and 916 by

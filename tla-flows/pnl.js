@@ -46,7 +46,7 @@
  * `builtAt` (gate compares with builtAt stripped). All maps sorted.
  */
 
-const PNL_VERSION = 'tla-flows-pnl-1.7.2';   // 1.7.2 (2026-11-24): the published integrity check exempts positions entered by a zap or carrying one's cost, as the gate has since 1.5.0 — it had reported every one of them as a fault (916 positions, 223 wallets; none a real one)   // 1.7.1 (2026-10-17): a cw20 gauge the sampler left 'unresolved' that the token catalog knows as a token is a SINGLE (wBTC.creda.a — Credia's receipt — had no cost or value in any ledger). Builder bump: every ledger rebuilds · 1.7.0 (2026-10-14): pnl-positions 1.8.0 — an amplify of less than the add minted (the app stakes the minimum) still owns that add: the first app-built LP → LP convert was costed from the pool's basket instead of what went in. Builder bump: every ledger rebuilds on the next run · 1.6.1 (2026-10-14, owner: "boost the run frequency … make this stuff show up sooner"): cadence 'events' (the new default) — besides the daily build, it rebuilds as soon as the walker has filed NEW events and the last build is at least PNL_MIN_GAP_MIN old (default 120): a deposit / convert / exit shows its cost within ~2 h instead of next day. Quiet hours cost nothing (no new events → no build). Not a builder bump (no forced rebuild) · 1.6.0 (2026-10-14): pnl-positions 1.7.0 — open positions carry tok_start: the pool's tokens (both sides) each lot held when it went in, so a page can show started-with vs now and split it into compounding growth vs rebalancing · 1.5.0 (2026-10-14): pnl-positions 1.6.0 — a deposit costs what LEFT THE WALLET: the tx's swaps are undone on the provided legs, so a zap (5,000 LUNA → USDC → USDC-SOLID) books 5,000 LUNA in and its swap loss sits in the cost; an exit to one token is booked after its swaps; an LP → LP conversion lands the swap loss once, on the new position. The builder bump rebuilds every ledger on the next run (history included) · 1.4.0 (2026-09-30): one event per stake (pnl-positions 1.5.0 splitEvent) — every stake / unstake in a tx is booked with its own pool's legs (1,044 member stakes / unstakes in 247 wallets were never booked; the aDAO treasury's 15-stake proposal of 2026-05-22 was booked as ONE LUNA-FUEL deposit carrying every token); protocol contracts (compounder, zapper, buckets, gauge, escrow, bribe manager) are never wallets (the compounder had become a 'wallet' with 16 positions) · 1.3.1 (2026-09-29): DAILY build (once per UTC day after 03:30 UTC; PNL_CADENCE=weekly for the old cadence) and an automatic rebuild when the last build was made by an older builder — no PNL=force after a deploy · 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
+const PNL_VERSION = 'tla-flows-pnl-1.8.0';   // 1.8.0 (2026-11-25): WHEN a wallet's file is written — the data repo grew 50 MB a day and 39 MB of it was this folder: every ~2¼ h build re-priced ~230 wallets and wrote each file again (2,702 rewrites over twelve builds; in 40 the wallet had done anything). Now a wallet's file is written when the wallet did something since its last write (activitySignature, kept per wallet in ledger/index.json) and files that differ only by prices and rates are written once a day, at the first build at/after 03:30 UTC (heartbeat.full_publish_at, heartbeat.publish). No figure in any ledger changes; rollup / heartbeat / integrity / index are written every build as before. Builder bump: the first run writes everything once · 1.7.2 (2026-11-24): the published integrity check exempts positions entered by a zap or carrying one's cost, as the gate has since 1.5.0 — it had reported every one of them as a fault (916 positions, 223 wallets; none a real one)   // 1.7.1 (2026-10-17): a cw20 gauge the sampler left 'unresolved' that the token catalog knows as a token is a SINGLE (wBTC.creda.a — Credia's receipt — had no cost or value in any ledger). Builder bump: every ledger rebuilds · 1.7.0 (2026-10-14): pnl-positions 1.8.0 — an amplify of less than the add minted (the app stakes the minimum) still owns that add: the first app-built LP → LP convert was costed from the pool's basket instead of what went in. Builder bump: every ledger rebuilds on the next run · 1.6.1 (2026-10-14, owner: "boost the run frequency … make this stuff show up sooner"): cadence 'events' (the new default) — besides the daily build, it rebuilds as soon as the walker has filed NEW events and the last build is at least PNL_MIN_GAP_MIN old (default 120): a deposit / convert / exit shows its cost within ~2 h instead of next day. Quiet hours cost nothing (no new events → no build). Not a builder bump (no forced rebuild) · 1.6.0 (2026-10-14): pnl-positions 1.7.0 — open positions carry tok_start: the pool's tokens (both sides) each lot held when it went in, so a page can show started-with vs now and split it into compounding growth vs rebalancing · 1.5.0 (2026-10-14): pnl-positions 1.6.0 — a deposit costs what LEFT THE WALLET: the tx's swaps are undone on the provided legs, so a zap (5,000 LUNA → USDC → USDC-SOLID) books 5,000 LUNA in and its swap loss sits in the cost; an exit to one token is booked after its swaps; an LP → LP conversion lands the swap loss once, on the new position. The builder bump rebuilds every ledger on the next run (history included) · 1.4.0 (2026-09-30): one event per stake (pnl-positions 1.5.0 splitEvent) — every stake / unstake in a tx is booked with its own pool's legs (1,044 member stakes / unstakes in 247 wallets were never booked; the aDAO treasury's 15-stake proposal of 2026-05-22 was booked as ONE LUNA-FUEL deposit carrying every token); protocol contracts (compounder, zapper, buckets, gauge, escrow, bribe manager) are never wallets (the compounder had become a 'wallet' with 16 positions) · 1.3.1 (2026-09-29): DAILY build (once per UTC day after 03:30 UTC; PNL_CADENCE=weekly for the old cadence) and an automatic rebuild when the last build was made by an older builder — no PNL=force after a deploy · 1.3.0 (2026-09-28): pnl-positions 1.4.0 — tokens in / out on every trip and position (the page's Tokens lens), open lots' tokens in vs now and their hold value (LP vs hold) · 1.2.5 (2026-09-28): pnl-positions 1.3.1 — moved receipts that tripped the gauge-ceiling check read as moved (named), not disputed · 1.2.4 (2026-09-28): where receipts went — every amplified receipt transfer mapped to its pool and named (custodian / catalog entity / known contract / member / address) → position.moves; a not-held position whose receipt sits with a CUSTODIAN (config CUSTODIANS: the ampCAPA DAO) is held_in, still open, not "not held" (pnl-positions 1.3.0) · 1.2.3 (2026-09-28): the chain referee also says "not held" — a wallet the hourly participants read covered, with NO row for a pool × mechanism the ledger still has open (a receipt staked in a DAO or sent to another address): those lots leave Open now / unrealized / net and the curve's now point (position.not_held, totals.positions_not_held); trips + rewards stay (pnl-positions 1.2.0) · 1.2.2 (2026-09-28): lib/pnl-positions.js 1.1.0 — each open position carries open_lp: LP in vs now (the take-rate drag + top-up on non-amplified, compounding on amplified; unmeasured when no rate sample is near the entry) and capital × days for the APR the page shows · 1.2.1 (2026-09-27): the whole build publishes as ONE commit (lib/git-batch.js), change detection from git trees (no 1,000-file listing cap); pool names in the ledger · 1.2.0 1.2.0 (2026-09-27): build-pnl v3 — positions, FIFO round trips + attribution, value curve per epoch, bribes (lib/pnl-positions.js); catalog symbols from `effective` first · 1.1.1 (2026-09-15): month-at-a-time event folds (heap OOM on Render since the Mon 03:30 build) · 1.1.0: folded into org-tla-flows (build-pnl.js Action retired)
 const OUT_DIR = 'tla-flows/pnl';
 const PP = require('./lib/pnl-positions');
 class PnlFatal extends Error {}
@@ -732,8 +732,35 @@ const crypto = require('crypto');
 const EPOCH_GENESIS_MS = Date.parse('2022-10-31T00:00:00Z'), EPOCH_MS = 7 * 86400000;
 const epochOf = (ms) => Math.floor((ms - EPOCH_GENESIS_MS) / EPOCH_MS) + 1;
 const blobSha = (buf) => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
-async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env = process.env, now = () => new Date() }) {
-  const out = { status: 'skipped', reason: null, written: 0, unchanged: 0 };
+
+// ── 1.8.0: WHEN a wallet's file is written ────────────────────────────────────────────────────────────────────────
+// Measured 2026-11-25 over nine days of tla-core's history: the repo grew 50 MB a day and 39 MB of it was this folder —
+// 24,440 wallet-file versions. "Write only what changed" (above) stopped saving anything with v3: every build re-prices
+// every wallet that has something open (the rate curves end at the hourly "now" sample, so even EARLIER points of a value
+// curve move a little each build), each of those files then differs from main, and ~230 of them were written every ~2¼ h.
+// Over twelve consecutive builds 2,702 files were rewritten; in 40 of them the wallet had done anything.
+// The rule now: a wallet's file is written when the wallet DID something since its file was last written, or the file is
+// new; a file that differs only by prices and rates waits for the day's re-price — the first build at/after 03:30 UTC (also
+// a forced build, a new builder version, and any run that cannot read the signatures on main). rollup.json, heartbeat.json,
+// integrity.json and ledger/index.json are written by every build as before.
+// The signature is everything in a wallet's file that only its own events move — per-epoch counts and units, cumulative
+// units, each position's counts / open units / receipts moved / not held / disputed, bribes claimed — and nothing that a
+// price or a rate moves (no key holding USD, no value, no curve). It is kept per wallet in ledger/index.json.
+const dropUsd = (o) => { if (Array.isArray(o)) return o.map(dropUsd); if (o && typeof o === 'object') { const r = {}; for (const k of Object.keys(o).sort()) if (!/usd/i.test(k)) r[k] = dropUsd(o[k]); return r; } return o; };
+function activitySignature(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  const v3 = doc.v3 || {};
+  const pos = Object.keys(v3.positions || {}).sort().map((k) => { const p = v3.positions[k] || {};
+    return [k, p.deposits || 0, p.withdraws || 0, p.zap_in || 0, p.units_open || 0, p.lots_open || 0, (p.claims && p.claims.n) || 0, (p.realized && p.realized.trips) || 0, p.carried_in || 0,
+      p.not_held ? 1 : 0, p.held_in ? 1 : 0, Array.isArray(p.moves) ? p.moves.length : 0, p.disputed ? 1 : 0]; });
+  const bribes = Object.keys(v3.bribes || {}).sort().map((s) => [s, (v3.bribes[s] && v3.bribes[s].n) || 0, (v3.bribes[s] && v3.bribes[s].amount) || 0]);
+  const payload = JSON.stringify([dropUsd(doc.epochs || null), dropUsd(doc.cumulative_units_at_head || null), dropUsd(doc.negative_unit_flags || null), pos, bribes]);
+  return crypto.createHash('sha1').update(payload).digest('hex').slice(0, 16);
+}
+const LEDGER_WALLET_RE = /\/ledger\/(terra1[0-9a-z]+)\.json$/;
+
+async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBase, env = process.env, now = () => new Date(), build = buildPnl }) {   // build: the gate hands in one real build instead of deriving it once per case
+  const out = { status: 'skipped', reason: null, written: 0, unchanged: 0, held: 0 };
   if (env.PNL === '0') { out.reason = 'PNL=0'; return out; }
   const t = now(); const force = env.PNL === 'force';
   // 1.6.1: cadence 'events' by default (daily + a rebuild when new events came in, at most every PNL_MIN_GAP_MIN). Before:
@@ -747,13 +774,19 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBa
   const pastHour = t.getUTCHours() * 60 + t.getUTCMinutes() >= 3 * 60 + 30;
   const staleBuilder = !!(hb && hb.builder && !String(hb.builder).startsWith(PNL_VERSION));
   const cadence = String(env.PNL_CADENCE || 'events'), weekly = cadence === 'weekly';
-  let due = weekly ? (curEpoch > builtEpoch && intoEpochMs >= 3.5 * 3600000) : (builtDay < today && pastHour);
+  // 1.8.0: the DAY'S RE-PRICE is the first build at/after 03:30 UTC whose last full publish was on an earlier day. Under
+  // 'events' a build made after midnight for new events is not one — it writes the wallets that did something — so the day
+  // is read from heartbeat.full_publish_at, not builtAt (a heartbeat from before 1.8.0 has none: every build then was full).
+  const fullAt = hb && hb.full_publish_at ? String(hb.full_publish_at) : (hb && hb.builtAt ? String(hb.builtAt) : '');
+  const dayRef = cadence === 'events' ? fullAt.slice(0, 10) : builtDay;
+  let due = weekly ? (curEpoch > builtEpoch && intoEpochMs >= 3.5 * 3600000) : (dayRef < today && pastHour);
+  let full = force || due || staleBuilder;   // every changed wallet file is written; false = only the wallets that did something
   // 1.6.1 'events': new events filed since the last build (the walker's index total moved) and the last build is old enough
   const idx = cadence === 'events' ? await fetchJson(`${rawBase}/tla-flows/events/index.json?t=${Date.now()}`).catch(() => null) : null;
   const gapMin = Math.max(30, Number(env.PNL_MIN_GAP_MIN) || 120), sinceMin = hb && hb.builtAt ? (t.getTime() - Date.parse(hb.builtAt)) / 60000 : Infinity;
   const newEvents = !!(idx && Number.isFinite(idx.total_events) && hb && idx.total_events !== hb.events_index_total);
   if (!due && cadence === 'events' && newEvents && sinceMin >= gapMin) { due = true; console.log(`  pnl: ${hb && hb.events_index_total != null ? idx.total_events - hb.events_index_total : 'new'} new event(s) since the last build (${Math.round(sinceMin)} min ago) — rebuilding`); }
-  if (!force && !due && !staleBuilder) { out.reason = cadence === 'events' && newEvents ? `new events, but the last build was ${Math.round(sinceMin)} min ago (min ${gapMin})` : weekly ? (curEpoch > builtEpoch ? `epoch ${curEpoch} started, builds at Mon 03:30 UTC` : `epoch ${curEpoch} already built (${hb && hb.builtAt})`) : (builtDay >= today ? `already built today (${hb && hb.builtAt})` : 'builds after 03:30 UTC'); return out; }
+  if (!force && !due && !staleBuilder) { out.reason = cadence === 'events' && newEvents ? `new events, but the last build was ${Math.round(sinceMin)} min ago (min ${gapMin})` : weekly ? (curEpoch > builtEpoch ? `epoch ${curEpoch} started, builds at Mon 03:30 UTC` : `epoch ${curEpoch} already built (${hb && hb.builtAt})`) : (dayRef >= today ? `already built today (${hb && hb.builtAt})` : 'builds after 03:30 UTC'); return out; }
   if (staleBuilder && !force && !due) console.log(`  pnl: the last build was made by ${hb.builder} — rebuilding with ${PNL_VERSION}`);
   // derive
   const src = {
@@ -762,7 +795,7 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBa
       for (let y = y0; y <= yN; y++) for (let m = (y === y0 ? m0 : 1); m <= (y === yN ? mN : 12); m++) { const ym = `${y}/${String(m).padStart(2, '0')}`; try { await fetchJson(`${rawBase}/price-history/${ym}.json?t=${Date.now()}`); ms.push(ym); } catch (e) { if (!/HTTP 404/.test(String(e.message))) throw e; } }
       return ms; },
   };
-  const built = await buildPnl(src, { now });
+  const built = await build(src, { now });
   // 1.6.1: remember which events this build saw, so the next run knows whether anything new came in
   { const hbOut = built.files.get(`${OUT_DIR}/heartbeat.json`); const ix = idx || await fetchJson(`${rawBase}/tla-flows/events/index.json?t=${Date.now()}`).catch(() => null);
     if (hbOut && ix && Number.isFinite(ix.total_events)) hbOut.events_index_total = ix.total_events; }
@@ -771,15 +804,37 @@ async function runPnlDuty({ fetchJson, listDir, publishFile, publishBatch, rawBa
   for (const dir of [OUT_DIR, `${OUT_DIR}/ledger`]) { const list = await listDir(dir); for (const f of list || []) if (f.sha) onMain.set(f.path, f.sha); }
   // 1.2.1: ONE commit for the whole build when the caller gives publishBatch (lib/git-batch.js) — the per-file path took ~20 min
   // for ~790 files and a second run collided with the first; per-file stays as the fallback (and for the gate's old harness)
-  const changed = [];
+  // 1.8.0: which wallet files (see activitySignature above). The signatures the files on main were written with:
+  const sigs = {}; for (const [p, obj] of built.files) { const m = LEDGER_WALLET_RE.exec(p); if (m) sigs[m[1]] = activitySignature(obj); }
+  let sigMain = null;
+  if (!full) {
+    const idxMain = await fetchJson(`${rawBase}/${OUT_DIR}/ledger/index.json?t=${Date.now()}`).catch(() => null);
+    sigMain = idxMain && idxMain.signatures && typeof idxMain.signatures === 'object' && !Array.isArray(idxMain.signatures) ? idxMain.signatures : null;
+    if (!sigMain) { full = true; console.log('  pnl: no wallet signatures readable on main — every changed file is written this run'); }
+  }
+  const changed = []; let walletsWritten = 0;
+  for (const [p, obj] of built.files) {   // the wallet files first: the three bookkeeping files below report what happened to them
+    const m = LEDGER_WALLET_RE.exec(p); if (!m) continue;
+    const content = serialize(obj); const sha = blobSha(Buffer.from(content));
+    if (onMain.get(p) === sha) { out.unchanged++; continue; }
+    if (!full && onMain.has(p) && sigMain[m[1]] != null && sigMain[m[1]] === sigs[m[1]]) { out.held++; continue; }   // re-priced only → the day's re-price
+    changed.push({ path: p, content }); walletsWritten++;
+  }
+  { const idxOut = built.files.get(`${OUT_DIR}/ledger/index.json`), hbOut = built.files.get(`${OUT_DIR}/heartbeat.json`);
+    if (idxOut) idxOut.signatures = sigs;   // a held file's signature is by definition the one on main; a written file's is its new one
+    if (hbOut) { hbOut.full_publish_at = full ? hbOut.builtAt : (fullAt || null);
+      hbOut.publish = { mode: full ? 'full' : 'events', wallet_files_written: walletsWritten, wallet_files_held: out.held,
+        rule: 'a wallet file is written when the wallet did something since its last write; files that differ only by prices and rates are written once a day (the first build at/after 03:30 UTC)' }; } }
   for (const [p, obj] of built.files) {
+    if (LEDGER_WALLET_RE.test(p)) continue;
     const content = serialize(obj); const sha = blobSha(Buffer.from(content));
     if (onMain.get(p) === sha) { out.unchanged++; continue; }
     changed.push({ path: p, content });
   }
-  if (publishBatch && changed.length) { const r = await publishBatch(changed, `tla-flows/pnl: rollup ${t.toISOString().slice(0, 10)} (epoch ${curEpoch}) — ${changed.length} files`); out.written = changed.length; out.commit = r && r.commit; out.batch = { chunks: r && r.chunks, attempts: r && r.attempts }; }
+  const what = `${changed.length} files` + (full ? '' : ` (${out.held} re-priced only, held for the day's re-price)`);
+  if (publishBatch && changed.length) { const r = await publishBatch(changed, `tla-flows/pnl: rollup ${t.toISOString().slice(0, 10)} (epoch ${curEpoch}) — ${what}`); out.written = changed.length; out.commit = r && r.commit; out.batch = { chunks: r && r.chunks, attempts: r && r.attempts }; }
   else for (const f of changed) { await publishFile(f.path, f.content, `tla-flows/pnl: rollup ${t.toISOString().slice(0, 10)} (epoch ${curEpoch})`); out.written++; }
-  out.status = 'ok'; out.epoch = curEpoch; out.summary = built.summary; out.files = built.files.size;
+  out.status = 'ok'; out.epoch = curEpoch; out.summary = built.summary; out.files = built.files.size; out.mode = full ? 'full' : 'events'; out.wallet_files_written = walletsWritten;
   return out;
 }
-module.exports.runPnlDuty = runPnlDuty; module.exports.epochOfMs = epochOf;
+module.exports.runPnlDuty = runPnlDuty; module.exports.epochOfMs = epochOf; module.exports.activitySignature = activitySignature;
