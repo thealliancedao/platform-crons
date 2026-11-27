@@ -1,6 +1,6 @@
 {
   "name": "dao-governance",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Chain-derived DAO governance capture for dao-originations tenants",
   "main": "index.js",
   "scripts": {

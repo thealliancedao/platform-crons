@@ -28,6 +28,14 @@
 //   (default) → capture + publish.
 // Kill-switch: DAO_GOVERNANCE=0. Scope: DAO_ONLY=<folder,folder>.
 //
+// 1.3.0 (2026-11-27, owner: "for props can we show who voted and how they voted please —
+// validators") — x/gov proposals carry `validatorVotes`: every bonded validator, largest
+// stake first, with the vote its own account cast (validator-votes.js — the same file the
+// site runs; the node's answers were probed first: tla-core docs/fixtures/2026-11-27/
+// gov-validator-votes-probe.json). Read on every run WHILE THE VOTE IS OPEN; the chain drops
+// individual votes when a vote closes, so for a closed proposal the last copy read is kept
+// from the previous capture. Delegators' votes are still not captured.
+//
 // 1.2.0 (2026-08-22) — THREE GOVERNANCE SHAPES, ONE OUTPUT. registry.kind:
 //   "daodao"     (default) dao-proposal-single via the DAO core — as before.
 //   "anchor-gov" Anchor-style gov contract (Capapult/CAPA governance:
@@ -48,6 +56,7 @@
 
 const https = require('https');
 const crypto = require('crypto');
+const VV = require('./validator-votes.js');   // 1.3.0
 
 const LCD = process.env.TERRA_LCD || 'https://terra-lcd.publicnode.com';
 const LCD_FALLBACK = process.env.TERRA_LCD_FALLBACK || 'https://phoenix-lcd.terra.dev';
@@ -77,7 +86,7 @@ function req(url, { method = 'GET', headers = {}, body = null, timeoutMs = 20000
     const r = https.request({
       method, hostname: u.hostname, port: 443, path: u.pathname + (u.search || ''),
       headers: {
-        'User-Agent': 'org-dao-governance/1.2.0',
+        'User-Agent': 'org-dao-governance/1.3.0',
         ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}),
         ...headers,
       }, timeout: timeoutMs,
@@ -556,6 +565,17 @@ async function captureAnchorGov(dao, registry) {
   }
   return { dao, registry, doc: { dao: registry.dao, daoName: registry.daoName || registry.dao, exportedAt: new Date().toISOString(), source: 'org dao-governance cron (chain-derived, anchor-gov)', governanceKind: 'anchor-gov', govAddress: gov, proposalCount: Object.keys(proposals).length, proposals } };
 }
+// ---- 1.3.0 how each validator voted ---------------------------------------------
+// live  → read now; if the read fails, the previous copy stands (never an empty list in place of a good one)
+// closed → the chain no longer holds the votes: keep the previous capture's copy, untouched
+async function validatorVotesFor({ id, live, prev, read }) {
+  const kept = prev && prev.validatorVotes && Array.isArray(prev.validatorVotes.list) ? prev.validatorVotes : null;
+  if (!live) return kept;
+  let R = null; try { R = await read(id); } catch (e) { R = null; }
+  if (!R || !R.ok) return kept;
+  const { ok, ...doc } = R; return doc;
+}
+
 // ---- 1.2.0 x/gov (LUNA) ----------------------------------------------------------
 async function captureXGov(dao, registry) {
   const lim = registry.limit || 60;
@@ -571,12 +591,18 @@ async function captureXGov(dao, registry) {
   const tp = (params && (params.params || params.tally_params)) || null;
   console.log(`  x/gov proposals=${props.length} bonded=${bonded} quorum=${tp && tp.quorum} threshold=${tp && tp.threshold}`);
   const proposals = {}; const idPrefix = registry.idPrefix || 'l';
+  // 1.3.0: the previous capture — a closed proposal's validator votes exist nowhere else
+  let prevProps = {}; if (!PROBE) { try { const raw = await readRepoFile(DAO_REPO, `${dao}/governance/proposals.json`); const pd = raw ? JSON.parse(raw) : null; prevProps = (pd && pd.proposals && !Array.isArray(pd.proposals)) ? pd.proposals : {}; } catch (e) { prevProps = {}; } }
+  let vvRead = 0, vvKept = 0;
   for (const p of props) {
     const live = p.status === 'PROPOSAL_STATUS_VOTING_PERIOD';
     const tally = live ? ((await lcdGet(`/cosmos/gov/v1/proposals/${p.id}/tally`)) || {}).tally : null;
     const m = mapXGovProposal({ p, tally, bonded, params: tp, registry, daoId: registry.dao, idPrefix });
+    const vv = await validatorVotesFor({ id: p.id, live, prev: prevProps[m.id], read: (id) => VV.read({ id, getJson: lcdGet }) });
+    if (vv) { m.validatorVotes = vv; m.votersNote = 'x/gov: delegators\' votes are not captured (they run to thousands). validatorVotes is how each bonded validator\'s own account voted, read while the vote was open — the chain drops individual votes when a vote closes.'; if (live && prevProps[m.id] && prevProps[m.id].validatorVotes === vv) vvKept++; else if (live) vvRead++; }
     proposals[m.id] = m;
   }
+  console.log(`  validator votes: read for ${vvRead} open proposal(s)${vvKept ? `, ${vvKept} kept from the last capture (the read failed)` : ''}; ${Object.values(proposals).filter(x => !x.live && x.validatorVotes).length} closed proposal(s) carry a kept copy`);
   if (PROBE) { console.log(JSON.stringify({ dao, kind: 'x-gov', rawFirst: props[0], mappedFirst: proposals[Object.keys(proposals)[0]] }, null, 1).slice(0, 4000)); return { dao, probe: true }; }
   return { dao, registry, doc: { dao: registry.dao, daoName: registry.daoName || registry.dao, exportedAt: new Date().toISOString(), source: 'org dao-governance cron (chain-derived, x/gov)', governanceKind: 'x-gov', bondedTokens: bonded, window: `newest ${lim}`, proposalCount: Object.keys(proposals).length, proposals } };
 }
@@ -700,7 +726,7 @@ async function main() {
   return results;
 }
 
-module.exports = { main, _test: { mapProposal, mapAnchorPoll, mapXGovProposal, anchorMsgsToWasm, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, findProposalModule, folderTokens, setQuery: fn => { query = fn; } } };
+module.exports = { main, _test: { validatorVotesFor, mapProposal, mapAnchorPoll, mapXGovProposal, anchorMsgsToWasm, readThresholds, outcomeReason, decodeMsgs, verifyAgainst, pctOf, findProposalModule, folderTokens, setQuery: fn => { query = fn; } } };
 if (require.main === module) {
   if (process.env.DAO_GOVERNANCE === '0') { console.log('disabled'); process.exit(0); }
   main().then(() => process.exit(0)).catch(e => { console.error('❌', e.message); process.exit(1); });

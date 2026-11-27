@@ -59,5 +59,27 @@ T('block time is MEASURED from the chain (latest vs latest-1000), not assumed', 
   console.log((ok ? '  ✓ ' : '  ✗ ') + 'veto_timelock object ⇒ status Veto Timelock, pending:true, outcome pending, vetoLockUntil parsed' + (ok ? '' : ' ' + JSON.stringify({ s: v.status, p: v.pending, o: v.outcome, u: v.vetoLockUntil })));
   ok ? pass++ : fail++;
 }
+// ---- 1.3.0: how each validator voted — read while open, kept after close --------------------
+(async () => {
+  const good = { ok: true, version: '1.0.0', proposal_id: 4860, read_at: '2026-11-27T18:00:00.000Z', validators: 2, voted: 1, voted_stake_pct: 60, voters_total: 9, complete: true, by: {}, list: [{ rank: 1, moniker: 'A', operator: 'terravaloper1a', stake_pct: 60, vote: 'yes' }, { rank: 2, moniker: 'B', operator: 'terravaloper1b', stake_pct: 40, vote: null }] };
+  const old = { validatorVotes: { read_at: '2026-11-26T00:00:00.000Z', validators: 2, voted: 0, list: [{ rank: 1, moniker: 'A', operator: 'terravaloper1a', stake_pct: 60, vote: null }] } };
+  const f = m._test.validatorVotesFor; let asked = 0;
+  const a = await f({ id: 4860, live: true, prev: old, read: async () => { asked++; return good; } });
+  T('an open proposal is read now: the fresh table replaces the old copy, without the ok flag', asked === 1 && a.read_at === good.read_at && a.list[0].vote === 'yes' && a.ok === undefined);
+  const b = await f({ id: 4860, live: true, prev: old, read: async () => ({ ok: false, error: 'down' }) });
+  T('an open proposal whose read fails keeps the previous copy — never an empty list in place of a good one', b === old.validatorVotes);
+  const c = await f({ id: 4860, live: true, prev: old, read: async () => { throw new Error('boom'); } });
+  T('…also when the read throws', c === old.validatorVotes);
+  asked = 0; const d = await f({ id: 4859, live: false, prev: old, read: async () => { asked++; return good; } });
+  T('a closed proposal is never read (the chain has dropped its votes): the kept copy stands, untouched', asked === 0 && d === old.validatorVotes);
+  const e = await f({ id: 4850, live: false, prev: { title: 'old, no copy' }, read: async () => good });
+  T('a closed proposal with no kept copy gets none — nothing is made up', e === null && (await f({ id: 1, live: false, prev: undefined, read: async () => good })) === null);
+  const VV = require('./validator-votes.js'); const src = require('fs').readFileSync(require('path').join(__dirname, 'validator-votes.js'), 'utf8');
+  T('validator-votes.js is the site\'s library (1.0.0) and converts an operator address to its account', VV.VERSION === '1.0.0' && /The SAME file runs in the browser/.test(src) && VV.toAccount(VV._bech32.encode('terravaloper', [1, 2, 3, 4, 5, 6, 7, 8])) === VV._bech32.encode('terra', [1, 2, 3, 4, 5, 6, 7, 8]));
+  console.log(`\n===== KINDS GATE: ${pass}/${pass + fail} =====`);
+  process.exit(fail ? 1 : 0);
+})();
+/* the summary and exit now happen at the end of the async block above
 console.log(`\n===== KINDS GATE: ${pass}/${pass + fail} =====`);
 process.exit(fail ? 1 : 0);
+*/
