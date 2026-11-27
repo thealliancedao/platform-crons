@@ -1,5 +1,27 @@
 # member-data — changelog
 
+## 1.7.3 — 2026-11-27 — epoch-history-rollup 1.2.0: why the TVL moved — prices, or deposits and withdrawals
+
+The owner, on the TVL history: "is this losing this much or are the tokens losing this much, is it outflows of liquidity or just
+prices … add a column for token prices and a second line in the chart — BTC at 60,000 and ROAR at 0.0000000x don't average nicely."
+
+- **`tvl_split`** on every epoch (against the epoch before): `prices_usd` · `flows_usd` · `newly_valued_usd` · `lost_value_usd` ·
+  `other_usd` — they add up to `change_usd` exactly. Worked pool by pool from the staked amount (`amp_lp.underlying_lp_amount`)
+  and the pool's unit price (value ÷ amount): prices = amount before × change of the unit price; flows = change of the amount ×
+  the unit price now. **Prices are never averaged** — a pool counts by how much of the TVL it is.
+- **`price_index`**: the price part chained from 100 at the first epoch — "the TVL if nobody had deposited or withdrawn".
+- **Newly valued / lost value** are their own parts: a pool that was staked all along and only got (or lost) a price is not a
+  deposit (or a withdrawal). **`unvalued_staked`** names the pools staked that week with no price — the TVL leaves them out —
+  and, for those that got a price later, what the stake would be worth at the unit price it first got (an estimate, labelled,
+  never added to the TVL).
+- **What the real dailies show:** from E205 (4 Oct) to E212 (22 Nov) the USDC.inj pools — LUNA-USDC.inj, USDC.inj-EURe,
+  USDC.inj-SOLID, USDC.inj-USDT — were staked but USDC.inj had no price, so they counted as $0. The "−37%" of E205 was mostly
+  liquidity moving from the USDC.nbl pools into them, and the "+45%" of E213 is $297,589 of newly valued stake, not deposits
+  (deposits and withdrawals that week were −3.4%). At the unit prices they first got, those pools were about $545K–$795K a week.
+  E184 → E213: prices alone took the index from 100 to 57.2.
+- Gate `mock-run-epoch-split.js` 18/18 (a made-up world with every part known; then all 198 real dailies: the parts add up to
+  the change in each of the 30 epochs); six planted faults caught.
+
 ## 1.7.2 — 2026-11-24 — tla-snapshot 1.3.0: emissions from the chain's own figures; total voting power
 
 Checked against a capture of Eris's liquidity-hub page taken in the same minutes as our files.
