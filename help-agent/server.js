@@ -65,7 +65,7 @@
 //   build command:  (none)          start command:  node server.js
 //   env:
 //     ANTHROPIC_API_KEY    required — console.anthropic.com key (Haiku-tier use)
-//     ALLOWED_ORIGIN       default https://thealliancedao.com
+//     ALLOWED_ORIGIN       optional EXTRA addresses (comma-separated); theadao.com and thealliancedao.com (+ www) are always allowed (v1.24.1)
 //     MONTHLY_BUDGET_USD   default 10 — hard stop when estimated spend exceeds
 //     RATE_PER_HOUR        default 10 — questions per IP per hour
 //     PORT                 provided by Render
@@ -83,15 +83,22 @@ const VMT = require('./lib/vote-market-tool.js');
 const CWT = require('./lib/contract-watch-tool.js');   // v1.24.0: Contract Watch (the record the page renders; facts only)
 const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfolio tool (reads the page's own products; coded findings)   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
-const VERSION = '1.24.0';
+// v1.24.1 (2026-11-27): (1) the site's addresses are always allowed (theadao.com was refused at the browser's pre-check since the
+//   October move); (2) rule 22 — a pool's top depositors cannot be ranked yet (the participants record covers lock holders only) and
+//   must not be faked from it; one line on Tools → Optimizer Watch.
+const VERSION = '1.24.1';
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
 // browser treats them as different origins, and allowing only the apex
 // blocked every www request at preflight (owner console log). ALLOWED_ORIGIN
 // is now a comma-separated list; the response echoes whichever allowed
 // origin is asking (the header can only carry one value).
-const ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://thealliancedao.com,https://www.thealliancedao.com')
-  .split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+// v1.24.1 (2026-11-27): the site moved to theadao.com in October and this list was never told — the browser's pre-check
+// refused every question from the new address, and the Help panel could only say "Still unreachable" (last answered
+// question on record: 4 Oct). The site's own addresses are now ALWAYS allowed, whatever ALLOWED_ORIGIN says; the setting
+// only ADDS addresses (a preview host, say). A site move can no longer silence the assistant through a stale setting.
+const SITE_ORIGINS = ['https://theadao.com', 'https://www.theadao.com', 'https://thealliancedao.com', 'https://www.thealliancedao.com'];
+const ORIGINS = Array.from(new Set(SITE_ORIGINS.concat((process.env.ALLOWED_ORIGIN || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean))));
 const BUDGET = parseFloat(process.env.MONTHLY_BUDGET_USD || '10');
 const RATE = parseInt(process.env.RATE_PER_HOUR || '10', 10);
 const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';  // env-overridable: set MODEL=claude-sonnet-4-6 in Render to tier up (~3x cost/answer), no code change needed
@@ -477,6 +484,19 @@ Hard rules, in priority order:
      page's footer and a tile on Tools. "Is there a vote simulator?" → the Vote Simulator tab.
    - A chapter or changelog in the corpus that says "LP Grades → PD placements", "the Pools tab" or "the Docs tab" describes the bar
      before that day — give the place above.
+22. WHO HOLDS A POOL'S LIQUIDITY — NOT ANSWERABLE YET (v1.24.1). "Who are the top depositors / biggest holders / whales of <pool>?",
+   "is it the team or the community that holds the liquidity?", "who takes most of the rewards?":
+   - The public record (member-data/participants) holds LP positions ONLY for wallets that also have a TLA lock — about 200 wallets.
+     On most pools those wallets are a MINORITY of the staked liquidity (often well under a third). A list ranked from it is NOT the
+     pool's top depositors, and what is missing from it is not "the community". NEVER present such a list as a pool's top holders,
+     never call an unlabelled wallet "community" or "team", and never guess who owns a wallet.
+   - Say plainly: the site cannot yet rank a pool's depositors; the full list of every wallet that has used the Liquidity Alliance has
+     been read and a page for it is being built. What you CAN give today: the pool's total staked value, votes and APR (rule 16's pool
+     action), who holds the VOTE (lp-grades/scorecard/holders.json, rule 19) — voting power is not liquidity, say so — and, for a wallet
+     the visitor pins, that wallet's own share of each pool.
+   - Tools → Optimizer Watch (https://theadao.com/optimizer-watch.html) is aDAO's own page, not Votion's: the round's bribes as they
+     change, the two deadlines, and — per bucket — where Votion's votes sit now, where its published plan sends them, and any bribed pool
+     that is not among its voting options. Say what the page shows; the data gives no reason why a pool is not offered, so give none.
 18. TICKETS (v1.19.0, owner 2026-10-13: "people will ask the bot when they find problems … get answers or a ticket they can forward to
    me") — when the visitor reports something broken, wrong, missing or not loading and you could NOT resolve it from the data (a fault, a
    claim you cannot refute, CANNOT VERIFY, a page error you cannot explain), answer as usual, then end with a ticket in EXACTLY this form:

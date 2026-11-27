@@ -44,7 +44,7 @@ report/request forms). Deploying this adds the live assistant.
 2. Build command: *(none)* · Start command: `node server.js`
 3. Environment:
    - `ANTHROPIC_API_KEY` — create at console.anthropic.com ($5 free credits on signup)
-   - `ALLOWED_ORIGIN` = `https://thealliancedao.com`
+   - `ALLOWED_ORIGIN` — optional. The site's own addresses (theadao.com, thealliancedao.com, each with www) are always allowed; set this only to ADD one, e.g. a preview host
    - `MONTHLY_BUDGET_USD` = `10` (hard stop — the service refuses past this)
    - `RATE_PER_HOUR` = `10`
 4. Free instance type works (sleeps when idle; ~30-60s first-question wake).
