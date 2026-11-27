@@ -80,13 +80,18 @@
 const http = require('http');
 const NFT = require('./lib/nft-tools.js');
 const VMT = require('./lib/vote-market-tool.js');
+const TWT = require('./lib/tla-whales-tool.js');   // v1.25.0: TLA Whales (who holds each pool's staked liquidity; facts only)
 const CWT = require('./lib/contract-watch-tool.js');   // v1.24.0: Contract Watch (the record the page renders; facts only)
 const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfolio tool (reads the page's own products; coded findings)   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
+// v1.25.0 (2026-11-27): TLA WHALES — tool tla_whales (lib/tla-whales-tool.js) reads the file tla-whales.html renders (tla-core
+//   tla-whales/current.json): pool (a pool's largest accounts), overview (all pools: concentration, the split by what the chain says,
+//   rewards claimed), account (one address across pools). Rule 22 rewritten from "not answerable yet": names only as the file gives
+//   them, never team / community / insiders for unlabelled accounts, every note repeated. Gate gate-tla-whales-tool.mjs.
 // v1.24.1 (2026-11-27): (1) the site's addresses are always allowed (theadao.com was refused at the browser's pre-check since the
 //   October move); (2) rule 22 — a pool's top depositors cannot be ranked yet (the participants record covers lock holders only) and
 //   must not be faked from it; one line on Tools → Optimizer Watch.
-const VERSION = '1.24.1';
+const VERSION = '1.25.0';
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
 // browser treats them as different origins, and allowing only the apex
@@ -484,16 +489,20 @@ Hard rules, in priority order:
      page's footer and a tile on Tools. "Is there a vote simulator?" → the Vote Simulator tab.
    - A chapter or changelog in the corpus that says "LP Grades → PD placements", "the Pools tab" or "the Docs tab" describes the bar
      before that day — give the place above.
-22. WHO HOLDS A POOL'S LIQUIDITY — NOT ANSWERABLE YET (v1.24.1). "Who are the top depositors / biggest holders / whales of <pool>?",
-   "is it the team or the community that holds the liquidity?", "who takes most of the rewards?":
-   - The public record (member-data/participants) holds LP positions ONLY for wallets that also have a TLA lock — about 200 wallets.
-     On most pools those wallets are a MINORITY of the staked liquidity (often well under a third). A list ranked from it is NOT the
-     pool's top depositors, and what is missing from it is not "the community". NEVER present such a list as a pool's top holders,
-     never call an unlabelled wallet "community" or "team", and never guess who owns a wallet.
-   - Say plainly: the site cannot yet rank a pool's depositors; the full list of every wallet that has used the Liquidity Alliance has
-     been read and a page for it is being built. What you CAN give today: the pool's total staked value, votes and APR (rule 16's pool
-     action), who holds the VOTE (lp-grades/scorecard/holders.json, rule 19) — voting power is not liquidity, say so — and, for a wallet
-     the visitor pins, that wallet's own share of each pool.
+22. WHO HOLDS A POOL'S LIQUIDITY (v1.25.0) — tool tla_whales: the SAME file the TLA Whales page renders (every account holding a
+   pool's staked liquidity, read from the chain — direct stakers and holders of the pool's amp token).
+   - "Who are the top depositors / biggest holders / whales of <pool>?" → action pool (pool = the name as the visitor said it;
+     "Astro-Luna" finds LUNA-ASTRO; several pools at once = one call each). "How concentrated is the Alliance / who holds the
+     liquidity / is it teams or community / who takes the rewards?" → overview. "What does <terra1…> hold?" → account.
+   - Give the figures as returned: rank, share of the pool, value, how it is held, since when, what it did in the last 8 rounds.
+     Name an account ONLY as shown_as gives it; when name_kind is "no name", give the short address and nothing more. Give the link.
+   - "Team or community?" — answer with who_by_what_the_chain_says and say what the four parts are: verified label · registered name ·
+     no name · not attributed. NEVER call no-name accounts "the community", "the team", "insiders" or one person's; never guess an
+     owner. Say that one person or organisation may hold several accounts and that a contract holds for others. For one project's
+     team: only an account carrying that organisation's verified label counts — say how much that is and that the rest cannot be told.
+   - When list_explains_pct is under 99, say it, and repeat every note the tool returns (not read to the end, not attributed, stated
+     rate against stake) — never smooth it over. A large share is a fact, not a judgement: no verdict, no motive.
+   - The list is refreshed by hand, not every hour: give read_at. If two pools share a name, say which DEX each figure is for.
    - Tools → Optimizer Watch (https://theadao.com/optimizer-watch.html) is aDAO's own page, not Votion's: the round's bribes as they
      change, the two deadlines, and — per bucket — where Votion's votes sit now, where its published plan sends them, and any bribed pool
      that is not among its voting options. Say what the page shows; the data gives no reason why a pool is not offered, so give none.
@@ -681,6 +690,9 @@ const CHAIN_TOOLS = [
   { name: 'portfolio',   // v1.17.0
     description: 'A wallet\'s Member Portfolio as the page builds it, plus a DIAGNOSIS: the hourly record (totals incl. receipts staked in a DAO = custody, locks, LP, wallet, Credia, VP), the live LP rows (pool, bucket, amplified, active/inactive, USD, distance to the 1% line), the P&L ledger (net USD/LUNA, open / flagged / top closed positions with not_held, held_in, moves = where a receipt went, disputed, unpriced trips), Votion stories (USD in → now = LUNA price + LST staking + Votion legs, real vs advertised APR), each product\'s freshness, and coded findings {code, kind: known|check|fault, says} with a report block when something is a fault. Use for ANY question about a wallet\'s portfolio, "why does my portfolio show X", "is this number right", "what does wallet Y do / hold / how did it do", and before telling anyone a number is wrong.',
     input_schema: { type: 'object', properties: { wallet: { type: 'string', description: 'terra1… address (the visitor\'s own, or a public wallet they name — a DAO treasury, a registered member, the GMC Backing Wallet)' } }, required: ['wallet'] } },
+  { name: 'tla_whales',   // v1.25.0
+    description: 'TLA Whales — who holds each pool\'s staked liquidity in the Liquidity Alliance, read from the chain (direct stakers and holders of the pool\'s amp token). The SAME file tla-whales.html renders. Actions: pool (one pool by name: its largest accounts with share, value, how held, since when and what they did in the last 8 rounds; top-5 / top-10 share; how much of the pool the list explains); overview (all pools: accounts, the share of the largest 1 / 5 / 10 / 25, the split verified label · registered name · no name · not attributed, rewards claimed, the largest accounts); account (one terra1… address: every pool it holds and what the public record holds for it). Use for ANY "top depositors / biggest holders / whales / who holds the liquidity / team or community / who takes the rewards" question. Facts only — it never says who owns an unlabelled account.',
+    input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['pool', 'overview', 'account'] }, pool: { type: 'string', description: 'pool: the pool\'s name as the visitor said it ("LUNA-SOLID", "Astro-Luna", "ampCAPA")' }, address: { type: 'string', description: 'account: a full terra1… address' }, limit: { type: 'integer', description: 'how many accounts to list (default 10, max 25)' } }, required: ['action'] } },
   { name: 'contract_watch',   // v1.24.0
     description: 'Contract Watch — who changed a Liquidity Alliance contract, what, when, and by which route (a passed proposal, sent directly, or seen in a state read). The SAME record contract-watch.html renders. Actions: overview (the record at a glance — counts by route and kind, the latest changes, what the record covers); changes (the changes that match: contract by name or address, kind, how, since / until, sender, q = a word, a proposal number like A236, or a tx hash); contract (one contract: its group, code id, admin and how that admin signs, what each kind of change on it requires, its changes); roles (the TLA address book: who holds each role, what the role is required for in the contracts\' own words, how the holder signs — role=<NAME> for one role in full, with the change that set it); address (one address: the roles it holds, the contracts it can upgrade, how it signs, the changes it sent). Facts only — it does not carry the page\'s "needs a look" mark. Use for ANY question about contract changes, upgrades, admins, roles, reward-list edits, or who can change what.',
     input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['overview', 'changes', 'contract', 'roles', 'address'] }, contract: { type: 'string', description: 'a contract by the name the page shows ("Single bucket staking", "Bribe manager", "Address book", "Gauge") or its terra1… address' }, kind: { type: 'string', description: 'changes: list (reward lists) | upgrade | admin | role | setting | governance (DAO structure) | delegation | reserve | guard (pause & blacklist) | code (new code uploaded) | weekly (the routine distribution)' }, how: { type: 'string', description: 'changes: proposal | direct | observed (seen in a state read)' }, since: { type: 'string', description: 'changes: YYYY-MM-DD or YYYY-MM' }, until: { type: 'string', description: 'changes: YYYY-MM-DD or YYYY-MM' }, sender: { type: 'string', description: 'changes: a terra1… address — the account that sent it, or the DAO whose proposal it was' }, q: { type: 'string', description: 'changes: a search word — an asset, an action, a proposal number (A236), a tx hash' }, role: { type: 'string', description: 'roles: one role by name, e.g. ASSET_WHITELIST_CONTROLLER' }, address: { type: 'string', description: 'address: a terra1… address' }, days: { type: 'integer', description: 'overview: the window in days (default 30)' }, limit: { type: 'integer', description: 'rows (default 10, max 25)' } }, required: ['action'] } },
@@ -1061,6 +1073,7 @@ async function runTool(name, input) {
   if (name === 'vote_market') return VMT.run(input);   // v1.16.0
   if (name === 'portfolio') return PT.run(input);   // v1.17.0
   if (name === 'contract_watch') return CWT.run(input);   // v1.24.0
+  if (name === 'tla_whales') return TWT.run(input);   // v1.25.0
   if (name === 'get_transaction') {
     const h = String(input.hash || '').replace(/[^A-Fa-f0-9]/g, '');
     if (h.length !== 64) return { error: 'invalid hash' };
