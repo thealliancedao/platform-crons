@@ -84,6 +84,8 @@ const TWT = require('./lib/tla-whales-tool.js');   // v1.25.0: TLA Whales (who h
 const CWT = require('./lib/contract-watch-tool.js');   // v1.24.0: Contract Watch (the record the page renders; facts only)
 const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfolio tool (reads the page's own products; coded findings)   // v1.16.0: the Vote Market tool (the site's engine, fetched)   // v1.14.0: the NFT tools' logic (pure; gated on real shards)
 
+// v1.27.0 (2026-11-27): tla_whales tool 1.2.0 — an account's last 12 rounds, how often it acts (moves a week), and its position
+//   value then and now. Rule 22: a count, never "a bot" as a fact, never who runs it; what happens to LUNA after a claim is not in the data.
 // v1.26.0 (2026-11-27): tla_whales tool 1.1.0 — what the TLA Whales page gained in 1.1.0: how each account holds a pool (staked
 //   directly = rewards paid out to claim · amplified = compounded back), lists cut to one kind (held), voting power, the votes an
 //   account gives the pool it holds and the bribes it placed on it, a pool's votes and bribes with the part from its own holders,
@@ -96,7 +98,7 @@ const PT = require('./lib/portfolio-tool.js');   // v1.17.0: the Member Portfoli
 // v1.24.1 (2026-11-27): (1) the site's addresses are always allowed (theadao.com was refused at the browser's pre-check since the
 //   October move); (2) rule 22 — a pool's top depositors cannot be ranked yet (the participants record covers lock holders only) and
 //   must not be faked from it; one line on Tools → Optimizer Watch.
-const VERSION = '1.26.0';
+const VERSION = '1.27.0';
 const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 // v1.3.1 (2026-08-20): the site answers on BOTH the apex and www — the
 // browser treats them as different origins, and allowing only the apex
@@ -512,6 +514,11 @@ Hard rules, in priority order:
      through the pool's amp token, the rewards are compounded back into the pool. "Who collects the LUNA / who compounds / who builds
      liquidity in <pool>?" → action pool with held = direct or amplified (overview takes held too). Say only how it is held and what
      the account did (deposits, withdrawals, last 8 rounds) — what an account does with LUNA after claiming is NOT in the data yet.
+   - (v1.27.0) WHAT AN ACCOUNT DID LATELY: last_12_rounds (claims and their worth, deposits, withdrawals) and moves_per_week are on
+     action account, and overview gives the sums. "Is <account> a bot?" — give moves_per_week and say activity that regular is
+     usually automated; NEVER state that it is a bot, and never who or what runs it. "Do they sell / dump / take the rewards off
+     Terra?" — NOT in the data: say what is known (claimed N times worth $X, D deposits, W withdrawals in the last 12 rounds) and
+     that what was done with the LUNA after a claim is not recorded here. Do not infer selling from "claimed, no deposit".
    - (v1.26.0) VOTES AND BRIBES: "Do the big holders of <pool> also vote for it / bribe it? Who votes for <pool>? Who bribes it?" →
      action pool: votes_on_this_pool, bribes_on_this_pool, and per account voting_power / votes_it_gives_this_pool / bribed_this_pool.
      "Who holds the voting power / who are the biggest voters / do voters hold the pools they vote for?" → action voters. Voting power
