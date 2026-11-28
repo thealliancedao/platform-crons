@@ -1,5 +1,21 @@
 # tla-flows — changelog
 
+## 3.8.1 — 2026-11-28 — contract-watch: creator sweep
+
+- **Why.** The watch was built from lists (config, known_contracts, the capture registry, the optional extra list). The
+  chain can answer "every contract this key created" directly (`GET /cosmwasm/wasm/v1/contracts/creator/<addr>`), and
+  that answer for the TLA global config's owner key is 65 contracts — TLA 14, Phoenix treasury 2, Creda 5, ERIS hubs 11,
+  Votion 9, Estima 6, other 18 — of which the lists held 24. Estima, the older hubs, the fee collectors, the Votion
+  claiming contracts and the Creda oracle / liquidator / pair proxy were not watched.
+- **`config/contracts.js` `CREATOR_SWEEP`** — the keys to sweep: the owner key and the admin key. Roles the chain reports,
+  not people; the comment says which role each is.
+- **`index.js` `creatorSweep()`** — read at the start of every run, paginated, through the same LCD fallback as the
+  state read; the result joins `adminWatchFrom` (`swept`). A key whose answer cannot be read is logged and skipped for
+  that run; the lists carry. A contract created tomorrow by either key is watched from the next run, and the daily state
+  read records its code id, admin and label like any other.
+- **What it changes in tla-core.** `contract-watch/state/current.json` grows to the full set on the next state read
+  (new entries only — nothing is dropped); the differences stream files the new contracts' first reads as usual.
+
 ## 3.8.0 — 2026-11-25 — contract changes: what was sent
 
 - **Why.** A change record says that a contract changed and who sent it. For many changes the events carry no values:
