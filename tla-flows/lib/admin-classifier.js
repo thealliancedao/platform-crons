@@ -128,12 +128,13 @@ function classifyAdminTx(txr, watch) {
 
 // The watched set: every structural contract the crons name, every named contract of the curated registry, every contract
 // of the capture registry, and a curated extra list. Addresses only (contracts are 64 characters; a wallet is never watched).
-function adminWatchFrom({ config, known, registry, extra } = {}) {
+function adminWatchFrom({ config, known, registry, extra, swept } = {}) {
   const set = new Set(); const add = (a) => { if (typeof a === 'string' && /^terra1[0-9a-z]{58}$/.test(a)) set.add(a); };
   (function walk(o, depth) { if (depth > 4 || o == null) return; if (typeof o === 'string') return add(o); if (typeof o === 'object') for (const v of Object.values(o)) walk(v, depth + 1); })(config, 0);
   const k = known && (known.contracts || known); if (k && typeof k === 'object') for (const a of Object.keys(k)) add(a);
   for (const c of (registry && registry.contracts) || []) add(c && c.address);
   for (const c of (extra && (extra.contracts || extra.watch)) || []) add(typeof c === 'string' ? c : c && c.address);
+  for (const a of swept || []) add(a);   // 3.8.1: contracts the chain lists as created by a swept key (index.js creatorSweep)
   return set;
 }
 

@@ -50,6 +50,16 @@ const GLOBAL_CONFIG = {
     addr: 'terra1hwxg6s732eparz3ys7sa4t5f64ngpd2w8syrca6z7ckv3fs9uqnsvrpcqa',
     role: 'TLA global config — the address book (all_addresses: role → address)',
 };
+// Contract-watch creator sweep (tla-flows 3.8.1, 2026-11-28). Every contract these keys have created is watched — read from
+// the chain each run (GET /cosmwasm/wasm/v1/contracts/creator/<addr>, paginated), so a contract created tomorrow joins
+// the watch by itself and Contract Watch can state "N contracts created by this key" as a chain fact. The keys are roles
+// the chain itself reports (the owner named in the TLA global config; the admin of its contracts), not people.
+// 2026-11-28 read: the owner key has created 65 contracts (TLA 14, Phoenix treasury 2, Creda 5, ERIS hubs 11, Votion 9,
+// Estima 6, other 18); the lists held 24 of them.
+const CREATOR_SWEEP = [
+    'terra1kefa2zgjn45ctj32d3tje5jdwus7px6n2klgzl',   // owner of the TLA global config; creator of the TLA contracts, the Phoenix treasury, Creda, Votion, Estima
+    'terra1q0vny4wx2pfteh9zq323wh48c654xacpfq5tew',   // admin (can migrate) of the TLA contracts and the Phoenix treasury
+];
 // Credia Finance (lending, not a dex) — docs/ecosystem-knowledge/credia.facts.json (credia.contracts.portfolio,
 // chain-confirmed 2026-07-16). The Portfolio contract answers {metrics:{}} (every market; dex-data/dexes/credia.js)
 // and {portfolio:{address}} (one user's supplies/borrows; ally-positions 1.1.0). 2026-09-22.
@@ -208,6 +218,7 @@ module.exports = {
     BRIBE_MANAGER,
     COMPOUNDER,
     GLOBAL_CONFIG,
+    CREATOR_SWEEP,
     CREDIA,
     ZAPPER,
     STAKING_BUCKETS,
